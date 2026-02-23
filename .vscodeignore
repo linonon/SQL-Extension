@@ -1,0 +1,12 @@
+.vscode/**
+src/**
+webview-ui/src/**
+webview-ui/node_modules/**
+node_modules/**
+*.ts
+!dist/**
+!webview-ui/dist/**
+!resources/**
+.gitignore
+tsconfig.json
+esbuild.js

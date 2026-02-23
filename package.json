@@ -1,0 +1,334 @@
+{
+  "name": "sql-extension",
+  "displayName": "Database Explorer",
+  "description": "MySQL, PostgreSQL and Redis database management for VSCode",
+  "version": "0.1.0",
+  "publisher": "internal",
+  "repository": { "type": "git", "url": "https://github.com/internal/sql-extension" },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "database-explorer",
+          "title": "Database Explorer",
+          "icon": "resources/database.svg"
+        }
+      ]
+    },
+    "views": {
+      "database-explorer": [
+        {
+          "id": "databaseConnections",
+          "name": "Connections"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "sqlext.addConnection",
+        "title": "Add Connection",
+        "icon": "$(add)",
+        "category": "Database"
+      },
+      {
+        "command": "sqlext.removeConnection",
+        "title": "Remove Connection",
+        "icon": "$(trash)",
+        "category": "Database"
+      },
+      {
+        "command": "sqlext.connect",
+        "title": "Connect",
+        "category": "Database"
+      },
+      {
+        "command": "sqlext.disconnect",
+        "title": "Disconnect",
+        "category": "Database",
+        "icon": "$(debug-disconnect)"
+      },
+      {
+        "command": "sqlext.openTable",
+        "title": "Open Table",
+        "category": "Database"
+      },
+      {
+        "command": "sqlext.newQuery",
+        "title": "New Query",
+        "icon": "$(terminal)",
+        "category": "Database"
+      },
+      {
+        "command": "sqlext.editConnection",
+        "title": "Edit Connection",
+        "icon": "$(edit)",
+        "category": "Database"
+      },
+      {
+        "command": "sqlext.refreshConnections",
+        "title": "Refresh",
+        "icon": "$(refresh)",
+        "category": "Database"
+      },
+      {
+        "command": "sqlext.showTableDDL",
+        "title": "Show Table DDL",
+        "category": "Database"
+      },
+      {
+        "command": "sqlext.dumpStruct",
+        "title": "Dump Struct",
+        "category": "Database"
+      },
+      {
+        "command": "sqlext.dumpStructAndData",
+        "title": "Dump Struct and Data",
+        "category": "Database"
+      },
+      {
+        "command": "sqlext.importSql",
+        "title": "Import SQL",
+        "category": "Database"
+      },
+      {
+        "command": "sqlext.editTable",
+        "title": "Edit Table",
+        "category": "Database"
+      },
+      {
+        "command": "sqlext.openRedisKey",
+        "title": "Open Key",
+        "category": "Database"
+      },
+      {
+        "command": "sqlext.deleteRedisKey",
+        "title": "Delete Key",
+        "icon": "$(trash)",
+        "category": "Database"
+      },
+      {
+        "command": "sqlext.refreshRedisDb",
+        "title": "Refresh",
+        "icon": "$(refresh)",
+        "category": "Database"
+      },
+      {
+        "command": "sqlext.openRedisDb",
+        "title": "Open Database",
+        "category": "Database"
+      },
+      {
+        "command": "sqlext.cancelConnect",
+        "title": "Cancel Connection",
+        "category": "Database",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "sqlext.exportRedisDb",
+        "title": "Export Database",
+        "category": "Database"
+      },
+      {
+        "command": "sqlext.importRedisDb",
+        "title": "Import Database",
+        "category": "Database"
+      },
+      {
+        "command": "sqlext.openKafkaTopic",
+        "title": "Open Topic",
+        "category": "Database"
+      },
+      {
+        "command": "sqlext.openRabbitMQQueue",
+        "title": "Open Queue",
+        "category": "Database"
+      },
+      {
+        "command": "sqlext.openMongoBrowser",
+        "title": "Open MongoDB Browser",
+        "icon": "$(layout-panel)",
+        "category": "Database"
+      },
+      {
+        "command": "sqlext.mongoCreateCollection",
+        "title": "Create Collection",
+        "category": "Database"
+      },
+      {
+        "command": "sqlext.mongoDropCollection",
+        "title": "Drop Collection",
+        "category": "Database"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "sqlext.addConnection",
+          "when": "view == databaseConnections",
+          "group": "navigation"
+        },
+        {
+          "command": "sqlext.refreshConnections",
+          "when": "view == databaseConnections",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "sqlext.cancelConnect",
+          "when": "viewItem == connection-connecting",
+          "group": "inline"
+        },
+        {
+          "command": "sqlext.cancelConnect",
+          "when": "viewItem == connection-connecting",
+          "group": "context"
+        },
+        {
+          "command": "sqlext.openMongoBrowser",
+          "when": "viewItem == connection-connected-mongodb",
+          "group": "inline"
+        },
+        {
+          "command": "sqlext.refreshConnections",
+          "when": "viewItem =~ /^connection-connected/",
+          "group": "inline"
+        },
+        {
+          "command": "sqlext.disconnect",
+          "when": "viewItem =~ /^connection-connected/",
+          "group": "inline"
+        },
+        {
+          "command": "sqlext.editConnection",
+          "when": "viewItem =~ /^connection/",
+          "group": "context"
+        },
+        {
+          "command": "sqlext.removeConnection",
+          "when": "viewItem =~ /^connection/",
+          "group": "context"
+        },
+        {
+          "command": "sqlext.newQuery",
+          "when": "viewItem == database",
+          "group": "inline"
+        },
+        {
+          "command": "sqlext.openTable",
+          "when": "viewItem == table",
+          "group": "inline"
+        },
+        {
+          "command": "sqlext.editTable",
+          "when": "viewItem == table",
+          "group": "1_structure"
+        },
+        {
+          "command": "sqlext.showTableDDL",
+          "when": "viewItem == table",
+          "group": "1_structure"
+        },
+        {
+          "command": "sqlext.dumpStruct",
+          "when": "viewItem == table",
+          "group": "2_export"
+        },
+        {
+          "command": "sqlext.dumpStructAndData",
+          "when": "viewItem == table",
+          "group": "2_export"
+        },
+        {
+          "command": "sqlext.importSql",
+          "when": "viewItem == database",
+          "group": "2_import"
+        },
+        {
+          "command": "sqlext.importSql",
+          "when": "viewItem == table",
+          "group": "3_import"
+        },
+        {
+          "command": "sqlext.refreshRedisDb",
+          "when": "viewItem == redis-db",
+          "group": "inline"
+        },
+        {
+          "command": "sqlext.deleteRedisKey",
+          "when": "viewItem == redis-key",
+          "group": "context"
+        },
+        {
+          "command": "sqlext.exportRedisDb",
+          "when": "viewItem == redis-db",
+          "group": "context"
+        },
+        {
+          "command": "sqlext.importRedisDb",
+          "when": "viewItem == redis-db",
+          "group": "context"
+        },
+        {
+          "command": "sqlext.openKafkaTopic",
+          "when": "viewItem == kafka-topic",
+          "group": "inline"
+        },
+        {
+          "command": "sqlext.openRabbitMQQueue",
+          "when": "viewItem == rmq-queue",
+          "group": "inline"
+        },
+        {
+          "command": "sqlext.newQuery",
+          "when": "viewItem == mongo-database",
+          "group": "inline"
+        },
+        {
+          "command": "sqlext.mongoCreateCollection",
+          "when": "viewItem == mongo-database",
+          "group": "context"
+        },
+        {
+          "command": "sqlext.mongoDropCollection",
+          "when": "viewItem == mongo-collection",
+          "group": "context"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "build:webview": "cd webview-ui && npm run build",
+    "build": "npm run compile && npm run build:webview",
+    "lint": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "ioredis": "^5.9.3",
+    "kafkajs": "^2.2.4",
+    "mongodb": "^7.1.0",
+    "mysql2": "^3.9.0",
+    "pg": "^8.12.0",
+    "ssh2": "^1.17.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/pg": "^8.11.0",
+    "@types/ssh2": "^1.15.5",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.20.0",
+    "typescript": "^5.3.0",
+    "vitest": "^4.0.18"
+  }
+}

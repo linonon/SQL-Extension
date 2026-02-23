@@ -1,0 +1,166 @@
+/* SQL Editor: dual-layer rendering (textarea + pre 高亮层) */
+
+.sql-editor {
+  position: relative;
+  background: var(--vscode-editor-background);
+  color: var(--vscode-editor-foreground);
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* 行号栏 */
+.sql-editor-gutter {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 40px;
+  padding: 8px 4px 8px 0;
+  text-align: right;
+  background: var(--vscode-editorGutter-background, var(--vscode-editor-background));
+  color: var(--vscode-editorLineNumber-foreground);
+  border-right: 1px solid var(--vscode-panel-border);
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: var(--vscode-editor-font-size, 13px);
+  line-height: 1.5;
+  user-select: none;
+  overflow: hidden;
+  z-index: 1;
+  box-sizing: border-box;
+}
+
+.sql-editor-gutter-line {
+  padding-right: 8px;
+}
+
+/* 编辑器主体区域 (gutter 右侧) */
+.sql-editor-body {
+  position: relative;
+  flex: 1;
+  margin-left: 40px;
+  overflow: auto;
+}
+
+/* 高亮层和输入层的共用字体属性 */
+.sql-editor-highlight,
+.sql-editor-input {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: var(--vscode-editor-font-size, 13px);
+  line-height: 1.5;
+  padding: 8px;
+  margin: 0;
+  border: none;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  tab-size: 2;
+  letter-spacing: normal;
+  box-sizing: border-box;
+}
+
+/* 高亮层: 只显示, 不接收事件 */
+.sql-editor-highlight {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+  min-height: 100%;
+  overflow: hidden;
+}
+
+/* 输入层: 透明文字, 可见光标 */
+.sql-editor-input {
+  position: relative;
+  width: 100%;
+  min-height: 100%;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--vscode-editorCursor-foreground);
+  outline: none;
+  resize: none;
+  z-index: 2;
+  overflow: auto;
+}
+
+/* placeholder 样式 */
+.sql-editor-input::placeholder {
+  color: var(--vscode-input-placeholderForeground, #888);
+}
+
+/* 语法高亮 token 颜色 */
+.token-keyword {
+  color: var(--vscode-debugTokenExpression-name, #569cd6);
+}
+
+.token-string {
+  color: var(--vscode-debugTokenExpression-string, #ce9178);
+}
+
+.token-number {
+  color: var(--vscode-debugTokenExpression-number, #b5cea8);
+}
+
+.token-comment {
+  color: var(--vscode-descriptionForeground, #6a9955);
+}
+
+.token-operator {
+  color: var(--vscode-editor-foreground);
+}
+
+.token-punctuation {
+  color: var(--vscode-editor-foreground);
+}
+
+.token-identifier {
+  color: var(--vscode-editor-foreground);
+}
+
+.token-whitespace {
+  color: transparent;
+}
+
+/* 危险操作警告波浪线 */
+.token-warning {
+  text-decoration: wavy underline var(--vscode-editorWarning-foreground, #cca700);
+  text-underline-offset: 3px;
+}
+
+/* 补全弹窗 */
+.sql-autocomplete {
+  position: fixed;
+  z-index: 9999;
+  min-width: 160px;
+  max-width: 320px;
+  max-height: 200px;
+  overflow-y: auto;
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  border: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border));
+  border-radius: 2px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  list-style: none;
+  margin: 0;
+  padding: 2px 0;
+}
+
+.sql-autocomplete-item {
+  padding: 4px 8px;
+  cursor: pointer;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: var(--vscode-editor-font-size, 13px);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--vscode-foreground);
+}
+
+.sql-autocomplete-item:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.sql-autocomplete-item[data-selected="true"] {
+  background: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+}

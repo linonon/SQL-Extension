@@ -1,0 +1,85 @@
+.connection-form {
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.connection-form h2 {
+  margin-bottom: 16px;
+}
+
+.connection-form .form-group {
+  margin-bottom: 12px;
+}
+
+.connection-form label {
+  display: block;
+  margin-bottom: 4px;
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  color: var(--vscode-descriptionForeground);
+}
+
+.connection-form input,
+.connection-form select {
+  width: 100%;
+  padding: 6px 8px;
+}
+
+.connection-form .form-row {
+  display: flex;
+  gap: 12px;
+}
+
+.connection-form .form-row .form-group {
+  flex: 1;
+}
+
+.connection-form .ssh-section {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.35));
+}
+
+.connection-form .ssh-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 13px;
+  text-transform: none;
+  color: var(--vscode-foreground);
+  cursor: pointer;
+}
+
+.connection-form .ssh-toggle input[type="checkbox"] {
+  width: auto;
+}
+
+.connection-form .ssh-fields {
+  margin-top: 12px;
+}
+
+.connection-form .form-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.connection-form .test-result {
+  margin-top: 12px;
+  padding: 8px;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.connection-form .test-result.success {
+  color: var(--vscode-terminal-ansiGreen);
+  background-color: var(--vscode-inputValidation-infoBackground);
+}
+
+.connection-form .test-result.error {
+  color: var(--vscode-errorForeground);
+  background-color: var(--vscode-inputValidation-errorBackground);
+}

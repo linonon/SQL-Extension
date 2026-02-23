@@ -1,0 +1,496 @@
+.redis-browser {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.redis-body {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.redis-browser .key-panel {
+  min-width: 180px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.redis-browser .resize-handle {
+  position: static;
+  width: 4px;
+  cursor: col-resize;
+  background-color: var(--vscode-widget-border, rgba(128, 128, 128, 0.35));
+  flex-shrink: 0;
+  transition: background-color 0.15s;
+}
+
+.redis-browser .resize-handle:hover,
+.redis-browser .resize-handle:active {
+  background-color: var(--vscode-focusBorder, #007fd4);
+}
+
+.redis-browser.resizing {
+  user-select: none;
+  cursor: col-resize;
+}
+
+.redis-browser .value-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Toolbar */
+.redis-toolbar {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.35));
+  flex-shrink: 0;
+}
+
+.redis-toolbar .icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--vscode-foreground);
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.redis-toolbar .icon-btn:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.2));
+}
+
+.redis-toolbar .text-btn {
+  height: 28px;
+  padding: 0 8px;
+  border: none;
+  background: transparent;
+  color: var(--vscode-foreground);
+  cursor: pointer;
+  border-radius: 4px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.redis-toolbar .text-btn:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.2));
+}
+
+/* Key list */
+.redis-key-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.redis-key-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.redis-key-item:hover {
+  background-color: var(--vscode-list-hoverBackground);
+}
+
+.redis-key-item.selected {
+  background-color: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+}
+
+.redis-key-item .key-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.redis-key-item .key-ttl {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  white-space: nowrap;
+}
+
+/* Type badge */
+.type-badge {
+  display: inline-block;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  line-height: 1.4;
+  flex-shrink: 0;
+}
+
+.type-badge.string { background-color: rgba(76, 175, 80, 0.2); color: #4CAF50; }
+.type-badge.hash { background-color: rgba(33, 150, 243, 0.2); color: #2196F3; }
+.type-badge.list { background-color: rgba(255, 152, 0, 0.2); color: #FF9800; }
+.type-badge.set { background-color: rgba(156, 39, 176, 0.2); color: #9C27B0; }
+.type-badge.zset { background-color: rgba(233, 30, 99, 0.2); color: #E91E63; }
+.type-badge.stream { background-color: rgba(0, 188, 212, 0.2); color: #00BCD4; }
+.type-badge.unknown { background-color: rgba(158, 158, 158, 0.2); color: #9E9E9E; }
+
+/* Load more */
+.redis-load-more {
+  padding: 8px 12px;
+  text-align: center;
+}
+
+.redis-load-more button {
+  width: 100%;
+}
+
+/* Value viewer */
+.redis-value-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.35));
+  flex-shrink: 0;
+}
+
+.redis-value-header .key-info {
+  flex: 1;
+  overflow: hidden;
+}
+
+.redis-value-header .key-info h3 {
+  margin: 0;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.redis-value-header .key-meta {
+  display: flex;
+  gap: 8px;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.redis-value-body {
+  flex: 1;
+  overflow: auto;
+  padding: 12px;
+}
+
+/* String editor */
+.redis-string-editor textarea {
+  width: 100%;
+  min-height: 200px;
+  resize: vertical;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: var(--vscode-editor-font-size, 13px);
+}
+
+.redis-string-editor .editor-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+/* Hash editor */
+.redis-hash-editor .hash-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.35));
+}
+
+.redis-hash-editor .hash-item .field {
+  width: 30%;
+  flex-shrink: 0;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: var(--vscode-editor-font-size, 13px);
+}
+
+.redis-hash-editor .hash-item .value {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: var(--vscode-editor-font-size, 13px);
+}
+
+.redis-hash-editor .add-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.redis-hash-editor .add-form input {
+  flex: 1;
+}
+
+/* List / Set / Sorted Set / Hash shared styles */
+.redis-list-editor .list-item,
+.redis-set-editor .set-item,
+.redis-zset-editor .zset-item,
+.redis-hash-editor .hash-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.35));
+}
+
+.redis-list-editor .list-item .index {
+  width: 60px;
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.redis-zset-editor .zset-item .score {
+  width: 80px;
+  flex-shrink: 0;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: var(--vscode-editor-font-size, 13px);
+  text-align: right;
+}
+
+.redis-list-editor .list-item .value,
+.redis-set-editor .set-item .value,
+.redis-zset-editor .zset-item .member {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: var(--vscode-editor-font-size, 13px);
+}
+
+.redis-list-editor .list-actions,
+.redis-set-editor .set-actions,
+.redis-zset-editor .zset-actions,
+.redis-hash-editor .hash-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 8px 0;
+}
+
+.redis-list-editor .add-form,
+.redis-set-editor .add-form,
+.redis-zset-editor .add-form,
+.redis-hash-editor .add-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.redis-list-editor .add-form input,
+.redis-set-editor .add-form input,
+.redis-zset-editor .add-form input,
+.redis-hash-editor .add-form input {
+  flex: 1;
+}
+
+/* Pagination */
+.redis-pagination {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border-top: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.35));
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground);
+}
+
+/* Empty state */
+.redis-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--vscode-descriptionForeground);
+  font-size: 14px;
+}
+
+/* Delete button inline */
+.btn-icon {
+  background: none;
+  border: none;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  padding: 2px 4px;
+  font-size: 14px;
+  opacity: 0.6;
+}
+
+.btn-icon:hover {
+  opacity: 1;
+  color: var(--vscode-errorForeground);
+}
+
+/* Small inline buttons (Save/Cancel in edit mode) */
+.btn-small {
+  padding: 2px 8px;
+  font-size: 12px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* Filter bar */
+.redis-filter-bar {
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.35));
+  flex-shrink: 0;
+}
+
+.redis-filter-bar input[type="text"] {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* Key group header */
+.redis-key-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.redis-key-group:hover {
+  background-color: var(--vscode-list-hoverBackground);
+}
+
+.group-chevron {
+  width: 10px;
+  flex-shrink: 0;
+  font-size: 10px;
+  text-align: center;
+}
+
+.group-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.group-count {
+  font-size: 11px;
+  font-weight: 400;
+  opacity: 0.6;
+}
+
+/* Indented key item */
+.redis-key-item.indented {
+  padding-left: 28px;
+}
+
+/* Command bar */
+.redis-command-bar {
+  display: flex;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.redis-command-bar textarea {
+  flex: 1;
+  resize: none;
+  min-height: 28px;
+  max-height: 28px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: var(--vscode-editor-font-size, 13px);
+  line-height: 1.4;
+  padding: 4px 8px;
+}
+
+.redis-command-bar .run-btn {
+  align-self: center;
+  white-space: nowrap;
+  padding: 4px 12px;
+}
+
+.redis-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Command output */
+.redis-command-output pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: var(--vscode-editor-font-size, 13px);
+}
+
+/* Dirty editing highlight */
+.editing-dirty {
+  outline: 2px solid var(--vscode-inputValidation-warningBorder, #cca700) !important;
+  background-color: rgba(204, 167, 0, 0.1) !important;
+}
+
+/* Batch save actions */
+.batch-actions {
+  display: flex;
+  gap: 8px;
+  padding: 8px;
+  border-top: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.35));
+}
+
+/* Dirty count indicator */
+.dirty-count {
+  color: var(--vscode-inputValidation-warningBorder, #cca700);
+  font-weight: 600;
+}
+
+/* Hash field count */
+.hash-field-count {
+  padding: 4px 8px;
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground);
+}
+
+/* Hash inline filter */
+.hash-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+}
+
+.hash-filter input {
+  flex: 1;
+}
+
+.hash-filter .filter-count {
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground);
+  white-space: nowrap;
+}
