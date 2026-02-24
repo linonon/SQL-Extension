@@ -1,48 +1,58 @@
 import type { RedisKeyInfo } from '../types/redis';
 
-export interface KeyGroup {
-  readonly prefix: string;
-  readonly displayName: string;
-  readonly keys: readonly RedisKeyInfo[];
+export interface KeyTreeNode {
+  readonly segment: string;
+  readonly fullPrefix: string;
+  readonly children: readonly KeyTreeNode[];
+  readonly leafKeys: readonly RedisKeyInfo[];
+  readonly totalCount: number;
+}
+
+export interface KeyTree {
+  readonly children: readonly KeyTreeNode[];
+  readonly leafKeys: readonly RedisKeyInfo[];
 }
 
 /**
- * 按第一个 `:` 前缀做一级分组.
- * >= 2 个同前缀 key 才成组, 否则顶层展示.
+ * 递归构建 key 分组树, 对标 ARDM 无限层级.
+ * prefix 为当前层级的完整前缀字符串 (含末尾 ":").
  */
-export function groupKeys(keys: readonly RedisKeyInfo[]): readonly KeyGroup[] {
-  const buckets = new Map<string, RedisKeyInfo[]>();
+export function buildKeyTree(keys: readonly RedisKeyInfo[], prefix: string = ''): KeyTree {
+  const childMap = new Map<string, RedisKeyInfo[]>();
+  const leafKeys: RedisKeyInfo[] = [];
 
   for (const k of keys) {
-    const colonIdx = k.key.indexOf(':');
-    const prefix = colonIdx === -1 ? '' : k.key.slice(0, colonIdx + 1);
-    const bucket = buckets.get(prefix);
-    if (bucket) {
-      bucket.push(k);
+    const remaining = k.key.slice(prefix.length);
+    const colonIdx = remaining.indexOf(':');
+    if (colonIdx === -1) {
+      leafKeys.push(k);
     } else {
-      buckets.set(prefix, [k]);
+      const segment = remaining.slice(0, colonIdx);
+      const childPrefix = prefix + segment + ':';
+      const arr = childMap.get(childPrefix) ?? [];
+      arr.push(k);
+      childMap.set(childPrefix, arr);
     }
   }
 
-  const groups: KeyGroup[] = [];
-  const topLevel: RedisKeyInfo[] = [];
+  const children: KeyTreeNode[] = [...childMap.entries()]
+    .map(([childPrefix, childKeys]) => {
+      const segment = childPrefix.slice(prefix.length, -1);
+      const sub = buildKeyTree(childKeys, childPrefix);
+      return {
+        segment,
+        fullPrefix: childPrefix,
+        children: sub.children,
+        leafKeys: sub.leafKeys,
+        totalCount: childKeys.length,
+      };
+    })
+    .sort((a, b) => a.segment.localeCompare(b.segment));
 
-  const sortedPrefixes = [...buckets.keys()].sort();
-  for (const prefix of sortedPrefixes) {
-    const bucket = buckets.get(prefix)!;
-    if (prefix === '' || bucket.length < 2) {
-      topLevel.push(...bucket);
-    } else {
-      groups.push({ prefix, displayName: prefix, keys: bucket });
-    }
-  }
-
-  const result: KeyGroup[] = [];
-  if (topLevel.length > 0) {
-    result.push({ prefix: '', displayName: '', keys: topLevel });
-  }
-  result.push(...groups);
-  return result;
+  return {
+    children,
+    leafKeys: leafKeys.sort((a, b) => a.key.localeCompare(b.key)),
+  };
 }
 
 /**

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { RedisKeyInfo } from '../../types/redis';
 import { ContextMenu, type ContextMenuItem } from '../common/ContextMenu';
-import { filterKeysFuzzy, groupKeys, type KeyGroup } from '../../utils/redis-keys';
+import { buildKeyTree, filterKeysFuzzy, type KeyTreeNode } from '../../utils/redis-keys';
 
 interface RedisKeyListProps {
   readonly keys: readonly RedisKeyInfo[];
@@ -32,15 +32,16 @@ interface KeyItemProps {
   readonly keyInfo: RedisKeyInfo;
   readonly selected: boolean;
   readonly displayName: string;
-  readonly indented: boolean;
+  readonly depth: number;
   readonly onSelect: (key: string) => void;
   readonly onContextMenu: (e: React.MouseEvent, key: string) => void;
 }
 
-function KeyItem({ keyInfo, selected, displayName, indented, onSelect, onContextMenu }: KeyItemProps) {
+function KeyItem({ keyInfo, selected, displayName, depth, onSelect, onContextMenu }: KeyItemProps) {
   return (
     <div
-      className={`redis-key-item${selected ? ' selected' : ''}${indented ? ' indented' : ''}`}
+      className={`redis-key-item${selected ? ' selected' : ''}`}
+      style={{ paddingLeft: depth * 12 + 12 }}
       onClick={() => onSelect(keyInfo.key)}
       onContextMenu={(e) => onContextMenu(e, keyInfo.key)}
     >
@@ -51,20 +52,56 @@ function KeyItem({ keyInfo, selected, displayName, indented, onSelect, onContext
   );
 }
 
-function GroupHeader({
-  group,
-  collapsed,
-  onToggle,
-}: {
-  readonly group: KeyGroup;
-  readonly collapsed: boolean;
-  readonly onToggle: () => void;
-}) {
+interface TreeNodeProps {
+  readonly node: KeyTreeNode;
+  readonly depth: number;
+  readonly collapsedGroups: ReadonlySet<string>;
+  readonly onToggle: (prefix: string) => void;
+  readonly selectedKey: string | null;
+  readonly onSelectKey: (key: string) => void;
+  readonly onContextMenu: (e: React.MouseEvent, key: string) => void;
+}
+
+function TreeNode({ node, depth, collapsedGroups, onToggle, selectedKey, onSelectKey, onContextMenu }: TreeNodeProps) {
+  const collapsed = collapsedGroups.has(node.fullPrefix);
   return (
-    <div className="redis-key-group" onClick={onToggle}>
-      <span className="group-chevron">{collapsed ? '\u25b6' : '\u25bc'}</span>
-      <span className="group-name">{group.displayName}</span>
-      <span className="group-count">{group.keys.length}</span>
+    <div>
+      <div
+        className="redis-key-group"
+        style={{ paddingLeft: depth * 12 + 12 }}
+        onClick={() => onToggle(node.fullPrefix)}
+      >
+        <span className="group-chevron">{collapsed ? '\u25b6' : '\u25bc'}</span>
+        <span className="group-name">{node.segment}</span>
+        <span className="group-count">{node.totalCount}</span>
+      </div>
+      {!collapsed && (
+        <>
+          {node.children.map((child) => (
+            <TreeNode
+              key={child.fullPrefix}
+              node={child}
+              depth={depth + 1}
+              collapsedGroups={collapsedGroups}
+              onToggle={onToggle}
+              selectedKey={selectedKey}
+              onSelectKey={onSelectKey}
+              onContextMenu={onContextMenu}
+            />
+          ))}
+          {node.leafKeys.map((k) => (
+            <KeyItem
+              key={k.key}
+              keyInfo={k}
+              selected={selectedKey === k.key}
+              displayName={k.key}
+              depth={depth + 1}
+              onSelect={onSelectKey}
+              onContextMenu={onContextMenu}
+            />
+          ))}
+        </>
+      )}
     </div>
   );
 }
@@ -93,7 +130,9 @@ export function RedisKeyList({
   }, [filterQuery]);
 
   const filtered = useMemo(() => filterKeysFuzzy(keys, filterQuery), [keys, filterQuery]);
-  const groups = useMemo(() => groupKeys(filtered), [filtered]);
+  const tree = useMemo(() => buildKeyTree(filtered), [filtered]);
+
+  const isFiltering = filterQuery.trim() !== '';
 
   const toggleGroup = useCallback((prefix: string) => {
     setCollapsedGroups((prev) => {
@@ -145,44 +184,46 @@ export function RedisKeyList({
         {noMatch && (
           <div className="redis-empty">No matching keys</div>
         )}
-        {groups.map((group) => {
-          if (group.prefix === '') {
-            // 顶层 key, 无分组
-            return group.keys.map((k) => (
+        {isFiltering
+          ? filtered.map((k) => (
               <KeyItem
                 key={k.key}
                 keyInfo={k}
                 selected={selectedKey === k.key}
                 displayName={k.key}
-                indented={false}
+                depth={0}
                 onSelect={onSelectKey}
                 onContextMenu={handleContextMenu}
               />
-            ));
-          }
-
-          const collapsed = collapsedGroups.has(group.prefix);
-          return (
-            <div key={group.prefix}>
-              <GroupHeader
-                group={group}
-                collapsed={collapsed}
-                onToggle={() => toggleGroup(group.prefix)}
-              />
-              {!collapsed && group.keys.map((k) => (
+            ))
+          : (
+            <>
+              {tree.children.map((node) => (
+                <TreeNode
+                  key={node.fullPrefix}
+                  node={node}
+                  depth={0}
+                  collapsedGroups={collapsedGroups}
+                  onToggle={toggleGroup}
+                  selectedKey={selectedKey}
+                  onSelectKey={onSelectKey}
+                  onContextMenu={handleContextMenu}
+                />
+              ))}
+              {tree.leafKeys.map((k) => (
                 <KeyItem
                   key={k.key}
                   keyInfo={k}
                   selected={selectedKey === k.key}
-                  displayName={k.key.slice(group.prefix.length)}
-                  indented={true}
+                  displayName={k.key}
+                  depth={0}
                   onSelect={onSelectKey}
                   onContextMenu={handleContextMenu}
                 />
               ))}
-            </div>
-          );
-        })}
+            </>
+          )
+        }
         {hasMore && (
           <div className="redis-load-more">
             <button className="secondary" onClick={onLoadMore}>

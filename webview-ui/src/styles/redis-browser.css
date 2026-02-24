@@ -405,10 +405,6 @@
   opacity: 0.6;
 }
 
-/* Indented key item */
-.redis-key-item.indented {
-  padding-left: 28px;
-}
 
 /* Command bar */
 .redis-command-bar {

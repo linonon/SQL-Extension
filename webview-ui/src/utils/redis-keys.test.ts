@@ -1,59 +1,87 @@
 import { describe, it, expect } from 'vitest';
-import { groupKeys, fuzzyMatch, filterKeysFuzzy } from './redis-keys';
+import { buildKeyTree, fuzzyMatch, filterKeysFuzzy } from './redis-keys';
 import type { RedisKeyInfo } from '../types/redis';
 
 const mkKey = (key: string, type = 'string' as const, ttl = -1): RedisKeyInfo => ({ key, type, ttl });
 
-describe('groupKeys', () => {
-  it('空数组返回空', () => {
-    expect(groupKeys([])).toEqual([]);
+describe('buildKeyTree', () => {
+  it('空数组返回空树', () => {
+    const tree = buildKeyTree([]);
+    expect(tree.children).toHaveLength(0);
+    expect(tree.leafKeys).toHaveLength(0);
   });
 
-  it('无前缀 key 归入顶层组', () => {
+  it('无冒号 key 归入顶层 leafKeys', () => {
     const keys = [mkKey('foo'), mkKey('bar')];
-    const groups = groupKeys(keys);
-    expect(groups).toHaveLength(1);
-    expect(groups[0].prefix).toBe('');
-    expect(groups[0].keys).toHaveLength(2);
+    const tree = buildKeyTree(keys);
+    expect(tree.children).toHaveLength(0);
+    expect(tree.leafKeys).toHaveLength(2);
+    expect(tree.leafKeys.map((k) => k.key)).toContain('foo');
+    expect(tree.leafKeys.map((k) => k.key)).toContain('bar');
   });
 
-  it('多个同前缀 key 成组', () => {
-    const keys = [mkKey('user:1'), mkKey('user:2'), mkKey('session:a'), mkKey('session:b')];
-    const groups = groupKeys(keys);
-    expect(groups).toHaveLength(2);
-    expect(groups[0].prefix).toBe('session:');
-    expect(groups[0].keys).toHaveLength(2);
-    expect(groups[1].prefix).toBe('user:');
-    expect(groups[1].keys).toHaveLength(2);
+  it('一级分组', () => {
+    const keys = [mkKey('user:1'), mkKey('user:2'), mkKey('session:a')];
+    const tree = buildKeyTree(keys);
+    expect(tree.children).toHaveLength(2);
+    const userNode = tree.children.find((c) => c.segment === 'user');
+    expect(userNode).toBeDefined();
+    expect(userNode!.totalCount).toBe(2);
+    expect(userNode!.leafKeys).toHaveLength(2);
+    const sessionNode = tree.children.find((c) => c.segment === 'session');
+    expect(sessionNode).toBeDefined();
+    expect(sessionNode!.totalCount).toBe(1);
   });
 
-  it('单 key 前缀不成组, 归入顶层', () => {
-    const keys = [mkKey('user:1'), mkKey('session:a'), mkKey('session:b')];
-    const groups = groupKeys(keys);
-    // user:1 是唯一的 user: 前缀, 归入顶层
-    const topLevel = groups.find((g) => g.prefix === '');
-    expect(topLevel).toBeDefined();
-    expect(topLevel!.keys.map((k) => k.key)).toContain('user:1');
-    // session: 有 2 个, 成组
-    const sessionGroup = groups.find((g) => g.prefix === 'session:');
-    expect(sessionGroup).toBeDefined();
-    expect(sessionGroup!.keys).toHaveLength(2);
+  it('单 key 前缀也成组 (无 >= 2 限制)', () => {
+    const keys = [mkKey('user:1'), mkKey('session:a')];
+    const tree = buildKeyTree(keys);
+    // 两个都应成组, 不再限制 >= 2
+    expect(tree.children).toHaveLength(2);
+    expect(tree.leafKeys).toHaveLength(0);
   });
 
-  it('混合: 有前缀和无前缀 key', () => {
-    const keys = [mkKey('foo'), mkKey('user:1'), mkKey('user:2')];
-    const groups = groupKeys(keys);
-    const topLevel = groups.find((g) => g.prefix === '');
-    expect(topLevel!.keys.map((k) => k.key)).toContain('foo');
-    const userGroup = groups.find((g) => g.prefix === 'user:');
-    expect(userGroup!.keys).toHaveLength(2);
+  it('多级嵌套: game:1001:round_id', () => {
+    const keys = [mkKey('game:1001:round_id'), mkKey('game:1001:score'), mkKey('game:1002:round_id')];
+    const tree = buildKeyTree(keys);
+    expect(tree.children).toHaveLength(1);
+    const gameNode = tree.children[0];
+    expect(gameNode.segment).toBe('game');
+    expect(gameNode.children).toHaveLength(2);
+    const node1001 = gameNode.children.find((c) => c.segment === '1001');
+    expect(node1001).toBeDefined();
+    expect(node1001!.leafKeys).toHaveLength(2);
+    expect(node1001!.children).toHaveLength(0);
   });
 
-  it('组按 prefix 字母序排列', () => {
-    const keys = [mkKey('z:1'), mkKey('z:2'), mkKey('a:1'), mkKey('a:2')];
-    const groups = groupKeys(keys);
-    expect(groups[0].prefix).toBe('a:');
-    expect(groups[1].prefix).toBe('z:');
+  it('混合: 有冒号和无冒号 key 共存', () => {
+    const keys = [mkKey('_kombu.binding'), mkKey('lucky:black:key'), mkKey('lucky:black_set')];
+    const tree = buildKeyTree(keys);
+    // _kombu.binding 无冒号, 顶层 leaf
+    expect(tree.leafKeys.map((k) => k.key)).toContain('_kombu.binding');
+    // lucky 成组
+    const luckyNode = tree.children.find((c) => c.segment === 'lucky');
+    expect(luckyNode).toBeDefined();
+    // lucky:black 子分组
+    const blackNode = luckyNode!.children.find((c) => c.segment === 'black');
+    expect(blackNode).toBeDefined();
+    // lucky:black_set 是 lucky 层的 leaf
+    expect(luckyNode!.leafKeys.map((k) => k.key)).toContain('lucky:black_set');
+  });
+
+  it('顶层子节点按字母序排列', () => {
+    const keys = [mkKey('z:1'), mkKey('a:1')];
+    const tree = buildKeyTree(keys);
+    expect(tree.children[0].segment).toBe('a');
+    expect(tree.children[1].segment).toBe('z');
+  });
+
+  it('totalCount 等于该前缀下所有 key 数量', () => {
+    const keys = [mkKey('a:b:1'), mkKey('a:b:2'), mkKey('a:c:1')];
+    const tree = buildKeyTree(keys);
+    const aNode = tree.children[0];
+    expect(aNode.segment).toBe('a');
+    expect(aNode.totalCount).toBe(3);
   });
 });
 
