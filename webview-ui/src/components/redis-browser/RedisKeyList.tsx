@@ -62,6 +62,15 @@ interface TreeNodeProps {
   readonly onContextMenu: (e: React.MouseEvent, key: string) => void;
 }
 
+function collectAllPrefixes(nodes: readonly KeyTreeNode[]): string[] {
+  const result: string[] = [];
+  for (const node of nodes) {
+    result.push(node.fullPrefix);
+    result.push(...collectAllPrefixes(node.children));
+  }
+  return result;
+}
+
 function TreeNode({ node, depth, collapsedGroups, onToggle, selectedKey, onSelectKey, onContextMenu }: TreeNodeProps) {
   const collapsed = collapsedGroups.has(node.fullPrefix);
   return (
@@ -132,7 +141,8 @@ export function RedisKeyList({
   const filtered = useMemo(() => filterKeysFuzzy(keys, filterQuery), [keys, filterQuery]);
   const tree = useMemo(() => buildKeyTree(filtered), [filtered]);
 
-  const isFiltering = filterQuery.trim() !== '';
+  const allPrefixes = useMemo(() => collectAllPrefixes(tree.children), [tree]);
+  const allCollapsed = allPrefixes.length > 0 && allPrefixes.every((p) => collapsedGroups.has(p));
 
   const toggleGroup = useCallback((prefix: string) => {
     setCollapsedGroups((prev) => {
@@ -178,52 +188,64 @@ export function RedisKeyList({
   return (
     <>
       <div className="redis-key-list">
+        {tree.children.length > 0 && (
+          <div className="key-list-toolbar">
+            <button
+              className="icon-btn"
+              title={allCollapsed ? 'Expand All' : 'Collapse All'}
+              onClick={() =>
+                allCollapsed
+                  ? setCollapsedGroups(new Set())
+                  : setCollapsedGroups(new Set(allPrefixes))
+              }
+            >
+              {allCollapsed ? (
+                // Expand All: 两个向外展开的 chevron
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M4 7l4-4 4 4"/>
+                  <path d="M4 9l4 4 4-4"/>
+                </svg>
+              ) : (
+                // Collapse All: 两个向内收拢的 chevron
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M4 4l4 4 4-4"/>
+                  <path d="M4 12l4-4 4 4"/>
+                </svg>
+              )}
+            </button>
+          </div>
+        )}
         {isEmpty && (
           <div className="redis-empty">No keys found</div>
         )}
         {noMatch && (
           <div className="redis-empty">No matching keys</div>
         )}
-        {isFiltering
-          ? filtered.map((k) => (
-              <KeyItem
-                key={k.key}
-                keyInfo={k}
-                selected={selectedKey === k.key}
-                displayName={k.key}
-                depth={0}
-                onSelect={onSelectKey}
-                onContextMenu={handleContextMenu}
-              />
-            ))
-          : (
-            <>
-              {tree.children.map((node) => (
-                <TreeNode
-                  key={node.fullPrefix}
-                  node={node}
-                  depth={0}
-                  collapsedGroups={collapsedGroups}
-                  onToggle={toggleGroup}
-                  selectedKey={selectedKey}
-                  onSelectKey={onSelectKey}
-                  onContextMenu={handleContextMenu}
-                />
-              ))}
-              {tree.leafKeys.map((k) => (
-                <KeyItem
-                  key={k.key}
-                  keyInfo={k}
-                  selected={selectedKey === k.key}
-                  displayName={k.key}
-                  depth={0}
-                  onSelect={onSelectKey}
-                  onContextMenu={handleContextMenu}
-                />
-              ))}
-            </>
-          )
-        }
+        <>
+          {tree.children.map((node) => (
+            <TreeNode
+              key={node.fullPrefix}
+              node={node}
+              depth={0}
+              collapsedGroups={collapsedGroups}
+              onToggle={toggleGroup}
+              selectedKey={selectedKey}
+              onSelectKey={onSelectKey}
+              onContextMenu={handleContextMenu}
+            />
+          ))}
+          {tree.leafKeys.map((k) => (
+            <KeyItem
+              key={k.key}
+              keyInfo={k}
+              selected={selectedKey === k.key}
+              displayName={k.key}
+              depth={0}
+              onSelect={onSelectKey}
+              onContextMenu={handleContextMenu}
+            />
+          ))}
+        </>
         {hasMore && (
           <div className="redis-load-more">
             <button className="secondary" onClick={onLoadMore}>

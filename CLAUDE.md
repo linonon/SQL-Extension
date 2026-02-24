@@ -1,5 +1,12 @@
 # SQL Extension
 
+## Commit Rules
+
+- **每次任务完成后必须 git commit**: 无论对错, 每个任务完成都要提交一次, 以便后续回顾和总结.
+- **遵循 Angular Team Commit Specification**: `<type>(<scope>): <subject>`, type 取值: `feat`, `fix`, `refactor`, `style`, `docs`, `test`, `chore`, `perf`. scope 为受影响的模块 (如 `redis`, `mongo`, `ssh`). subject 用中文或英文均可, 不加句号.
+
+下面是一些总结和规则, 可以在后续开发中参考.
+
 ## SQL Generation Rules
 
 - **不要在生成的 SQL 中 qualify database name**: 查询已经在目标 database context 下执行, `buildSelectSql` 等函数不应传 `database` 参数. 生成 `SELECT * FROM table` 而非 `SELECT * FROM database.table`.

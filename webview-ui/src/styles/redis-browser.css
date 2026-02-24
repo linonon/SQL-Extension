@@ -90,6 +90,34 @@
   background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.2));
 }
 
+/* Key list toolbar (collapse/expand all) */
+.key-list-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 2px 4px;
+  border-bottom: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.2));
+}
+
+.key-list-toolbar .icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--vscode-foreground);
+  cursor: pointer;
+  border-radius: 4px;
+  opacity: 0.7;
+}
+
+.key-list-toolbar .icon-btn:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.2));
+  opacity: 1;
+}
+
 /* Key list */
 .redis-key-list {
   flex: 1;
