@@ -52,6 +52,8 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
   const [collectionsLoading, setCollectionsLoading] = useState(false);
   const [queryError, setQueryError] = useState<string | null>(null);
   const [panelWidth, setPanelWidth] = useState(220);
+  const [pendingSwitchSignal, setPendingSwitchSignal] = useState(0);
+  const pendingSwitchTarget = useRef<{ database: string; name: string } | null>(null);
 
   const postMessage = usePostMessage();
   const resizing = useRef(false);
@@ -174,12 +176,25 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
   }, [selected, postMessage]);
 
   const handleSelectCollection = useCallback((database: string, name: string) => {
-    setSelected({ database, name });
+    pendingSwitchTarget.current = { database, name };
+    setPendingSwitchSignal(s => s + 1);
+  }, []);
+
+  const onSwitchConfirmed = useCallback(() => {
+    const target = pendingSwitchTarget.current;
+    if (!target) { return; }
+    pendingSwitchTarget.current = null;
+    setSelected({ database: target.database, name: target.name });
     setFilter('');
     setSort('');
     setProjection('');
     setCustomLimit('');
     setCustomSkip('');
+    setPage(0);
+  }, []);
+
+  const onSwitchCancelled = useCallback(() => {
+    pendingSwitchTarget.current = null;
   }, []);
 
   const handleApply = useCallback(() => {
@@ -346,6 +361,9 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
               queryError={queryError}
               onExport={handleExport}
               onImport={handleImport}
+              pendingSwitchSignal={pendingSwitchSignal}
+              onSwitchConfirmed={onSwitchConfirmed}
+              onSwitchCancelled={onSwitchCancelled}
             />
           ) : (
             <div className="mongo-empty">Select a collection to browse documents</div>

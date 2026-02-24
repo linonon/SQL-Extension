@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useMongoAutocomplete } from '../../hooks/useMongoAutocomplete';
 import { convertShellToJson, stripShellTypes, jsonToShell } from '../../utils/mongo-shell-to-json';
 import { AutocompletePopup } from '../sql-editor/AutocompletePopup';
@@ -12,6 +12,8 @@ interface MongoDocumentDetailProps {
   readonly onClose: () => void;
   readonly onSave: (id: string | null, doc: Record<string, unknown>) => void;
   readonly onDelete: (id: string) => void;
+  readonly onDirtyChange?: (dirty: boolean) => void;
+  readonly saveSignal?: number;
 }
 
 function stripId(doc: Record<string, unknown>): Record<string, unknown> {
@@ -26,7 +28,7 @@ export function extractRawId(idValue: string): string {
   return m ? m[1] : idValue;
 }
 
-export function MongoDocumentDetail({ document, mode, fieldNames, onClose, onSave, onDelete }: MongoDocumentDetailProps) {
+export function MongoDocumentDetail({ document, mode, fieldNames, onClose, onSave, onDelete, onDirtyChange, saveSignal }: MongoDocumentDetailProps) {
   const displayId = document ? String(document._id ?? '') : '';
   // docId 是给查询用的原始 hex, autoConvertIds 才能识别
   const docId = extractRawId(displayId);
@@ -55,6 +57,11 @@ export function MongoDocumentDetail({ document, mode, fieldNames, onClose, onSav
       setError(e instanceof Error ? e.message : 'Invalid JSON');
     }
   }, [text, mode, docId, onSave]);
+
+  useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { if (saveSignal) { handleSave(); } }, [saveSignal]);
 
   const handleDelete = useCallback(() => {
     onDelete(docId);

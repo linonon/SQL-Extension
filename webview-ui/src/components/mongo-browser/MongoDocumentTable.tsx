@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ColumnInfo } from '../../types/database';
 import { extractFieldPaths } from './mongo-autocomplete';
 import { MongoDocumentDetail } from './MongoDocumentDetail';
@@ -35,6 +35,9 @@ interface MongoDocumentTableProps {
   readonly queryError: string | null;
   readonly onExport?: () => void;
   readonly onImport?: () => void;
+  readonly pendingSwitchSignal?: number;
+  readonly onSwitchConfirmed?: () => void;
+  readonly onSwitchCancelled?: () => void;
 }
 
 function truncate(value: unknown, max: number): string {
@@ -69,8 +72,15 @@ export function MongoDocumentTable({
   queryError,
   onExport,
   onImport,
+  pendingSwitchSignal,
+  onSwitchConfirmed,
+  onSwitchCancelled,
 }: MongoDocumentTableProps) {
   const [detail, setDetail] = useState<DetailState>(null);
+  const [isDirty, setIsDirty] = useState(false);
+  const [showSwitchDialog, setShowSwitchDialog] = useState(false);
+  const [saveTrigger, setSaveTrigger] = useState(0);
+  const [switchAfterSave, setSwitchAfterSave] = useState(false);
   const fieldNames = useMemo(() => extractFieldPaths(rows), [rows]);
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
@@ -91,6 +101,21 @@ export function MongoDocumentTable({
     setDetail(null);
   }, [onDeleteDocument]);
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!pendingSwitchSignal) { return; }
+    if (!detail) { onSwitchConfirmed?.(); return; }
+    if (!isDirty) { setDetail(null); onSwitchConfirmed?.(); return; }
+    setShowSwitchDialog(true);
+  }, [pendingSwitchSignal]);
+
+  useEffect(() => {
+    if (switchAfterSave && !detail) {
+      setSwitchAfterSave(false);
+      onSwitchConfirmed?.();
+    }
+  }, [detail, switchAfterSave, onSwitchConfirmed]);
+
   const handleCopyQuery = useCallback(() => {
     const f = filter.trim() || '{}';
     const p = projection.trim();
@@ -110,14 +135,41 @@ export function MongoDocumentTable({
 
   if (detail) {
     return (
-      <MongoDocumentDetail
-        document={detail.mode === 'edit' ? detail.doc : null}
-        mode={detail.mode}
-        fieldNames={fieldNames}
-        onClose={() => setDetail(null)}
-        onSave={handleSave}
-        onDelete={handleDelete}
-      />
+      <div style={{ position: 'relative', height: '100%' }}>
+        <MongoDocumentDetail
+          document={detail.mode === 'edit' ? detail.doc : null}
+          mode={detail.mode}
+          fieldNames={fieldNames}
+          onClose={() => setDetail(null)}
+          onSave={handleSave}
+          onDelete={handleDelete}
+          onDirtyChange={setIsDirty}
+          saveSignal={saveTrigger}
+        />
+        {showSwitchDialog && (
+          <div className="mongo-nav-dialog-overlay">
+            <div className="mongo-nav-dialog">
+              <p className="mongo-nav-dialog-msg">当前文档有未保存的修改.</p>
+              <div className="mongo-nav-dialog-actions">
+                <button className="btn-small btn-primary" onClick={() => {
+                  setSwitchAfterSave(true);
+                  setSaveTrigger(t => t + 1);
+                  setShowSwitchDialog(false);
+                }}>Save</button>
+                <button className="btn-small" onClick={() => {
+                  setDetail(null);
+                  setShowSwitchDialog(false);
+                  onSwitchConfirmed?.();
+                }}>Discard</button>
+                <button className="btn-small" onClick={() => {
+                  setShowSwitchDialog(false);
+                  onSwitchCancelled?.();
+                }}>Cancel</button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
     );
   }
 
