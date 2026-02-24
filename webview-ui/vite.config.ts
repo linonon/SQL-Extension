@@ -13,5 +13,6 @@ export default defineConfig({
       },
     },
     sourcemap: false,
+    chunkSizeWarningLimit: 1024,
   },
 });

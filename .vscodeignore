@@ -1,4 +1,6 @@
 .vscode/**
+.claude/**
+.serena/**
 src/**
 webview-ui/src/**
 webview-ui/node_modules/**
@@ -10,3 +12,8 @@ node_modules/**
 .gitignore
 tsconfig.json
 esbuild.js
+Makefile
+docker-compose.yml
+lock.txt
+**/*.md
+!README.md
