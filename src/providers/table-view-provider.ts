@@ -553,14 +553,14 @@ export class TableViewProvider implements vscode.Disposable {
               const post = (msg: unknown) => panel.webview.postMessage(msg);
               try {
                 const uri = await vscode.window.showSaveDialog({
-                  filters: { 'JSONL Files': ['jsonl'], 'JSON Files': ['json'] },
-                  defaultUri: vscode.Uri.file(`${exportMsg.collection}.jsonl`),
+                  filters: { 'JSON Files': ['json'], 'JSONL Files': ['jsonl'] },
+                  defaultUri: vscode.Uri.file(`${exportMsg.collection}.json`),
                 });
                 if (!uri) { return; }
                 const mongoDriver = this.connectionManager.getDriver(connectionId!) as unknown as MongoDriver;
                 const pipeline = buildExportPipeline(exportMsg.filter, exportMsg.sort, exportMsg.projection);
-                const { jsonl, count } = await mongoDriver.exportDocuments(exportMsg.database, exportMsg.collection, pipeline);
-                await vscode.workspace.fs.writeFile(uri, Buffer.from(jsonl, 'utf-8'));
+                const { json, count } = await mongoDriver.exportDocuments(exportMsg.database, exportMsg.collection, pipeline);
+                await vscode.workspace.fs.writeFile(uri, Buffer.from(json, 'utf-8'));
                 vscode.window.showInformationMessage(`Exported ${count} document(s) to ${uri.fsPath}`);
                 post({ type: 'mongoExportResult', success: true, count });
               } catch (e) {

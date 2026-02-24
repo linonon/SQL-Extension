@@ -145,11 +145,11 @@ export class MongoDriver implements IDatabaseDriver {
     database: string,
     collection: string,
     pipeline: unknown[]
-  ): Promise<{ jsonl: string; count: number }> {
+  ): Promise<{ json: string; count: number }> {
     this.assertConnected();
     const docs = await this.client!.db(database).collection(collection).aggregate(pipeline).toArray();
-    const jsonl = docs.map((doc) => EJSON.stringify(doc)).join('\n');
-    return { jsonl, count: docs.length };
+    const json = EJSON.stringify(docs, undefined, 2);
+    return { json, count: docs.length };
   }
 
   async importDocuments(
