@@ -200,16 +200,16 @@ export function RedisKeyList({
               }
             >
               {allCollapsed ? (
-                // Expand All: 两个向外展开的 chevron
+                // Expand All: 方框 + 加号
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M4 7l4-4 4 4"/>
-                  <path d="M4 9l4 4 4-4"/>
+                  <rect x="2" y="2" width="12" height="12" rx="1.5"/>
+                  <path d="M8 5v6M5 8h6"/>
                 </svg>
               ) : (
-                // Collapse All: 两个向内收拢的 chevron
+                // Collapse All: 方框 + 减号
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M4 4l4 4 4-4"/>
-                  <path d="M4 12l4-4 4 4"/>
+                  <rect x="2" y="2" width="12" height="12" rx="1.5"/>
+                  <path d="M5 8h6"/>
                 </svg>
               )}
             </button>
