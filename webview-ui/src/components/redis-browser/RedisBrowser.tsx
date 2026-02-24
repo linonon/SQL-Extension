@@ -257,6 +257,14 @@ export function RedisBrowser({ database: initialDb }: RedisBrowserProps) {
         }
         break;
       }
+      case 'redisAddKeyResult': {
+        const keyName = message.key;
+        setKeys((prev) => {
+          if (prev.some((k) => k.key === keyName)) { return prev; }
+          return [...prev, { key: keyName, type: 'string' as const, ttl: -1 }];
+        });
+        break;
+      }
       default:
         break;
     }
@@ -351,15 +359,7 @@ export function RedisBrowser({ database: initialDb }: RedisBrowserProps) {
   }, [db, postMessage]);
 
   const handleAddKey = useCallback(() => {
-    const key = prompt('Enter key name:');
-    if (!key?.trim()) { return; }
-    const trimmedKey = key.trim();
-    postMessage({ type: 'redisSetString', key: trimmedKey, value: '', database: db });
-    // optimistic: 立即添加到本地 key 列表
-    setKeys((prev) => {
-      if (prev.some((k) => k.key === trimmedKey)) { return prev; }
-      return [...prev, { key: trimmedKey, type: 'string' as const, ttl: -1 }];
-    });
+    postMessage({ type: 'redisAddKeyPrompt', database: db });
   }, [db, postMessage]);
 
   const handleSaveString = useCallback((val: string) => {

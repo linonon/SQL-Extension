@@ -54,6 +54,7 @@ export type ExtensionMessage =
   | { type: 'redisCommandResult'; output: string }
   | { type: 'redisHashScanResult'; key: string; cursor: string; fields: Record<string, string>; done: boolean }
   | { type: 'redisImportResult'; success: boolean; importedCount?: number; error?: string }
+  | { type: 'redisAddKeyResult'; key: string }
   | { type: 'kafkaTopicList'; topics: readonly KafkaTopicInfo[] }
   | { type: 'kafkaPartitionList'; topic: string; partitions: readonly KafkaPartitionInfo[] }
   | { type: 'kafkaMessageList'; topic: string; partition: number; messages: readonly KafkaMessage[] }
@@ -118,6 +119,7 @@ export type WebviewMessage =
   | { type: 'redisListDatabases' }
   | { type: 'redisExportKeys'; keys: readonly string[]; database: number }
   | { type: 'redisImport'; database: number }
+  | { type: 'redisAddKeyPrompt'; database: number }
   | { type: 'kafkaListTopics' }
   | { type: 'kafkaGetPartitions'; topic: string }
   | { type: 'kafkaFetchMessages'; topic: string; partition: number; offset: string; limit: number }

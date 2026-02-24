@@ -665,6 +665,19 @@ export class TableViewProvider implements vscode.Disposable {
               return;
             }
 
+            if (message.type === 'redisAddKeyPrompt') {
+              const addMsg = message as { database: number };
+              const key = await vscode.window.showInputBox({
+                prompt: 'Enter new key name',
+                placeHolder: 'e.g. user:1234',
+                validateInput: (v) => v.trim() ? undefined : 'Key name is required',
+              });
+              if (!key?.trim()) { return; }
+              await handleRedisMessage({ type: 'redisSetString', key: key.trim(), value: '', database: addMsg.database }, redisDriver, post);
+              post({ type: 'redisAddKeyResult', key: key.trim() });
+              return;
+            }
+
             if (message.type === 'redisSetTTLPrompt') {
               const ttlMsg = message as { key: string; database: number };
               const input = await vscode.window.showInputBox({
