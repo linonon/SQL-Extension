@@ -31,6 +31,11 @@ export class MongoDriver implements IDatabaseDriver {
     return this.client !== null;
   }
 
+  async ping(): Promise<void> {
+    this.assertConnected();
+    await this.client!.db('admin').command({ ping: 1 });
+  }
+
   async listDatabases(): Promise<string[]> {
     this.assertConnected();
     try {

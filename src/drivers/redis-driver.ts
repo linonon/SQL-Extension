@@ -43,6 +43,13 @@ export class RedisDriver implements IRedisDriver {
     return this.client !== null && this.client.status === 'ready';
   }
 
+  async ping(): Promise<void> {
+    if (!this.client || this.client.status !== 'ready') {
+      throw new Error('Redis client is not connected');
+    }
+    await this.client.ping();
+  }
+
   async selectDatabase(db: number): Promise<void> {
     this.assertConnected();
     await this.client!.select(db);

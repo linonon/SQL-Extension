@@ -47,6 +47,11 @@ export class KafkaDriver implements IKafkaDriver {
     return this.connected;
   }
 
+  async ping(): Promise<void> {
+    if (!this.admin) { throw new Error('Kafka admin is not connected'); }
+    await this.admin.listTopics();
+  }
+
   async listTopics(): Promise<readonly KafkaTopicInfo[]> {
     if (!this.admin) { throw new Error('Not connected'); }
 

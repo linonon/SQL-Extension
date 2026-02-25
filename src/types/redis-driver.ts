@@ -7,6 +7,7 @@ export interface IRedisDriver {
   connect(config: ConnectionConfig & { readonly password: string }): Promise<void>;
   disconnect(): Promise<void>;
   isConnected(): boolean;
+  ping(): Promise<void>;
 
   // database 操作
   selectDatabase(db: number): Promise<void>;

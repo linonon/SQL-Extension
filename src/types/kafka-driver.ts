@@ -7,6 +7,7 @@ export interface IKafkaDriver {
   connect(config: ConnectionConfig & { readonly password: string }): Promise<void>;
   disconnect(): Promise<void>;
   isConnected(): boolean;
+  ping(): Promise<void>;
 
   listTopics(): Promise<readonly KafkaTopicInfo[]>;
   getTopicPartitions(topic: string): Promise<readonly KafkaPartitionInfo[]>;

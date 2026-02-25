@@ -37,6 +37,11 @@ export class PgDriver implements IDatabaseDriver {
     return this.pool !== null;
   }
 
+  async ping(): Promise<void> {
+    this.assertConnected();
+    await this.pool!.query('SELECT 1');
+  }
+
   async listDatabases(): Promise<string[]> {
     const result = await this.query(
       'SELECT datname FROM pg_database WHERE datistemplate = false ORDER BY datname'

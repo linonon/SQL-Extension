@@ -15,17 +15,40 @@ import { createTunnel, type TunnelHandle } from './ssh-tunnel.js';
 
 const CONNECTIONS_KEY = 'sqlext.connections';
 
+const HEARTBEAT_INTERVAL_MS = 60_000;
+
 export class ConnectionManager implements vscode.Disposable {
   private readonly drivers = new Map<string, IDatabaseDriver | IRedisDriver | IKafkaDriver | IRabbitMQDriver>();
   private readonly tunnels = new Map<string, TunnelHandle>();
   private readonly states = new Map<string, ConnectionState>();
   private readonly _onDidChange = new vscode.EventEmitter<void>();
   readonly onDidChange = this._onDidChange.event;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     private readonly globalState: vscode.Memento,
     private readonly credentialStore: CredentialStore
-  ) {}
+  ) {
+    this.heartbeatTimer = setInterval(() => { void this.checkConnections(); }, HEARTBEAT_INTERVAL_MS);
+  }
+
+  private async checkConnections(): Promise<void> {
+    let changed = false;
+    for (const [id, driver] of this.drivers.entries()) {
+      try {
+        await driver.ping();
+      } catch {
+        // ping 失败说明连接已断开, 清理状态
+        this.drivers.delete(id);
+        this.closeTunnel(id);
+        this.states.set(id, 'disconnected');
+        changed = true;
+      }
+    }
+    if (changed) {
+      this._onDidChange.fire();
+    }
+  }
 
   getConnections(): ConnectionConfig[] {
     return this.globalState.get<ConnectionConfig[]>(CONNECTIONS_KEY, []);
@@ -229,6 +252,10 @@ export class ConnectionManager implements vscode.Disposable {
   }
 
   dispose(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
     for (const [id, driver] of this.drivers.entries()) {
       try {
         driver.disconnect();

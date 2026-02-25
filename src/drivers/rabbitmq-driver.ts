@@ -72,6 +72,11 @@ export class RabbitMQDriver implements IRabbitMQDriver {
     return this.connected;
   }
 
+  async ping(): Promise<void> {
+    if (!this.connected) { throw new Error('RabbitMQ is not connected'); }
+    await this.request({ method: 'GET', path: '/api/overview' });
+  }
+
   async listQueues(): Promise<readonly RabbitMQQueueInfo[]> {
     if (!this.connected) { throw new Error('Not connected'); }
 

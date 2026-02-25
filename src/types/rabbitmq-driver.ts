@@ -6,6 +6,7 @@ export interface IRabbitMQDriver {
   connect(config: ConnectionConfig & { readonly password: string }): Promise<void>;
   disconnect(): Promise<void>;
   isConnected(): boolean;
+  ping(): Promise<void>;
   listQueues(): Promise<readonly RabbitMQQueueInfo[]>;
   peekMessages(queue: string, count: number): Promise<readonly RabbitMQMessage[]>;
 }

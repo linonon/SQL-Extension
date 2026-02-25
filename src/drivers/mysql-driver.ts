@@ -17,6 +17,8 @@ export class MySQLDriver implements IDatabaseDriver {
       connectionLimit: 5,
       idleTimeout: 30000,
       connectTimeout: 5000,
+      enableKeepAlive: true,
+      keepAliveInitialDelay: 30000,
     });
     this.pool.on('error', (err: Error) => {
       console.error('[MySQLDriver] Idle client error:', err.message);
@@ -41,6 +43,11 @@ export class MySQLDriver implements IDatabaseDriver {
 
   isConnected(): boolean {
     return this.pool !== null;
+  }
+
+  async ping(): Promise<void> {
+    this.assertConnected();
+    await this.pool!.query('SELECT 1');
   }
 
   async listDatabases(): Promise<string[]> {

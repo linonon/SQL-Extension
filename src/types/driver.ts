@@ -7,6 +7,7 @@ export interface IDatabaseDriver {
   connect(config: ConnectionConfig & { readonly password: string }): Promise<void>;
   disconnect(): Promise<void>;
   isConnected(): boolean;
+  ping(): Promise<void>;
 
   listDatabases(): Promise<string[]>;
   listTables(database: string): Promise<TableInfo[]>;
