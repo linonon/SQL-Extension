@@ -82,6 +82,26 @@ export class ConnectionManager implements vscode.Disposable {
     this._onDidChange.fire();
   }
 
+  async reorderConnection(id: string, beforeId: string | null): Promise<void> {
+    const connections = this.getConnections();
+    const idx = connections.findIndex((c) => c.id === id);
+    if (idx === -1) { return; }
+
+    const moved = connections[idx];
+    const rest = [...connections.slice(0, idx), ...connections.slice(idx + 1)];
+
+    if (beforeId === null) {
+      rest.push(moved);
+    } else {
+      const targetIdx = rest.findIndex((c) => c.id === beforeId);
+      if (targetIdx === -1) { return; }
+      rest.splice(targetIdx, 0, moved);
+    }
+
+    await this.globalState.update(CONNECTIONS_KEY, rest);
+    this._onDidChange.fire();
+  }
+
   async removeConnection(id: string): Promise<void> {
     await this.disconnect(id);
     const connections = this.getConnections().filter((c) => c.id !== id);
