@@ -34,7 +34,7 @@ export class MySQLDriver implements IDatabaseDriver {
 
   async disconnect(): Promise<void> {
     if (this.pool) {
-      await this.pool.end();
+      try { await this.pool.end(); } catch { /* 清理时忽略: server 可能已关闭 idle 连接 */ }
       this.pool = null;
     }
   }
