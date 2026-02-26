@@ -43,7 +43,7 @@ describe('tree-items', () => {
         'connected'
       );
 
-      expect(item.contextValue).toBe('connection-connected');
+      expect(item.contextValue).toBe('connection-connected-postgresql');
       expect(item.collapsibleState).toBe(vscode.TreeItemCollapsibleState.Expanded);
       expect(item.iconPath).toEqual({
         light: 'postgresql-connected-light.svg',
