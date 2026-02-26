@@ -10,6 +10,7 @@ import { ConnectionTreeItem, DatabaseTreeItem, KafkaTopicTreeItem, MongoDatabase
 import type { MongoDriver } from './drivers/mongo-driver.js';
 import { DumpService } from './services/dump-service.js';
 import { exportRedisKeys, importRedisKeys } from './providers/redis-message-handler.js';
+import { IpcServer } from './services/ipc-server.js';
 
 function deployMcpServer(extensionPath: string): void {
   try {
@@ -36,6 +37,10 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   const dumpService = new DumpService();
+
+  // 启动 IPC server, 让 MCP server 能通过 Unix socket 代理请求
+  const ipcServer = new IpcServer(connectionManager);
+  ipcServer.start();
 
   // 注册 TreeView
   const treeView = vscode.window.createTreeView('databaseConnections', {
@@ -415,9 +420,9 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   });
 
-  context.subscriptions.push(treeView, connectionManager, viewProvider);
+  context.subscriptions.push(treeView, connectionManager, viewProvider, { dispose: () => ipcServer.dispose() });
 }
 
 export function deactivate(): void {
-  // ConnectionManager.dispose() 已通过 subscriptions 自动调用
+  // ConnectionManager.dispose() + IpcServer.dispose() 通过 subscriptions 自动调用
 }
