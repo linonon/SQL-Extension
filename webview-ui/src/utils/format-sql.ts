@@ -1,13 +1,14 @@
+import { format } from 'sql-formatter';
+
 const dialectMap: Record<string, 'mysql' | 'postgresql'> = {
   mysql: 'mysql',
   postgresql: 'postgresql',
 };
 
-export async function formatSql(sql: string, driverType?: string): Promise<string> {
+export function formatSql(sql: string, driverType?: string): string {
   if (driverType === 'mongodb') {
     return formatMongoQuery(sql);
   }
-  const { format } = await import('sql-formatter');
   return format(sql, {
     language: dialectMap[driverType ?? ''] ?? 'sql',
     tabWidth: 2,

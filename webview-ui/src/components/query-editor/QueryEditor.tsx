@@ -126,7 +126,7 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
   const warnings = useMemo(() => diagnoseSql(sqlText), [sqlText]);
 
   const handleFormat = useCallback(() => {
-    void formatSql(sqlText, driverType).then(setSqlText);
+    setSqlText(formatSql(sqlText, driverType));
   }, [sqlText, driverType]);
 
   const refreshSchema = useCallback(() => {
