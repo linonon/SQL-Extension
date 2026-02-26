@@ -4,6 +4,8 @@ import { ConnectionPool } from './connection-pool.js';
 import { IpcClient } from './ipc-client.js';
 import { registerConnectTools } from './tools/connect.js';
 import { registerQueryTools } from './tools/query.js';
+import { registerRedisTools } from './tools/redis.js';
+import { registerMongoTools } from './tools/mongo.js';
 
 const pool = new ConnectionPool();
 const ipc = new IpcClient();
@@ -15,6 +17,8 @@ const server = new McpServer({
 
 registerConnectTools(server, pool, ipc);
 registerQueryTools(server, pool, ipc);
+registerRedisTools(server, pool, ipc);
+registerMongoTools(server, pool, ipc);
 
 function cleanup(): void {
   pool.dispose();

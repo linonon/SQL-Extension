@@ -108,6 +108,24 @@ export class IpcServer {
         return await driver.execute(sql);
       }
 
+      case 'redisCommand': {
+        const id = params.connectionId as string;
+        const db = (params.db as number) ?? 0;
+        const args = params.args as string[];
+        const driver = this.connectionManager.getRedisDriver(id);
+        await driver.selectDatabase(db);
+        return await driver.executeCommand(args);
+      }
+
+      case 'mongoQuery': {
+        const id = params.connectionId as string;
+        const database = params.database as string;
+        const query = params.query as string;
+        const driver = this.connectionManager.getDriver(id);
+        const { promise } = driver.executeCancellable(query, undefined, database);
+        return await promise;
+      }
+
       default:
         throw new Error(`Unknown IPC method: ${method}`);
     }
