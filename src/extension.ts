@@ -1,4 +1,7 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 import { ConnectionManager } from './services/connection-manager.js';
 import { CredentialStore } from './services/credential-store.js';
 import { ConnectionTreeProvider } from './providers/connection-tree-provider.js';
@@ -8,7 +11,20 @@ import type { MongoDriver } from './drivers/mongo-driver.js';
 import { DumpService } from './services/dump-service.js';
 import { exportRedisKeys, importRedisKeys } from './providers/redis-message-handler.js';
 
+function deployMcpServer(extensionPath: string): void {
+  try {
+    const src = path.join(extensionPath, 'dist', 'mcp-server.js');
+    if (!fs.existsSync(src)) { return; }
+    const dir = path.join(os.homedir(), '.sql-extension');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.copyFileSync(src, path.join(dir, 'mcp-server.js'));
+  } catch {
+    // 静默失败, 不影响扩展正常使用
+  }
+}
+
 export function activate(context: vscode.ExtensionContext): void {
+  deployMcpServer(context.extensionPath);
   setResourcesPath(context.extensionPath);
   const credentialStore = new CredentialStore(context.secrets);
   const connectionManager = new ConnectionManager(context.globalState, credentialStore);

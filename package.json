@@ -4,14 +4,19 @@
   "description": "MySQL, PostgreSQL and Redis database management for VSCode",
   "version": "0.1.0",
   "publisher": "internal",
-  "repository": { "type": "git", "url": "https://github.com/internal/sql-extension" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/internal/sql-extension"
+  },
   "engines": {
     "vscode": "^1.85.0"
   },
   "categories": [
     "Other"
   ],
-  "activationEvents": ["onView:databaseConnections"],
+  "activationEvents": [
+    "onView:databaseConnections"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "viewsContainers": {
@@ -315,6 +320,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
     "ioredis": "^5.9.3",
     "kafkajs": "^2.2.4",
     "mongodb": "^7.1.0",
