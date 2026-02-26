@@ -11,7 +11,7 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": ["onStartupFinished"],
+  "activationEvents": ["onView:databaseConnections"],
   "main": "./dist/extension.js",
   "contributes": {
     "viewsContainers": {

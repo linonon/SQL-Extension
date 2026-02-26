@@ -2,12 +2,8 @@ import * as vscode from 'vscode';
 import type { ConnectionManager } from '../services/connection-manager.js';
 import { QueryService } from '../services/query-service.js';
 import { CredentialStore } from '../services/credential-store.js';
-import { MySQLDriver } from '../drivers/mysql-driver.js';
-import { PgDriver } from '../drivers/pg-driver.js';
-import { RedisDriver } from '../drivers/redis-driver.js';
-import { MongoDriver } from '../drivers/mongo-driver.js';
-import { KafkaDriver } from '../drivers/kafka-driver.js';
-import { RabbitMQDriver } from '../drivers/rabbitmq-driver.js';
+// driver 按需动态加载, 避免 main bundle 包含所有 driver 依赖
+import type { MongoDriver } from '../drivers/mongo-driver.js';
 import { createTunnel } from '../services/ssh-tunnel.js';
 import type { WebviewMessage, ViewType, SaveConnectionConfig, UpdateConnectionConfig } from '../types/messages.js';
 import type { ConnectionFormSSH } from '../types/messages.js';
@@ -18,7 +14,7 @@ import { handleKafkaMessage } from './kafka-message-handler.js';
 import { handleRabbitMQMessage } from './rabbitmq-message-handler.js';
 import { handleMongoMessage, buildExportPipeline } from './mongo-message-handler.js';
 import { getWebviewContent, getWebviewOptions } from './webview-helper.js';
-import { buildDefaultSelectSql } from '../utils/sql-builder.js';
+import { buildDefaultSelectSql, buildBatchDelete } from '../utils/sql-builder.js';
 import { buildAlterTableStatements } from '../utils/alter-table-builder.js';
 
 function buildSSHConfig(msg: ConnectionFormSSH): SSHTunnelConfig | undefined {
@@ -312,8 +308,9 @@ export class TableViewProvider implements vscode.Disposable {
           );
           if (confirmDelete !== 'Delete') { break; }
           const driver = this.connectionManager.getDriver(connectionId!);
-          for (const pks of message.primaryKeys) {
-            await this.queryService.deleteRow(driver, message.database, message.table, pks);
+          const batchQuery = buildBatchDelete(driver.driverType, message.table, message.primaryKeys, message.database);
+          if (batchQuery.sql) {
+            await driver.execute(batchQuery.sql, batchQuery.params);
           }
           break;
         }
@@ -775,9 +772,16 @@ export class TableViewProvider implements vscode.Disposable {
     const driver = this.connectionManager.getDriver(connectionId);
     const tables = await driver.listTables(database);
     const schema: Record<string, string[]> = {};
-    for (const table of tables) {
-      const columns = await driver.listColumns(database, table.name);
-      schema[table.name] = columns.map(c => c.name);
+    // 并行获取列信息, 每批 10 个避免连接池压力
+    const CHUNK_SIZE = 10;
+    for (let i = 0; i < tables.length; i += CHUNK_SIZE) {
+      const chunk = tables.slice(i, i + CHUNK_SIZE);
+      const results = await Promise.all(
+        chunk.map((t) => driver.listColumns(database, t.name))
+      );
+      for (let j = 0; j < chunk.length; j++) {
+        schema[chunk[j].name] = results[j].map((c) => c.name);
+      }
     }
     return schema;
   }
@@ -787,17 +791,17 @@ export class TableViewProvider implements vscode.Disposable {
     config: { driverType: DriverType; host: string; port: number; username: string; password: string; database: string } & ConnectionFormSSH
   ): Promise<void> {
     type TestableDriver = { connect(config: import('../types/connection.js').ConnectionConfig & { readonly password: string }): Promise<void>; disconnect(): Promise<void> };
-    const DRIVER_FACTORIES: Record<string, () => TestableDriver> = {
-      mysql: () => new MySQLDriver(),
-      postgresql: () => new PgDriver(),
-      redis: () => new RedisDriver(),
-      kafka: () => new KafkaDriver(),
-      mongodb: () => new MongoDriver(),
-      rabbitmq: () => new RabbitMQDriver(),
+    const DRIVER_FACTORIES: Record<string, () => Promise<TestableDriver>> = {
+      mysql: async () => { const { MySQLDriver } = await import('../drivers/mysql-driver.js'); return new MySQLDriver(); },
+      postgresql: async () => { const { PgDriver } = await import('../drivers/pg-driver.js'); return new PgDriver(); },
+      redis: async () => { const { RedisDriver } = await import('../drivers/redis-driver.js'); return new RedisDriver(); },
+      kafka: async () => { const { KafkaDriver } = await import('../drivers/kafka-driver.js'); return new KafkaDriver(); },
+      mongodb: async () => { const { MongoDriver } = await import('../drivers/mongo-driver.js'); return new MongoDriver(); },
+      rabbitmq: async () => { const { RabbitMQDriver } = await import('../drivers/rabbitmq-driver.js'); return new RabbitMQDriver(); },
     };
     const factory = DRIVER_FACTORIES[config.driverType];
     if (!factory) { throw new Error(`Unsupported driver type: ${config.driverType}`); }
-    const driver = factory();
+    const driver = await factory();
     let tunnelClose: (() => void) | undefined;
 
     try {

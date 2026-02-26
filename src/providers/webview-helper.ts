@@ -18,7 +18,7 @@ export function getWebviewContent(
     <meta http-equiv="Content-Security-Policy"
       content="default-src 'none';
                style-src ${webview.cspSource} 'unsafe-inline';
-               script-src 'nonce-${nonce}';
+               script-src 'nonce-${nonce}' ${webview.cspSource};
                font-src ${webview.cspSource};
                img-src 'none';
                connect-src 'none';

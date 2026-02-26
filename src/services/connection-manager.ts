@@ -33,12 +33,15 @@ export class ConnectionManager implements vscode.Disposable {
   }
 
   private async checkConnections(): Promise<void> {
+    const entries = [...this.drivers.entries()];
+    if (entries.length === 0) { return; }
+    const results = await Promise.allSettled(
+      entries.map(([, driver]) => driver.ping())
+    );
     let changed = false;
-    for (const [id, driver] of this.drivers.entries()) {
-      try {
-        await driver.ping();
-      } catch {
-        // ping 失败说明连接已断开, 清理状态
+    for (let i = 0; i < entries.length; i++) {
+      if (results[i].status === 'rejected') {
+        const id = entries[i][0];
         this.drivers.delete(id);
         this.closeTunnel(id);
         this.states.set(id, 'disconnected');

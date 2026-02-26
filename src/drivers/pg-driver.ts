@@ -130,38 +130,38 @@ export class PgDriver implements IDatabaseDriver {
   }
 
   async getTableDDL(_database: string, table: string): Promise<string> {
-    // PG 无 SHOW CREATE TABLE, 从 metadata 构建
-    const columns = await this.query(
-      `SELECT c.column_name, c.data_type, c.character_maximum_length,
-              c.numeric_precision, c.numeric_scale, c.is_nullable,
-              c.column_default, c.udt_name
-       FROM information_schema.columns c
-       WHERE c.table_name = $1 AND c.table_schema = 'public'
-       ORDER BY c.ordinal_position`,
-      [table]
-    );
-
-    const constraints = await this.query(
-      `SELECT con.conname, pg_get_constraintdef(con.oid) as def
-       FROM pg_constraint con
-       JOIN pg_class rel ON rel.oid = con.conrelid
-       JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
-       WHERE rel.relname = $1 AND nsp.nspname = 'public'`,
-      [table]
-    );
-
-    const indexes = await this.query(
-      `SELECT indexname, indexdef
-       FROM pg_indexes
-       WHERE tablename = $1 AND schemaname = 'public'
-         AND indexname NOT IN (
-           SELECT con.conname FROM pg_constraint con
-           JOIN pg_class rel ON rel.oid = con.conrelid
-           JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
-           WHERE rel.relname = $1 AND nsp.nspname = 'public'
-         )`,
-      [table]
-    );
+    // PG 无 SHOW CREATE TABLE, 从 metadata 构建 (三个查询并行)
+    const [columns, constraints, indexes] = await Promise.all([
+      this.query(
+        `SELECT c.column_name, c.data_type, c.character_maximum_length,
+                c.numeric_precision, c.numeric_scale, c.is_nullable,
+                c.column_default, c.udt_name
+         FROM information_schema.columns c
+         WHERE c.table_name = $1 AND c.table_schema = 'public'
+         ORDER BY c.ordinal_position`,
+        [table]
+      ),
+      this.query(
+        `SELECT con.conname, pg_get_constraintdef(con.oid) as def
+         FROM pg_constraint con
+         JOIN pg_class rel ON rel.oid = con.conrelid
+         JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
+         WHERE rel.relname = $1 AND nsp.nspname = 'public'`,
+        [table]
+      ),
+      this.query(
+        `SELECT indexname, indexdef
+         FROM pg_indexes
+         WHERE tablename = $1 AND schemaname = 'public'
+           AND indexname NOT IN (
+             SELECT con.conname FROM pg_constraint con
+             JOIN pg_class rel ON rel.oid = con.conrelid
+             JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
+             WHERE rel.relname = $1 AND nsp.nspname = 'public'
+           )`,
+        [table]
+      ),
+    ]);
 
     const tbl = `"${table.replace(/"/g, '""')}"`;
     const colDefs = columns.map((col) => {

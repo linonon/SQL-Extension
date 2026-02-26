@@ -151,3 +151,44 @@ export function buildDelete(
     params: keys.map((k) => primaryKeys[k]),
   };
 }
+
+// 批量删除: DELETE FROM t WHERE (pk1, pk2) IN ((v1, v2), (v3, v4), ...)
+export function buildBatchDelete(
+  driverType: string,
+  table: string,
+  primaryKeysList: readonly Record<string, unknown>[],
+  database?: string
+): BuiltSQL {
+  if (primaryKeysList.length === 0) {
+    return { sql: '', params: [] };
+  }
+  if (driverType === 'mongodb') {
+    const filters = primaryKeysList.map((pks) => JSON.stringify(pks));
+    return {
+      sql: `db.${validateMongoCollection(table)}.deleteMany({"$or":[${filters.join(',')}]})`,
+      params: [],
+    };
+  }
+  const ph = getPlaceholder(driverType);
+  const keys = Object.keys(primaryKeysList[0]);
+  const params: unknown[] = [];
+  let paramIndex = 1;
+
+  const valueTuples = primaryKeysList.map((pks) => {
+    const placeholders = keys.map((k) => {
+      params.push(pks[k]);
+      return ph(paramIndex++);
+    });
+    return `(${placeholders.join(', ')})`;
+  });
+
+  const pkColumns = keys.map((k) => escapeIdentifier(driverType, k)).join(', ');
+  const where = keys.length === 1
+    ? `${escapeIdentifier(driverType, keys[0])} IN (${valueTuples.map((t) => t.slice(1, -1)).join(', ')})`
+    : `(${pkColumns}) IN (${valueTuples.join(', ')})`;
+
+  return {
+    sql: `DELETE FROM ${qualifyTable(driverType, table, database)} WHERE ${where}`,
+    params,
+  };
+}

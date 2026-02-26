@@ -8,16 +8,20 @@ export class QueryService {
     database: string,
     table: string,
     offset: number,
-    limit: number
+    limit: number,
+    skipColumns?: boolean
   ): Promise<PagedResult> {
     const countQuery = buildCount(driver.driverType, table, database);
-    const countResult = await driver.execute(countQuery.sql, countQuery.params);
-    const total = Number(countResult.rows[0]?.count ?? 0);
-
     const selectQuery = buildSelect(driver.driverType, table, offset, limit, database);
-    const result = await driver.execute(selectQuery.sql, selectQuery.params);
 
-    const columns = await driver.listColumns(database, table);
+    // COUNT 和 SELECT 并行, columns 按需获取
+    const [countResult, result, columns] = await Promise.all([
+      driver.execute(countQuery.sql, countQuery.params),
+      driver.execute(selectQuery.sql, selectQuery.params),
+      skipColumns ? Promise.resolve([]) : driver.listColumns(database, table),
+    ]);
+
+    const total = Number(countResult.rows[0]?.count ?? 0);
 
     return {
       columns,

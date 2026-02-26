@@ -11,8 +11,8 @@ const buildOptions = {
   format: 'cjs',
   platform: 'node',
   target: 'node18',
-  sourcemap: true,
-  minify: false,
+  sourcemap: isWatch,
+  minify: !isWatch
 };
 
 async function main() {

@@ -5,6 +5,7 @@ import {
   getCoreRowModel,
   useReactTable,
 } from '@tanstack/react-table';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { useBatchEdits } from '../../hooks/useBatchEdits';
 import { QueryResultsToolbar } from './QueryResultsToolbar';
 import { ContextMenu } from '../common/ContextMenu';
@@ -12,6 +13,9 @@ import type { ContextMenuItem } from '../common/ContextMenu';
 import { generateCsv } from '../../utils/csv';
 import type { ColumnInfo } from '../../types/database';
 import type { SortState } from '../../utils/sql-builder';
+
+const ROW_HEIGHT = 32;
+const OVERSCAN = 10;
 
 interface QueryResultsGridProps {
   readonly columns: ColumnInfo[];
@@ -154,6 +158,8 @@ export function QueryResultsGrid({
     );
   }
 
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+
   return (
     <div className="query-results">
       <QueryResultsToolbar
@@ -164,7 +170,7 @@ export function QueryResultsGrid({
         saving={saving}
         onSave={handleSave}
       />
-      <div className="query-results-table" onContextMenu={handleContextMenu}>
+      <div className="query-results-table" ref={scrollContainerRef} onContextMenu={handleContextMenu}>
         <GridTable
           columns={columns}
           rows={rows}
@@ -179,6 +185,7 @@ export function QueryResultsGrid({
           onSort={onSort}
           rowSelection={rowSelection}
           onRowSelectionChange={setRowSelection}
+          scrollContainerRef={scrollContainerRef}
         />
       </div>
       {contextMenu && (
@@ -192,7 +199,7 @@ export function QueryResultsGrid({
   );
 }
 
-// 内部表格组件, 使用 TanStack React Table
+// 内部表格组件, 使用 TanStack React Table + 虚拟滚动
 interface GridTableProps {
   readonly columns: ColumnInfo[];
   readonly rows: Record<string, unknown>[];
@@ -207,6 +214,7 @@ interface GridTableProps {
   readonly onSort?: (columnId: string) => void;
   readonly rowSelection: Record<string, boolean>;
   readonly onRowSelectionChange: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
+  readonly scrollContainerRef: React.RefObject<HTMLDivElement | null>;
 }
 
 // DOM 测量列内容最大宽度, 从真实渲染元素读 computedStyle 获取 font
@@ -269,6 +277,7 @@ function GridTable({
   onSort,
   rowSelection,
   onRowSelectionChange,
+  scrollContainerRef,
 }: GridTableProps) {
   const columnHelper = createColumnHelper<Record<string, unknown>>();
 
@@ -333,6 +342,15 @@ function GridTable({
     getCoreRowModel: getCoreRowModel(),
   });
 
+  const { rows: tableRows } = table.getRowModel();
+
+  const virtualizer = useVirtualizer({
+    count: tableRows.length,
+    getScrollElement: () => scrollContainerRef.current,
+    estimateSize: () => ROW_HEIGHT,
+    overscan: OVERSCAN,
+  });
+
   // 数据渲染后自动适配所有列宽
   useEffect(() => {
     const el = tableRef.current;
@@ -344,6 +362,13 @@ function GridTable({
     table.setColumnSizing(sizing);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, columns]);
+
+  const virtualItems = virtualizer.getVirtualItems();
+  const totalSize = virtualizer.getTotalSize();
+  const paddingTop = virtualItems.length > 0 ? virtualItems[0].start : 0;
+  const paddingBottom = virtualItems.length > 0
+    ? totalSize - virtualItems[virtualItems.length - 1].end
+    : 0;
 
   return (
     <table
@@ -387,10 +412,19 @@ function GridTable({
         ))}
       </thead>
       <tbody>
-        {table.getRowModel().rows.map((row) => {
+        {paddingTop > 0 && (
+          <tr><td style={{ height: paddingTop, padding: 0, border: 'none' }} /></tr>
+        )}
+        {virtualItems.map((virtualRow) => {
+          const row = tableRows[virtualRow.index];
+          if (!row) { return null; }
           const isSelected = !!rowSelection[String(row.index)];
           return (
-            <tr key={row.id} className={isSelected ? 'row-selected' : ''}>
+            <tr
+              key={row.id}
+              className={isSelected ? 'row-selected' : ''}
+              style={{ height: virtualRow.size }}
+            >
               <td className="select-column">
                 <input
                   type="checkbox"
@@ -452,6 +486,9 @@ function GridTable({
             </tr>
           );
         })}
+        {paddingBottom > 0 && (
+          <tr><td style={{ height: paddingBottom, padding: 0, border: 'none' }} /></tr>
+        )}
       </tbody>
     </table>
   );
