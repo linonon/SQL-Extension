@@ -103,12 +103,12 @@ export function registerConnectTools(server: McpServer, pool: ConnectionPool, ip
     async () => {
       const result: unknown[] = [];
 
-      // IPC mode: 返回扩展中保存的连接
-      if (ipc.connected) {
-        try {
-          const saved = await ipc.request('listConnections') as unknown[];
-          result.push(...saved);
-        } catch {}
+      // IPC mode: 返回扩展中保存的连接 (懒连接: 即使启动时 VS Code 没开, 现在也会尝试)
+      try {
+        const saved = await ipc.request('listConnections') as unknown[];
+        result.push(...saved);
+      } catch {
+        // IPC 不可用, 跳过
       }
 
       // Standalone mode: 返回 pool 中的活跃连接

@@ -72,7 +72,18 @@ export class IpcClient {
     });
   }
 
+  private async ensureConnected(): Promise<void> {
+    if (this.connected) { return; }
+    try {
+      await this.connect();
+    } catch {
+      // socket 不存在或连接失败
+    }
+  }
+
   async request(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
+    // 懒连接: 每次请求前尝试重连
+    await this.ensureConnected();
     if (!this.socket) {
       throw new Error('VS Code extension is not running. Open VS Code with SQL Extension activated, or use full connection parameters (host, port, etc).');
     }
