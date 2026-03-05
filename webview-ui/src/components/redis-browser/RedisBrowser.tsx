@@ -16,6 +16,7 @@ const HASH_SCAN_COUNT = 100;
 interface RedisBrowserProps {
   readonly connectionId: string;
   readonly database: number;
+  readonly separator?: string;
 }
 
 // 根据 key type 生成对应的 command 提示
@@ -30,7 +31,7 @@ function buildCommandForKey(key: string, keyType: RedisKeyType): string {
   }
 }
 
-export function RedisBrowser({ database: initialDb }: RedisBrowserProps) {
+export function RedisBrowser({ database: initialDb, separator = ':' }: RedisBrowserProps) {
   const postMessage = usePostMessage();
   const [panelWidth, setPanelWidth] = useState(240);
   const [isResizing, setIsResizing] = useState(false);
@@ -483,6 +484,7 @@ export function RedisBrowser({ database: initialDb }: RedisBrowserProps) {
             selectedKey={selectedKey}
             hasMore={hasMore}
             filterQuery={filterQuery}
+            separator={separator}
             onSelectKey={handleSelectKey}
             onLoadMore={handleLoadMore}
             onDeleteKey={handleDeleteKey}

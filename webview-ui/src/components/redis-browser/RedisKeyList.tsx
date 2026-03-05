@@ -8,6 +8,7 @@ interface RedisKeyListProps {
   readonly selectedKey: string | null;
   readonly hasMore: boolean;
   readonly filterQuery: string;
+  readonly separator?: string;
   readonly onSelectKey: (key: string) => void;
   readonly onLoadMore: () => void;
   readonly onDeleteKey: (key: string) => void;
@@ -120,6 +121,7 @@ export function RedisKeyList({
   selectedKey,
   hasMore,
   filterQuery,
+  separator = ':',
   onSelectKey,
   onLoadMore,
   onDeleteKey,
@@ -139,7 +141,7 @@ export function RedisKeyList({
   }, [filterQuery]);
 
   const filtered = useMemo(() => filterKeysFuzzy(keys, filterQuery), [keys, filterQuery]);
-  const tree = useMemo(() => buildKeyTree(filtered), [filtered]);
+  const tree = useMemo(() => buildKeyTree(filtered, '', separator), [filtered, separator]);
 
   const allPrefixes = useMemo(() => collectAllPrefixes(tree.children), [tree]);
   const allCollapsed = allPrefixes.length > 0 && allPrefixes.every((p) => collapsedGroups.has(p));

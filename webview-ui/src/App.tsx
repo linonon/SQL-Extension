@@ -69,6 +69,7 @@ export function App() {
         <RedisBrowser
           connectionId={viewContext.connectionId as string}
           database={viewContext.database as number}
+          separator={(viewContext.separator as string) ?? ':'}
         />
       );
     case 'kafka-browser':

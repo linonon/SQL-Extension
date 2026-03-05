@@ -12,6 +12,7 @@ interface FormState {
   readonly username: string;
   readonly password: string;
   readonly database: string;
+  readonly separator: string;
   readonly sshEnabled: boolean;
   readonly sshHost: string;
   readonly sshPort: string;
@@ -38,6 +39,7 @@ const initialState: FormState = {
   username: 'root',
   password: '',
   database: '',
+  separator: ':',
   sshEnabled: false,
   sshHost: '',
   sshPort: '22',
@@ -56,6 +58,7 @@ interface EditConnection {
   readonly username: string;
   readonly password: string;
   readonly database: string;
+  readonly separator?: string;
   readonly sshEnabled: boolean;
   readonly sshHost: string;
   readonly sshPort: number;
@@ -94,6 +97,7 @@ export function ConnectionForm({ editConnection }: ConnectionFormProps) {
       username: editConnection.username,
       password: editConnection.password,
       database: editConnection.database,
+      separator: editConnection.separator ?? ':',
       sshEnabled: editConnection.sshEnabled,
       sshHost: editConnection.sshHost,
       sshPort: String(editConnection.sshPort),
@@ -115,7 +119,7 @@ export function ConnectionForm({ editConnection }: ConnectionFormProps) {
           const dt = value as DriverType;
           const portUpdate = prev.port === DEFAULT_PORTS[prev.driverType] ? DEFAULT_PORTS[dt] : prev.port;
           if (dt === 'redis') {
-            return { ...next, port: portUpdate, username: '', database: '0' };
+            return { ...next, port: portUpdate, username: '', database: '0', separator: ':' };
           }
           if (dt === 'mongodb') {
             return { ...next, port: portUpdate, username: '', database: '' };
@@ -166,6 +170,7 @@ export function ConnectionForm({ editConnection }: ConnectionFormProps) {
 
   const handleSave = useCallback(() => {
     if (!form.name.trim()) { return; }
+    const separatorField = form.driverType === 'redis' ? { separator: form.separator || ':' } : {};
     if (isEdit) {
       postMessage({
         type: 'updateConnection',
@@ -178,6 +183,7 @@ export function ConnectionForm({ editConnection }: ConnectionFormProps) {
           username: form.username,
           password: form.password,
           database: form.database,
+          ...separatorField,
           ...sshFields(form),
         },
       });
@@ -192,6 +198,7 @@ export function ConnectionForm({ editConnection }: ConnectionFormProps) {
           username: form.username,
           password: form.password,
           database: form.database,
+          ...separatorField,
           ...sshFields(form),
         },
       });
@@ -246,13 +253,13 @@ export function ConnectionForm({ editConnection }: ConnectionFormProps) {
       </div>
 
       <div className="form-row">
-        {form.driverType !== 'redis' && form.driverType !== 'kafka' && (
+        {form.driverType !== 'kafka' && (
           <div className="form-group">
             <label>Username</label>
             <input
               value={form.username}
               onChange={(e) => updateField('username', e.target.value)}
-              placeholder={form.driverType === 'mongodb' ? '(optional)' : undefined}
+              placeholder={form.driverType === 'mongodb' || form.driverType === 'redis' ? '(optional)' : undefined}
             />
           </div>
         )}
@@ -287,16 +294,27 @@ export function ConnectionForm({ editConnection }: ConnectionFormProps) {
           />
         </div>
       ) : form.driverType === 'kafka' ? null : form.driverType === 'redis' ? (
-        <div className="form-group">
-          <label>DB Index</label>
-          <select
-            value={form.database}
-            onChange={(e) => updateField('database', e.target.value)}
-          >
-            {Array.from({ length: 16 }, (_, i) => (
-              <option key={i} value={String(i)}>{`db${i}`}</option>
-            ))}
-          </select>
+        <div className="form-row">
+          <div className="form-group">
+            <label>DB Index</label>
+            <select
+              value={form.database}
+              onChange={(e) => updateField('database', e.target.value)}
+            >
+              {Array.from({ length: 16 }, (_, i) => (
+                <option key={i} value={String(i)}>{`db${i}`}</option>
+              ))}
+            </select>
+          </div>
+          <div className="form-group">
+            <label>Key Separator</label>
+            <input
+              value={form.separator}
+              onChange={(e) => updateField('separator', e.target.value)}
+              placeholder=":"
+              style={{ width: '60px' }}
+            />
+          </div>
         </div>
       ) : (
         <div className="form-group">

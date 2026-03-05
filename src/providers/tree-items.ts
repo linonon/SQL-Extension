@@ -166,7 +166,7 @@ export class RedisDbTreeItem extends vscode.TreeItem {
     public readonly keyCount: number
   ) {
     super(`db${dbIndex}`, vscode.TreeItemCollapsibleState.None);
-    this.description = `${keyCount} keys`;
+    this.description = keyCount >= 0 ? `${keyCount} keys` : undefined;
     this.contextValue = 'redis-db';
     this.iconPath = new vscode.ThemeIcon('symbol-namespace');
     this.command = {

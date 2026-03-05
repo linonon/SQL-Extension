@@ -24,6 +24,7 @@ interface ConnectionFormBase extends ConnectionFormSSH {
   readonly username: string;
   readonly password: string;
   readonly database: string;
+  readonly separator?: string;
 }
 
 export interface SaveConnectionConfig extends ConnectionFormBase {

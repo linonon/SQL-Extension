@@ -17,18 +17,18 @@ export interface KeyTree {
  * 递归构建 key 分组树, 对标 ARDM 无限层级.
  * prefix 为当前层级的完整前缀字符串 (含末尾 ":").
  */
-export function buildKeyTree(keys: readonly RedisKeyInfo[], prefix: string = ''): KeyTree {
+export function buildKeyTree(keys: readonly RedisKeyInfo[], prefix: string = '', separator: string = ':'): KeyTree {
   const childMap = new Map<string, RedisKeyInfo[]>();
   const leafKeys: RedisKeyInfo[] = [];
 
   for (const k of keys) {
     const remaining = k.key.slice(prefix.length);
-    const colonIdx = remaining.indexOf(':');
-    if (colonIdx === -1) {
+    const sepIdx = remaining.indexOf(separator);
+    if (sepIdx === -1) {
       leafKeys.push(k);
     } else {
-      const segment = remaining.slice(0, colonIdx);
-      const childPrefix = prefix + segment + ':';
+      const segment = remaining.slice(0, sepIdx);
+      const childPrefix = prefix + segment + separator;
       const arr = childMap.get(childPrefix) ?? [];
       arr.push(k);
       childMap.set(childPrefix, arr);
@@ -37,8 +37,8 @@ export function buildKeyTree(keys: readonly RedisKeyInfo[], prefix: string = '')
 
   const children: KeyTreeNode[] = [...childMap.entries()]
     .map(([childPrefix, childKeys]) => {
-      const segment = childPrefix.slice(prefix.length, -1);
-      const sub = buildKeyTree(childKeys, childPrefix);
+      const segment = childPrefix.slice(prefix.length, -separator.length);
+      const sub = buildKeyTree(childKeys, childPrefix, separator);
       return {
         segment,
         fullPrefix: childPrefix,

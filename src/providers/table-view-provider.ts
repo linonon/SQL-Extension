@@ -140,9 +140,11 @@ export class TableViewProvider implements vscode.Disposable {
   }
 
   openRedisBrowser(connectionId: string, database: number): void {
+    const config = this.connectionManager.getConnections().find((c) => c.id === connectionId);
     this.openBrowser(`redis:${connectionId}:${database}`, `Redis - db${database}`, 'redis-browser', {
       connectionId,
       database,
+      separator: config?.separator ?? ':',
     });
   }
 
@@ -202,6 +204,7 @@ export class TableViewProvider implements vscode.Disposable {
         username: config.username,
         password,
         database: config.database,
+        separator: config.separator ?? ':',
         sshEnabled: config.ssh?.enabled ?? false,
         sshHost: config.ssh?.host ?? '',
         sshPort: config.ssh?.port ?? 22,
@@ -853,6 +856,7 @@ export class TableViewProvider implements vscode.Disposable {
         port: config.port,
         username: config.username,
         database: config.database,
+        separator: config.separator,
         ssh: buildSSHConfig(config),
       },
       config.password,
@@ -876,6 +880,7 @@ export class TableViewProvider implements vscode.Disposable {
         port: config.port,
         username: config.username,
         database: config.database,
+        separator: config.separator,
         ssh: buildSSHConfig(config),
       },
       config.password,

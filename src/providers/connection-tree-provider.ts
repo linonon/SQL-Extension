@@ -243,8 +243,9 @@ export class ConnectionTreeProvider implements vscode.TreeDataProvider<TreeItem>
     try {
       const driver = this.connectionManager.getRedisDriver(item.connectionId);
       const databases = await driver.listDatabases();
+      const hasUnknown = databases.some((db) => db.keyCount < 0);
       return databases
-        .filter((db) => db.keyCount > 0)
+        .filter((db) => hasUnknown || db.keyCount > 0)
         .map((db) => new RedisDbTreeItem(item.connectionId, db.index, db.keyCount));
     } catch (err) {
       vscode.window.showErrorMessage(

@@ -20,6 +20,7 @@ export class RedisDriver implements IRedisDriver {
     const client = new Redis({
       host: config.host,
       port: config.port,
+      username: config.username || undefined,
       password: config.password || undefined,
       db: config.database ? Number(config.database) : 0,
       connectTimeout: 5000,
@@ -57,16 +58,23 @@ export class RedisDriver implements IRedisDriver {
 
   async listDatabases(): Promise<readonly RedisDbInfo[]> {
     this.assertConnected();
-    const info = await this.client!.info('keyspace');
     const databases: RedisDbInfo[] = [];
 
-    // 解析 INFO keyspace 输出: "db0:keys=1234,expires=5,avg_ttl=0"
-    for (let i = 0; i < 16; i++) {
-      const match = info.match(new RegExp(`db${i}:keys=(\\d+)`));
-      databases.push({
-        index: i,
-        keyCount: match ? Number(match[1]) : 0,
-      });
+    try {
+      const info = await this.client!.info('keyspace');
+      // 解析 INFO keyspace 输出: "db0:keys=1234,expires=5,avg_ttl=0"
+      for (let i = 0; i < 16; i++) {
+        const match = info.match(new RegExp(`db${i}:keys=(\\d+)`));
+        databases.push({
+          index: i,
+          keyCount: match ? Number(match[1]) : 0,
+        });
+      }
+    } catch {
+      // ACL 限制无 INFO 权限时, 返回 16 个 db, keyCount 未知用 -1 表示
+      for (let i = 0; i < 16; i++) {
+        databases.push({ index: i, keyCount: -1 });
+      }
     }
 
     return databases;

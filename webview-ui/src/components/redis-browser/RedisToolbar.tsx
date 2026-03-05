@@ -93,7 +93,7 @@ export function RedisToolbar({
           onChange={(e) => onDatabaseChange(Number(e.target.value))}
         >
           {databases.map((d) => (
-            <option key={d.index} value={d.index}>{`db${d.index} (${d.keyCount})`}</option>
+            <option key={d.index} value={d.index}>{d.keyCount >= 0 ? `db${d.index} (${d.keyCount})` : `db${d.index}`}</option>
           ))}
         </select>
         <button className="icon-btn" title="Refresh" onClick={onRefresh}>
