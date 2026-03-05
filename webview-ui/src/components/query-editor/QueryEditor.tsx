@@ -155,6 +155,18 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
     [database, table, postMessage]
   );
 
+  const handleInsertRow = useCallback(
+    (row: Record<string, unknown>) => {
+      if (!table) return;
+      postMessage({ type: 'insertRow', database, table, row });
+      setTimeout(() => {
+        const sql = buildSelectSql(driverType ?? '', table, undefined, sortState);
+        postMessage({ type: 'executeQuery', database, sql });
+      }, 200);
+    },
+    [table, database, driverType, postMessage, sortState]
+  );
+
   const handleResizerMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     const startY = e.clientY;
@@ -273,6 +285,7 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
           sortState={table ? sortState : undefined}
           onSort={table ? handleSort : undefined}
           onExportCsv={handleExportCsv}
+          onInsertRow={editable ? handleInsertRow : undefined}
         />
       )}
     </div>
