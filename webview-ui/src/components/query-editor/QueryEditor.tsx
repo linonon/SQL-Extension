@@ -77,6 +77,16 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
         setResult((prev) => prev ? { ...prev, error: message.error } : null);
       }
     }
+    if (message.type === 'insertRowResult') {
+      if (message.success && lastSqlRef.current) {
+        setExecuting(true);
+        setResult(null);
+        postMessage({ type: 'executeQuery', database, sql: lastSqlRef.current });
+      }
+      if (message.error) {
+        setResult((prev) => prev ? { ...prev, error: message.error } : null);
+      }
+    }
   }, [database, postMessage]);
 
   useVSCodeMessage(handleMessage);
@@ -159,12 +169,8 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
     (row: Record<string, unknown>) => {
       if (!table) return;
       postMessage({ type: 'insertRow', database, table, row });
-      setTimeout(() => {
-        const sql = buildSelectSql(driverType ?? '', table, undefined, sortState);
-        postMessage({ type: 'executeQuery', database, sql });
-      }, 200);
     },
-    [table, database, driverType, postMessage, sortState]
+    [table, database, postMessage]
   );
 
   const handleResizerMouseDown = useCallback((e: React.MouseEvent) => {

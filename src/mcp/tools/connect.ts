@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { ConnectionPool } from '../connection-pool.js';
 import type { IpcClient } from '../ipc-client.js';
+import { makeResult, makeError, toErrorMessage } from './mcp-result.js';
 
 const DRIVER_TYPES = ['mysql', 'postgresql', 'redis', 'mongodb', 'kafka', 'rabbitmq'] as const;
 
@@ -68,7 +69,7 @@ export function registerConnectTools(server: McpServer, pool: ConnectionPool, ip
           mode: 'standalone',
         });
       } catch (err) {
-        return makeError(err instanceof Error ? err.message : String(err), 'CONNECT_FAILED');
+        return makeError(toErrorMessage(err), 'CONNECT_FAILED');
       }
     }
   );
@@ -91,7 +92,7 @@ export function registerConnectTools(server: McpServer, pool: ConnectionPool, ip
         }
         return makeResult({ success: true, connectionId: params.connectionId });
       } catch (err) {
-        return makeError(err instanceof Error ? err.message : String(err), 'DISCONNECT_FAILED');
+        return makeError(toErrorMessage(err), 'DISCONNECT_FAILED');
       }
     }
   );
@@ -122,17 +123,4 @@ export function registerConnectTools(server: McpServer, pool: ConnectionPool, ip
       return makeResult({ connections: result });
     }
   );
-}
-
-function makeResult(data: unknown) {
-  return {
-    content: [{ type: 'text' as const, text: JSON.stringify(data) }],
-  };
-}
-
-function makeError(message: string, code: string) {
-  return {
-    content: [{ type: 'text' as const, text: JSON.stringify({ error: message, code }) }],
-    isError: true,
-  };
 }

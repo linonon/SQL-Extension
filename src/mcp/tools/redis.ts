@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { ConnectionPool } from '../connection-pool.js';
 import type { IpcClient } from '../ipc-client.js';
+import { makeResult, makeError, toErrorMessage } from './mcp-result.js';
 
 // 只读命令白名单
 export const ALLOWED_COMMANDS = new Set([
@@ -79,21 +80,8 @@ export function registerRedisTools(server: McpServer, pool: ConnectionPool, ipc:
 
         return makeResult(result);
       } catch (err) {
-        return makeError(err instanceof Error ? err.message : String(err), 'REDIS_COMMAND_FAILED');
+        return makeError(toErrorMessage(err), 'REDIS_COMMAND_FAILED');
       }
     }
   );
-}
-
-function makeResult(data: unknown) {
-  return {
-    content: [{ type: 'text' as const, text: JSON.stringify(data) }],
-  };
-}
-
-function makeError(message: string, code: string) {
-  return {
-    content: [{ type: 'text' as const, text: JSON.stringify({ error: message, code }) }],
-    isError: true,
-  };
 }

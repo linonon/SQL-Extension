@@ -38,6 +38,7 @@ export type ExtensionMessage =
   | { type: 'queryResult'; columns: ColumnInfo[]; rows: Record<string, unknown>[]; affectedRows: number; executionTime: number; error?: string }
   | { type: 'columnsResult'; columns: ColumnInfo[] }
   | { type: 'batchUpdateResult'; success: boolean; error?: string }
+  | { type: 'insertRowResult'; success: boolean; error?: string }
   | { type: 'connectionTestResult'; success: boolean; error?: string }
   | { type: 'connectionList'; connections: ConnectionConfig[] }
   | { type: 'error'; message: string }

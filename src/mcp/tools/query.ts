@@ -3,13 +3,8 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { ConnectionPool } from '../connection-pool.js';
 import type { IpcClient } from '../ipc-client.js';
 import { isReadonlySQL, enforceLimit } from '../sql-validator.js';
-
-interface QueryResultData {
-  readonly columns: ReadonlyArray<{ name: string; dataType: string }>;
-  readonly rows: readonly Record<string, unknown>[];
-  readonly affectedRows: number;
-  readonly executionTime: number;
-}
+import { makeResult, makeError, toErrorMessage } from './mcp-result.js';
+import type { QueryResultData } from './types.js';
 
 export function registerQueryTools(server: McpServer, pool: ConnectionPool, ipc: IpcClient): void {
   server.tool(
@@ -58,21 +53,8 @@ export function registerQueryTools(server: McpServer, pool: ConnectionPool, ipc:
           executionTime: result.executionTime,
         });
       } catch (err) {
-        return makeError(err instanceof Error ? err.message : String(err), 'QUERY_FAILED');
+        return makeError(toErrorMessage(err), 'QUERY_FAILED');
       }
     }
   );
-}
-
-function makeResult(data: unknown) {
-  return {
-    content: [{ type: 'text' as const, text: JSON.stringify(data) }],
-  };
-}
-
-function makeError(message: string, code: string) {
-  return {
-    content: [{ type: 'text' as const, text: JSON.stringify({ error: message, code }) }],
-    isError: true,
-  };
 }

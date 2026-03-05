@@ -2,8 +2,8 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { ConnectionPool } from '../connection-pool.js';
 import type { IpcClient } from '../ipc-client.js';
-
-const ALLOWED_METHODS = new Set(['find', 'aggregate', 'countDocuments']);
+import { makeResult, makeError, toErrorMessage } from './mcp-result.js';
+import type { QueryResultData } from './types.js';
 const FORBIDDEN_STAGES = new Set(['$out', '$merge']);
 
 /**
@@ -59,28 +59,18 @@ export function registerMongoTools(server: McpServer, pool: ConnectionPool, ipc:
       database: z.string().describe('Database name'),
       collection: z.string().describe('Collection name'),
       method: z.enum(['find', 'aggregate', 'countDocuments']).default('find').describe('Query method'),
-      filter: z.record(z.unknown()).optional().describe('Query filter for find/countDocuments'),
-      pipeline: z.array(z.record(z.unknown())).optional().describe('Aggregation pipeline stages'),
-      projection: z.record(z.number()).optional().describe('Field projection for find (1=include, 0=exclude)'),
+      filter: z.record(z.string(), z.unknown()).optional().describe('Query filter for find/countDocuments'),
+      pipeline: z.array(z.record(z.string(), z.unknown())).optional().describe('Aggregation pipeline stages'),
+      projection: z.record(z.string(), z.number()).optional().describe('Field projection for find (1=include, 0=exclude)'),
       limit: z.number().int().min(1).max(500).default(20).describe('Max documents to return (1-500)'),
     },
     async (params) => {
       try {
-        if (!ALLOWED_METHODS.has(params.method)) {
-          return makeError(
-            `Method "${params.method}" is not allowed. Only find, aggregate, countDocuments are permitted.`,
-            'METHOD_NOT_ALLOWED',
-          );
-        }
-
         if (params.method === 'aggregate' && params.pipeline) {
           try {
             validatePipeline(params.pipeline);
           } catch (err) {
-            return makeError(
-              err instanceof Error ? err.message : String(err),
-              'PIPELINE_VALIDATION_FAILED',
-            );
+            return makeError(toErrorMessage(err), 'PIPELINE_VALIDATION_FAILED');
           }
         }
 
@@ -119,28 +109,9 @@ export function registerMongoTools(server: McpServer, pool: ConnectionPool, ipc:
           executionTime: result.executionTime,
         });
       } catch (err) {
-        return makeError(err instanceof Error ? err.message : String(err), 'MONGO_QUERY_FAILED');
+        return makeError(toErrorMessage(err), 'MONGO_QUERY_FAILED');
       }
     }
   );
 }
 
-interface QueryResultData {
-  readonly columns: ReadonlyArray<{ name: string; dataType: string }>;
-  readonly rows: readonly Record<string, unknown>[];
-  readonly affectedRows: number;
-  readonly executionTime: number;
-}
-
-function makeResult(data: unknown) {
-  return {
-    content: [{ type: 'text' as const, text: JSON.stringify(data) }],
-  };
-}
-
-function makeError(message: string, code: string) {
-  return {
-    content: [{ type: 'text' as const, text: JSON.stringify({ error: message, code }) }],
-    isError: true,
-  };
-}

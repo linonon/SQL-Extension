@@ -287,8 +287,17 @@ export class TableViewProvider implements vscode.Disposable {
         }
 
         case 'insertRow': {
-          const driver = this.connectionManager.getDriver(connectionId!);
-          await this.queryService.insertRow(driver, message.database, message.table, message.row);
+          try {
+            const driver = this.connectionManager.getDriver(connectionId!);
+            await this.queryService.insertRow(driver, message.database, message.table, message.row);
+            panel.webview.postMessage({ type: 'insertRowResult', success: true });
+          } catch (err) {
+            panel.webview.postMessage({
+              type: 'insertRowResult',
+              success: false,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
           break;
         }
 

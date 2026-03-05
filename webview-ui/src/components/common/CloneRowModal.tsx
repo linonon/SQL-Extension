@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ColumnInfo } from '../../types/database';
 
 interface CloneRowModalProps {
@@ -9,11 +9,20 @@ interface CloneRowModalProps {
 }
 
 export function CloneRowModal({ row, columns, onSubmit, onClose }: CloneRowModalProps) {
+  const autoIncrementCols = useMemo(() => {
+    const set = new Set<string>();
+    for (const col of columns) {
+      if (col.extra?.toLowerCase().includes('auto_increment')) {
+        set.add(col.name);
+      }
+    }
+    return set;
+  }, [columns]);
+
   const [values, setValues] = useState<Record<string, string>>(() => {
     const initial: Record<string, string> = {};
     for (const col of columns) {
-      const isAutoIncrement = col.extra?.toLowerCase().includes('auto_increment');
-      if (isAutoIncrement) {
+      if (autoIncrementCols.has(col.name)) {
         initial[col.name] = '';
       } else {
         const v = row[col.name];
@@ -25,8 +34,7 @@ export function CloneRowModal({ row, columns, onSubmit, onClose }: CloneRowModal
   const [nullFlags, setNullFlags] = useState<Record<string, boolean>>(() => {
     const flags: Record<string, boolean> = {};
     for (const col of columns) {
-      const isAutoIncrement = col.extra?.toLowerCase().includes('auto_increment');
-      flags[col.name] = !isAutoIncrement && (row[col.name] === null || row[col.name] === undefined);
+      flags[col.name] = !autoIncrementCols.has(col.name) && (row[col.name] === null || row[col.name] === undefined);
     }
     return flags;
   });
@@ -62,8 +70,7 @@ export function CloneRowModal({ row, columns, onSubmit, onClose }: CloneRowModal
   const handleSubmit = useCallback(() => {
     const result: Record<string, unknown> = {};
     for (const col of columns) {
-      const isAutoIncrement = col.extra?.toLowerCase().includes('auto_increment');
-      if (isAutoIncrement && values[col.name] === '') {
+      if (autoIncrementCols.has(col.name) && values[col.name] === '') {
         continue;
       }
       if (nullFlags[col.name]) {
@@ -73,7 +80,7 @@ export function CloneRowModal({ row, columns, onSubmit, onClose }: CloneRowModal
       }
     }
     onSubmit(result);
-  }, [columns, values, nullFlags, onSubmit]);
+  }, [columns, autoIncrementCols, values, nullFlags, onSubmit]);
 
   return (
     <div className="clone-row-overlay" ref={overlayRef} onClick={handleOverlayClick}>
@@ -81,7 +88,7 @@ export function CloneRowModal({ row, columns, onSubmit, onClose }: CloneRowModal
         <div className="clone-row-header">Clone as New Row</div>
         <div className="clone-row-body">
           {columns.map((col) => {
-            const isAutoIncrement = col.extra?.toLowerCase().includes('auto_increment');
+            const isAutoInc = autoIncrementCols.has(col.name);
             const isNull = nullFlags[col.name];
             return (
               <div key={col.name} className="clone-row-field">
@@ -90,14 +97,14 @@ export function CloneRowModal({ row, columns, onSubmit, onClose }: CloneRowModal
                   <span className="clone-row-field-type">
                     {col.dataType}
                     {col.isPrimaryKey && <span className="column-badge pk">PK</span>}
-                    {isAutoIncrement && <span className="column-badge auto">AUTO</span>}
+                    {isAutoInc && <span className="column-badge auto">AUTO</span>}
                   </span>
                 </div>
                 <div className="clone-row-field-input">
                   <input
                     type="text"
                     value={isNull ? '' : values[col.name]}
-                    placeholder={isAutoIncrement ? 'AUTO' : col.nullable ? 'NULL' : ''}
+                    placeholder={isAutoInc ? 'AUTO' : col.nullable ? 'NULL' : ''}
                     disabled={isNull}
                     onChange={(e) => handleChange(col.name, e.target.value)}
                   />

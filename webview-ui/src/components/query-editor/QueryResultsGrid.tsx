@@ -55,9 +55,8 @@ export function QueryResultsGrid({
 }: QueryResultsGridProps) {
   const [editingCell, setEditingCell] = useState<EditingCell | null>(null);
   const [rowSelection, setRowSelection] = useState<Record<string, boolean>>({});
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; rowIndex: number | null } | null>(null);
   const [cloneRow, setCloneRow] = useState<Record<string, unknown> | null>(null);
-  const [contextMenuRowIndex, setContextMenuRowIndex] = useState<number | null>(null);
   const { addChange, isCellChanged, getCellValue, buildUpdates, clearChanges, pendingCount } =
     useBatchEdits();
 
@@ -132,8 +131,7 @@ export function QueryResultsGrid({
 
   const handleContextMenu = useCallback((e: React.MouseEvent, rowIndex?: number) => {
     e.preventDefault();
-    setContextMenu({ x: e.clientX, y: e.clientY });
-    setContextMenuRowIndex(rowIndex ?? null);
+    setContextMenu({ x: e.clientX, y: e.clientY, rowIndex: rowIndex ?? null });
   }, []);
 
   const closeContextMenu = useCallback(() => {
@@ -148,34 +146,37 @@ export function QueryResultsGrid({
     return r;
   }, [columns]);
 
-  const contextMenuItems: ContextMenuItem[] = useMemo(() => [
-    {
-      label: 'Insert New Row',
-      disabled: !editable || !onInsertRow,
-      action: () => {
-        setCloneRow(emptyRow);
-      },
-    },
-    {
-      label: 'Clone as New Row',
-      disabled: contextMenuRowIndex === null || !editable || !onInsertRow,
-      action: () => {
-        if (contextMenuRowIndex !== null) {
-          setCloneRow(rows[contextMenuRowIndex]);
-        }
-      },
-    },
-    {
-      label: 'Export',
-      children: [
-        {
-          label: 'CSV',
-          disabled: selectedIndices.length === 0 || !onExportCsv,
-          action: handleExportCsv,
+  const contextMenuItems: ContextMenuItem[] = useMemo(() => {
+    const rowIndex = contextMenu?.rowIndex ?? null;
+    return [
+      {
+        label: 'Insert New Row',
+        disabled: !editable || !onInsertRow,
+        action: () => {
+          setCloneRow(emptyRow);
         },
-      ],
-    },
-  ], [contextMenuRowIndex, editable, onInsertRow, emptyRow, rows, selectedIndices.length, onExportCsv, handleExportCsv]);
+      },
+      {
+        label: 'Clone as New Row',
+        disabled: rowIndex === null || !editable || !onInsertRow,
+        action: () => {
+          if (rowIndex !== null) {
+            setCloneRow(rows[rowIndex]);
+          }
+        },
+      },
+      {
+        label: 'Export',
+        children: [
+          {
+            label: 'CSV',
+            disabled: selectedIndices.length === 0 || !onExportCsv,
+            action: handleExportCsv,
+          },
+        ],
+      },
+    ];
+  }, [contextMenu?.rowIndex, editable, onInsertRow, emptyRow, rows, selectedIndices.length, onExportCsv, handleExportCsv]);
 
   if (error) {
     return <div className="query-results-error">{error}</div>;
