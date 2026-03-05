@@ -140,7 +140,22 @@ export function QueryResultsGrid({
     setContextMenu(null);
   }, []);
 
+  const emptyRow = useMemo(() => {
+    const r: Record<string, unknown> = {};
+    for (const col of columns) {
+      r[col.name] = col.defaultValue;
+    }
+    return r;
+  }, [columns]);
+
   const contextMenuItems: ContextMenuItem[] = useMemo(() => [
+    {
+      label: 'Insert New Row',
+      disabled: !editable || !onInsertRow,
+      action: () => {
+        setCloneRow(emptyRow);
+      },
+    },
     {
       label: 'Clone as New Row',
       disabled: contextMenuRowIndex === null || !editable || !onInsertRow,
@@ -160,7 +175,7 @@ export function QueryResultsGrid({
         },
       ],
     },
-  ], [contextMenuRowIndex, editable, onInsertRow, rows, selectedIndices.length, onExportCsv, handleExportCsv]);
+  ], [contextMenuRowIndex, editable, onInsertRow, emptyRow, rows, selectedIndices.length, onExportCsv, handleExportCsv]);
 
   if (error) {
     return <div className="query-results-error">{error}</div>;
