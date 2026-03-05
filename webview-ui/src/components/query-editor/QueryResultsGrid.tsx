@@ -10,6 +10,7 @@ import { useBatchEdits } from '../../hooks/useBatchEdits';
 import { QueryResultsToolbar } from './QueryResultsToolbar';
 import { ContextMenu } from '../common/ContextMenu';
 import type { ContextMenuItem } from '../common/ContextMenu';
+import { CloneRowModal } from '../common/CloneRowModal';
 import { generateCsv } from '../../utils/csv';
 import type { ColumnInfo } from '../../types/database';
 import type { SortState } from '../../utils/sql-builder';
@@ -29,6 +30,7 @@ interface QueryResultsGridProps {
   readonly sortState?: SortState | null;
   readonly onSort?: (columnId: string) => void;
   readonly onExportCsv?: (content: string, defaultFileName: string) => void;
+  readonly onInsertRow?: (row: Record<string, unknown>) => void;
 }
 
 interface EditingCell {
@@ -49,10 +51,13 @@ export function QueryResultsGrid({
   sortState,
   onSort,
   onExportCsv,
+  onInsertRow,
 }: QueryResultsGridProps) {
   const [editingCell, setEditingCell] = useState<EditingCell | null>(null);
   const [rowSelection, setRowSelection] = useState<Record<string, boolean>>({});
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const [cloneRow, setCloneRow] = useState<Record<string, unknown> | null>(null);
+  const [contextMenuRowIndex, setContextMenuRowIndex] = useState<number | null>(null);
   const { addChange, isCellChanged, getCellValue, buildUpdates, clearChanges, pendingCount } =
     useBatchEdits();
 
@@ -113,6 +118,11 @@ export function QueryResultsGrid({
     [rowSelection]
   );
 
+  const handleCloneSubmit = useCallback((row: Record<string, unknown>) => {
+    onInsertRow?.(row);
+    setCloneRow(null);
+  }, [onInsertRow]);
+
   const handleExportCsv = useCallback(() => {
     if (selectedIndices.length === 0 || !onExportCsv) return;
     const selectedRows = selectedIndices.map((i) => rows[i]).filter(Boolean);
@@ -120,9 +130,10 @@ export function QueryResultsGrid({
     onExportCsv(content, 'export.csv');
   }, [selectedIndices, rows, columns, onExportCsv]);
 
-  const handleContextMenu = useCallback((e: React.MouseEvent) => {
+  const handleContextMenu = useCallback((e: React.MouseEvent, rowIndex?: number) => {
     e.preventDefault();
     setContextMenu({ x: e.clientX, y: e.clientY });
+    setContextMenuRowIndex(rowIndex ?? null);
   }, []);
 
   const closeContextMenu = useCallback(() => {
@@ -130,6 +141,15 @@ export function QueryResultsGrid({
   }, []);
 
   const contextMenuItems: ContextMenuItem[] = useMemo(() => [
+    {
+      label: 'Clone as New Row',
+      disabled: contextMenuRowIndex === null || !editable || !onInsertRow,
+      action: () => {
+        if (contextMenuRowIndex !== null) {
+          setCloneRow(rows[contextMenuRowIndex]);
+        }
+      },
+    },
     {
       label: 'Export',
       children: [
@@ -140,7 +160,7 @@ export function QueryResultsGrid({
         },
       ],
     },
-  ], [selectedIndices.length, onExportCsv, handleExportCsv]);
+  ], [contextMenuRowIndex, editable, onInsertRow, rows, selectedIndices.length, onExportCsv, handleExportCsv]);
 
   if (error) {
     return <div className="query-results-error">{error}</div>;
@@ -170,7 +190,7 @@ export function QueryResultsGrid({
         saving={saving}
         onSave={handleSave}
       />
-      <div className="query-results-table" ref={scrollContainerRef} onContextMenu={handleContextMenu}>
+      <div className="query-results-table" ref={scrollContainerRef}>
         <GridTable
           columns={columns}
           rows={rows}
@@ -186,6 +206,7 @@ export function QueryResultsGrid({
           rowSelection={rowSelection}
           onRowSelectionChange={setRowSelection}
           scrollContainerRef={scrollContainerRef}
+          onRowContextMenu={handleContextMenu}
         />
       </div>
       {contextMenu && (
@@ -193,6 +214,14 @@ export function QueryResultsGrid({
           items={contextMenuItems}
           position={contextMenu}
           onClose={closeContextMenu}
+        />
+      )}
+      {cloneRow && onInsertRow && (
+        <CloneRowModal
+          row={cloneRow}
+          columns={columns}
+          onSubmit={handleCloneSubmit}
+          onClose={() => setCloneRow(null)}
         />
       )}
     </div>
@@ -215,6 +244,7 @@ interface GridTableProps {
   readonly rowSelection: Record<string, boolean>;
   readonly onRowSelectionChange: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
   readonly scrollContainerRef: React.RefObject<HTMLDivElement | null>;
+  readonly onRowContextMenu: (e: React.MouseEvent, rowIndex: number) => void;
 }
 
 // DOM 测量列内容最大宽度, 从真实渲染元素读 computedStyle 获取 font
@@ -278,6 +308,7 @@ function GridTable({
   rowSelection,
   onRowSelectionChange,
   scrollContainerRef,
+  onRowContextMenu,
 }: GridTableProps) {
   const columnHelper = createColumnHelper<Record<string, unknown>>();
 
@@ -424,6 +455,7 @@ function GridTable({
               key={row.id}
               className={isSelected ? 'row-selected' : ''}
               style={{ height: virtualRow.size }}
+              onContextMenu={(e) => onRowContextMenu(e, row.index)}
             >
               <td className="select-column">
                 <input
