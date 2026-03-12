@@ -65,7 +65,6 @@ export function activate(context: vscode.ExtensionContext): void {
   // 注册 TreeView
   const treeView = vscode.window.createTreeView('databaseConnections', {
     treeDataProvider: treeProvider,
-    showCollapseAll: true,
     dragAndDropController: treeProvider,
   });
 
