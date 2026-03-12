@@ -1,6 +1,7 @@
 .vscode/**
 .claude/**
 .serena/**
+.worktrees/**
 src/**
 webview-ui/src/**
 webview-ui/node_modules/**
