@@ -141,7 +141,7 @@ export class TableViewProvider implements vscode.Disposable {
 
   openRedisBrowser(connectionId: string, database: number): void {
     const config = this.connectionManager.getConnections().find((c) => c.id === connectionId);
-    this.openBrowser(`redis:${connectionId}:${database}`, `Redis - db${database}`, 'redis-browser', {
+    this.openBrowser(`redis-browser:${connectionId}`, `Redis - ${config?.name ?? connectionId}`, 'redis-browser', {
       connectionId,
       database,
       separator: config?.separator ?? ':',
