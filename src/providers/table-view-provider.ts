@@ -172,6 +172,17 @@ export class TableViewProvider implements vscode.Disposable {
     }, iconPath);
   }
 
+  openDbBrowser(connectionId: string, connectionName: string, driverType: string): void {
+    const iconPath = {
+      light: vscode.Uri.joinPath(this.extensionUri, 'resources', `${driverType}-connected-light.svg`),
+      dark: vscode.Uri.joinPath(this.extensionUri, 'resources', `${driverType}-connected-dark.svg`),
+    };
+    this.openBrowser(`db-browser:${connectionId}`, `[${driverType.toUpperCase()}]${connectionName}`, 'db-browser', {
+      connectionId,
+      driverType,
+    }, iconPath);
+  }
+
   private openBrowser(
     panelKey: string,
     title: string,
@@ -470,6 +481,113 @@ export class TableViewProvider implements vscode.Disposable {
         }
 
         default: {
+          // db-browser messages
+          if (message.type === 'listDatabasesAndTables' || message.type === 'refreshDatabases') {
+            const driver = this.connectionManager.getDriver(connectionId!);
+            try {
+              const dbNames = await driver.listDatabases();
+              const databases = await Promise.all(
+                dbNames.map(async (name) => {
+                  const tables = await driver.listTables(name);
+                  return {
+                    name,
+                    tables: tables.map((t) => ({ name: t.name, rowCount: t.rowCount })),
+                  };
+                })
+              );
+              panel.webview.postMessage({ type: 'databaseTableList', databases });
+            } catch (err) {
+              panel.webview.postMessage({
+                type: 'databaseTableList',
+                databases: [],
+                error: err instanceof Error ? err.message : String(err),
+              });
+            }
+            return;
+          }
+
+          if (message.type === 'showTableDDL') {
+            const { database, table } = message as { database: string; table: string };
+            this.showTableDDL(connectionId!, database, table);
+            return;
+          }
+
+          if (message.type === 'dumpTable') {
+            const { database, table, includeData } = message as { database: string; table: string; includeData: boolean };
+            const driver = this.connectionManager.getDriver(connectionId!);
+            const baseDir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? require('os').homedir();
+            const ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+            const uri = await vscode.window.showSaveDialog({
+              filters: { 'SQL Files': ['sql'] },
+              defaultUri: vscode.Uri.file(`${baseDir}/${table}_${ts}.sql`),
+            });
+            if (!uri) { return; }
+            if (includeData) {
+              const { DumpService } = await import('../services/dump-service.js');
+              const dumpService = new DumpService();
+              await vscode.window.withProgress(
+                { location: vscode.ProgressLocation.Notification, title: `Dumping ${table}...`, cancellable: true },
+                async (progress, token) => {
+                  const content = await dumpService.dumpStructAndData(
+                    driver, database, table,
+                    (current, total) => { progress.report({ increment: 0, message: `${current}/${total} rows` }); },
+                    token
+                  );
+                  await vscode.workspace.fs.writeFile(uri, Buffer.from(content, 'utf-8'));
+                  vscode.window.showInformationMessage(`Data dumped to ${uri.fsPath}`);
+                }
+              );
+            } else {
+              const { DumpService } = await import('../services/dump-service.js');
+              const dumpService = new DumpService();
+              const content = await dumpService.dumpStruct(driver, database, table);
+              await vscode.workspace.fs.writeFile(uri, Buffer.from(content, 'utf-8'));
+              vscode.window.showInformationMessage(`Struct dumped to ${uri.fsPath}`);
+            }
+            return;
+          }
+
+          if (message.type === 'importSql') {
+            const { database } = message as { database: string; table?: string };
+            const uris = await vscode.window.showOpenDialog({
+              filters: { 'SQL Files': ['sql'] },
+              canSelectMany: false,
+            });
+            if (!uris || uris.length === 0) { return; }
+            const fileContent = await vscode.workspace.fs.readFile(uris[0]);
+            const sql = Buffer.from(fileContent).toString('utf-8');
+            const driver = this.connectionManager.getDriver(connectionId!);
+            try {
+              const { promise } = driver.executeCancellable(sql, undefined, database);
+              const result = await promise;
+              vscode.window.showInformationMessage(`SQL imported. Affected rows: ${result.affectedRows}`);
+              // 刷新左侧列表
+              const dbNames = await driver.listDatabases();
+              const databases = await Promise.all(
+                dbNames.map(async (name) => {
+                  const tables = await driver.listTables(name);
+                  return { name, tables: tables.map((t) => ({ name: t.name, rowCount: t.rowCount })) };
+                })
+              );
+              panel.webview.postMessage({ type: 'databaseTableList', databases });
+            } catch (err) {
+              vscode.window.showErrorMessage(`Import failed: ${err instanceof Error ? err.message : String(err)}`);
+            }
+            return;
+          }
+
+          if (message.type === 'editTable') {
+            const { database, table } = message as { database: string; table: string };
+            this.openEditTable(connectionId!, database, table);
+            return;
+          }
+
+          if (message.type === 'newQuery') {
+            const { database } = message as { database: string };
+            this.openQueryEditor(connectionId!, database);
+            return;
+          }
+
           if (message.type.startsWith('rmq')) {
             const rmqDriver = this.connectionManager.getRabbitMQDriver(connectionId!);
             const post = (msg: unknown) => panel.webview.postMessage(msg);
