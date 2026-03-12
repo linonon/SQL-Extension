@@ -6,3 +6,4 @@ webview-ui/node_modules/
 .DS_Store
 lock.txt
 search.md
+.worktrees/
