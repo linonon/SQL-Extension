@@ -54,10 +54,14 @@ function filterDatabases(
   }
   const lower = filterText.toLowerCase();
   return databases
-    .map((d) => ({
-      ...d,
-      tables: d.tables.filter((t) => t.name.toLowerCase().includes(lower)),
-    }))
+    .map((d) => {
+      const dbMatch = d.name.toLowerCase().includes(lower);
+      return {
+        ...d,
+        // database name 匹配时保留所有 tables, 否则按 table name 过滤
+        tables: dbMatch ? d.tables : d.tables.filter((t) => t.name.toLowerCase().includes(lower)),
+      };
+    })
     .filter((d) => d.tables.length > 0);
 }
 
@@ -119,7 +123,7 @@ export function DatabaseObjectList({
           type="text"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
-          placeholder="Filter tables... (db.table)"
+          placeholder="Filter db or table... (db.table)"
         />
       </div>
       <div className="db-object-list">
