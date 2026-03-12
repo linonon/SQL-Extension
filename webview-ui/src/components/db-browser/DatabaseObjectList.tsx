@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from 'react';
 import { ContextMenu, type ContextMenuItem } from '../common/ContextMenu';
+import { fuzzyScore } from '../../utils/fuzzy-score';
 
 export interface DatabaseInfo {
   readonly name: string;
@@ -35,6 +36,12 @@ function formatRowCount(n: number): string {
   return String(n);
 }
 
+interface ScoredDatabase {
+  readonly db: DatabaseInfo;
+  readonly score: number;
+  readonly tables: readonly TableInfo[];
+}
+
 function filterDatabases(
   databases: readonly DatabaseInfo[],
   filterText: string
@@ -42,27 +49,37 @@ function filterDatabases(
   if (!filterText) { return databases; }
   const dotIdx = filterText.indexOf('.');
   if (dotIdx >= 0) {
-    const dbFilter = filterText.slice(0, dotIdx).toLowerCase();
-    const tableFilter = filterText.slice(dotIdx + 1).toLowerCase();
+    // db.table 格式: dot 前 fuzzy 匹配 db name, dot 后 fuzzy 匹配 table name
+    const dbPattern = filterText.slice(0, dotIdx);
+    const tablePattern = filterText.slice(dotIdx + 1);
     return databases
-      .filter((d) => d.name.toLowerCase().includes(dbFilter))
+      .filter((d) => !dbPattern || fuzzyScore(dbPattern, d.name) > 0)
       .map((d) => ({
         ...d,
-        tables: d.tables.filter((t) => t.name.toLowerCase().includes(tableFilter)),
+        tables: !tablePattern
+          ? d.tables
+          : d.tables.filter((t) => fuzzyScore(tablePattern, t.name) > 0),
       }))
       .filter((d) => d.tables.length > 0);
   }
-  const lower = filterText.toLowerCase();
-  return databases
-    .map((d) => {
-      const dbMatch = d.name.toLowerCase().includes(lower);
-      return {
-        ...d,
-        // database name 匹配时保留所有 tables, 否则按 table name 过滤
-        tables: dbMatch ? d.tables : d.tables.filter((t) => t.name.toLowerCase().includes(lower)),
-      };
-    })
-    .filter((d) => d.tables.length > 0);
+  // 单关键字: fuzzy 匹配 db name 或 table name, 按最高分排序
+  const scored: ScoredDatabase[] = [];
+  for (const d of databases) {
+    const dbScore = fuzzyScore(filterText, d.name);
+    const matchedTables = d.tables
+      .map((t) => ({ table: t, score: fuzzyScore(filterText, t.name) }))
+      .filter((r) => r.score > 0);
+    if (dbScore > 0) {
+      // db name 匹配: 保留所有 tables
+      scored.push({ db: d, score: dbScore, tables: d.tables });
+    } else if (matchedTables.length > 0) {
+      // table name 匹配: 只保留匹配的 tables, 取最高 table score
+      const bestScore = Math.max(...matchedTables.map((r) => r.score));
+      scored.push({ db: d, score: bestScore, tables: matchedTables.map((r) => r.table) });
+    }
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored.map((s) => ({ ...s.db, tables: s.tables }));
 }
 
 export function DatabaseObjectList({
