@@ -9,6 +9,7 @@ import { RedisBrowser } from './components/redis-browser/RedisBrowser';
 import { KafkaBrowser } from './components/kafka-browser/KafkaBrowser';
 import { RmqBrowser } from './components/rmq-browser/RmqBrowser';
 import { MongoBrowser } from './components/mongo-browser/MongoBrowser';
+import { DatabaseBrowser } from './components/db-browser/DatabaseBrowser';
 import { MongoQueryEditor } from './components/mongo-browser/MongoQueryEditor';
 import type { ExtensionMessage, ViewType } from './types/messages';
 
@@ -83,6 +84,13 @@ export function App() {
       return (
         <RmqBrowser
           connectionId={viewContext.connectionId as string}
+        />
+      );
+    case 'db-browser':
+      return (
+        <DatabaseBrowser
+          connectionId={viewContext.connectionId as string}
+          driverType={viewContext.driverType as string}
         />
       );
     case 'mongo-browser':
