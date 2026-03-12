@@ -70,7 +70,8 @@ export type ExtensionMessage =
   | { type: 'mongoImportResult'; success: boolean; inserted?: number; error?: string }
   | { type: 'mongoCollectionCreated'; success: boolean; error?: string }
   | { type: 'mongoCollectionDropped'; success: boolean; database?: string; collection?: string; error?: string }
-  | { type: 'mongoQueryResult'; columns: readonly ColumnInfo[]; rows: readonly Record<string, unknown>[]; affectedRows: number; executionTime: number; truncated: boolean; error?: string };
+  | { type: 'mongoQueryResult'; columns: readonly ColumnInfo[]; rows: readonly Record<string, unknown>[]; affectedRows: number; executionTime: number; truncated: boolean; error?: string }
+  | { type: 'databaseTableList'; databases: readonly { readonly name: string; readonly tables: readonly { readonly name: string; readonly rowCount: number }[] }[]; error?: string };
 
 // Webview -> Extension
 export type WebviewMessage =
@@ -140,6 +141,13 @@ export type WebviewMessage =
   | { type: 'mongoCreateCollection'; database: string; collection: string }
   | { type: 'mongoDropCollection'; database: string; collection: string }
   | { type: 'mongoRunQuery'; database: string; query: string }
-  | { type: 'mongoCancelQuery' };
+  | { type: 'mongoCancelQuery' }
+  | { type: 'listDatabasesAndTables' }
+  | { type: 'refreshDatabases' }
+  | { type: 'showTableDDL'; database: string; table: string }
+  | { type: 'dumpTable'; database: string; table: string; includeData: boolean }
+  | { type: 'importSql'; database: string; table?: string }
+  | { type: 'editTable'; database: string; table: string }
+  | { type: 'newQuery'; database: string };
 
-export type ViewType = 'table' | 'query' | 'connection-form' | 'edit-table' | 'redis-browser' | 'kafka-browser' | 'rmq-browser' | 'mongo-browser' | 'mongo-query';
+export type ViewType = 'table' | 'query' | 'connection-form' | 'edit-table' | 'redis-browser' | 'kafka-browser' | 'rmq-browser' | 'mongo-browser' | 'mongo-query' | 'db-browser';
