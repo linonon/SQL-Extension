@@ -95,7 +95,7 @@ export function HighlightEditor({
         <div className="highlight-editor-backdrop-inner">{segments}</div>
       </div>
       <textarea
-        ref={ref}
+        ref={ref as RefObject<HTMLTextAreaElement>}
         className="highlight-editor-textarea"
         value={value}
         onChange={handleChange}

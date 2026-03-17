@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import { useMongoAutocomplete } from '../../hooks/useMongoAutocomplete';
 import { convertShellToJson, stripShellTypes, jsonToShell } from '../../utils/mongo-shell-to-json';
+import { findMatches } from '../../utils/text-search';
 import { AutocompletePopup } from '../sql-editor/AutocompletePopup';
+import { HighlightEditor } from './HighlightEditor';
 
 type DetailMode = 'edit' | 'insert';
 
@@ -30,7 +32,6 @@ export function extractRawId(idValue: string): string {
 
 export function MongoDocumentDetail({ document, mode, fieldNames, onClose, onSave, onDelete, onDirtyChange, saveSignal }: MongoDocumentDetailProps) {
   const displayId = document ? String(document._id ?? '') : '';
-  // docId 是给查询用的原始 hex, autoConvertIds 才能识别
   const docId = extractRawId(displayId);
   const initialText = useMemo(
     () => document ? jsonToShell(JSON.stringify(stripId(document), null, 2)) : '{}',
@@ -42,10 +43,80 @@ export function MongoDocumentDetail({ document, mode, fieldNames, onClose, onSav
   const [toast, setToast] = useState('');
   const dirty = text !== initialText;
 
+  // search state
+  const [showSearch, setShowSearch] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [activeMatchIndex, setActiveMatchIndex] = useState(0);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  const matches = useMemo(() => findMatches(text, searchQuery), [text, searchQuery]);
+
+  // clamp activeMatchIndex when matches change
+  useEffect(() => {
+    if (matches.length === 0) {
+      setActiveMatchIndex(0);
+    } else if (activeMatchIndex >= matches.length) {
+      setActiveMatchIndex(matches.length - 1);
+    }
+  }, [matches.length, activeMatchIndex]);
+
   const {
     textareaRef, completionItems, selectedIndex, popupPos,
-    handleChange, handleKeyDown, applyCompletion,
+    handleChange: autocompleteHandleChange, handleKeyDown: autocompleteHandleKeyDown, applyCompletion,
   } = useMongoAutocomplete({ fieldNames, value: text, onChange: setText });
+
+  // onChange: 透传原始 event 给 autocomplete hook, 同时更新 local state
+  const handleEditorChange = useCallback((e: ChangeEvent<HTMLTextAreaElement>) => {
+    setText(e.target.value);
+    autocompleteHandleChange(e);
+  }, [autocompleteHandleChange]);
+
+  const openSearch = useCallback(() => {
+    setShowSearch(true);
+    requestAnimationFrame(() => searchInputRef.current?.focus());
+  }, []);
+
+  const closeSearch = useCallback(() => {
+    setShowSearch(false);
+    setSearchQuery('');
+    setActiveMatchIndex(0);
+  }, []);
+
+  const goNextMatch = useCallback(() => {
+    if (matches.length === 0) { return; }
+    setActiveMatchIndex(i => (i + 1) % matches.length);
+  }, [matches.length]);
+
+  const goPrevMatch = useCallback(() => {
+    if (matches.length === 0) { return; }
+    setActiveMatchIndex(i => (i - 1 + matches.length) % matches.length);
+  }, [matches.length]);
+
+  const handleSearchKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Escape') { e.preventDefault(); closeSearch(); return; }
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (e.shiftKey) { goPrevMatch(); } else { goNextMatch(); }
+    }
+  }, [closeSearch, goNextMatch, goPrevMatch]);
+
+  // intercept Ctrl+F on the detail container
+  const handleContainerKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+      e.preventDefault();
+      openSearch();
+    }
+  }, [openSearch]);
+
+  // wrap autocomplete handleKeyDown: add Ctrl+F to open search
+  const handleEditorKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+      e.preventDefault();
+      openSearch();
+      return;
+    }
+    autocompleteHandleKeyDown(e);
+  }, [openSearch, autocompleteHandleKeyDown]);
 
   const handleSave = useCallback(() => {
     try {
@@ -89,7 +160,7 @@ export function MongoDocumentDetail({ document, mode, fieldNames, onClose, onSav
   }, [text, showToast]);
 
   return (
-    <div className="mongo-document-detail">
+    <div className="mongo-document-detail" onKeyDown={handleContainerKeyDown}>
       <div className="detail-header">
         <h3>{mode === 'edit' ? 'Edit Document' : 'New Document'}</h3>
         <div className="detail-header-actions">
@@ -101,6 +172,7 @@ export function MongoDocumentDetail({ document, mode, fieldNames, onClose, onSav
               <span className="detail-copy-toast" onAnimationEnd={() => setToast('')}>{toast}</span>
             )}
           </div>
+          <button className="btn-small" onClick={openSearch} title="Search (Ctrl+F)">Find</button>
           {mode === 'edit' && (
             <button className="btn-small btn-danger" onClick={handleDelete}>Delete</button>
           )}
@@ -118,14 +190,32 @@ export function MongoDocumentDetail({ document, mode, fieldNames, onClose, onSav
         <div className="detail-id-bar">_id: {displayId}</div>
       )}
       {error && <div className="detail-error">{error}</div>}
+      {showSearch && (
+        <div className="detail-search-bar">
+          <input
+            ref={searchInputRef}
+            type="text"
+            value={searchQuery}
+            onChange={(e) => { setSearchQuery(e.target.value); setActiveMatchIndex(0); }}
+            onKeyDown={handleSearchKeyDown}
+            placeholder="Search..."
+          />
+          <span className="search-count">
+            {searchQuery ? `${matches.length > 0 ? activeMatchIndex + 1 : 0} / ${matches.length}` : ''}
+          </span>
+          <button className="btn-small" onClick={goPrevMatch} disabled={matches.length === 0} title="Previous (Shift+Enter)">Prev</button>
+          <button className="btn-small" onClick={goNextMatch} disabled={matches.length === 0} title="Next (Enter)">Next</button>
+          <button className="btn-small" onClick={closeSearch} title="Close (Esc)">X</button>
+        </div>
+      )}
       <div className="detail-body">
-        <textarea
-          ref={textareaRef}
-          className="detail-editor"
+        <HighlightEditor
           value={text}
-          onChange={handleChange}
-          onKeyDown={handleKeyDown}
-          spellCheck={false}
+          onChange={handleEditorChange}
+          onKeyDown={handleEditorKeyDown}
+          searchQuery={showSearch ? searchQuery : ''}
+          activeMatchIndex={activeMatchIndex}
+          textareaRef={textareaRef}
         />
         <AutocompletePopup
           items={completionItems}
