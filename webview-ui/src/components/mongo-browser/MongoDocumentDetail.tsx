@@ -41,6 +41,8 @@ export function MongoDocumentDetail({ document, mode, fieldNames, onClose, onSav
   const [text, setText] = useState(initialText);
   const [error, setError] = useState('');
   const [toast, setToast] = useState('');
+  const [showCopyMenu, setShowCopyMenu] = useState(false);
+  const copyMenuRef = useRef<HTMLDivElement>(null);
   const dirty = text !== initialText;
 
   // search state
@@ -147,27 +149,47 @@ export function MongoDocumentDetail({ document, mode, fieldNames, onClose, onSav
   const handleCopyShell = useCallback(() => {
     navigator.clipboard.writeText(text);
     showToast('Copied as Shell');
+    setShowCopyMenu(false);
   }, [text, showToast]);
 
   const handleCopyEjson = useCallback(() => {
     navigator.clipboard.writeText(convertShellToJson(text));
     showToast('Copied as EJSON');
+    setShowCopyMenu(false);
   }, [text, showToast]);
 
   const handleCopyJson = useCallback(() => {
     navigator.clipboard.writeText(stripShellTypes(text));
     showToast('Copied as JSON');
+    setShowCopyMenu(false);
   }, [text, showToast]);
+
+  // 点击外部关闭 copy menu
+  useEffect(() => {
+    if (!showCopyMenu) { return; }
+    const handleClickOutside = (e: MouseEvent) => {
+      if (copyMenuRef.current && !copyMenuRef.current.contains(e.target as Node)) {
+        setShowCopyMenu(false);
+      }
+    };
+    window.document.addEventListener('mousedown', handleClickOutside);
+    return () => window.document.removeEventListener('mousedown', handleClickOutside);
+  }, [showCopyMenu]);
 
   return (
     <div className="mongo-document-detail" onKeyDown={handleContainerKeyDown}>
       <div className="detail-header">
         <h3>{mode === 'edit' ? 'Edit Document' : 'New Document'}</h3>
         <div className="detail-header-actions">
-          <div className="detail-copy-group">
-            <button className="btn-small" onClick={handleCopyShell} title="Copy as mongo shell syntax">Shell</button>
-            <button className="btn-small" onClick={handleCopyEjson} title="Copy as Extended JSON">EJSON</button>
-            <button className="btn-small" onClick={handleCopyJson} title="Copy as plain JSON">JSON</button>
+          <div className="detail-copy-group" ref={copyMenuRef}>
+            <button className="btn-small" onClick={() => setShowCopyMenu(v => !v)}>Copy as...</button>
+            {showCopyMenu && (
+              <div className="detail-copy-menu">
+                <button className="detail-copy-menu-item" onClick={handleCopyShell}>Shell</button>
+                <button className="detail-copy-menu-item" onClick={handleCopyEjson}>EJSON</button>
+                <button className="detail-copy-menu-item" onClick={handleCopyJson}>JSON</button>
+              </div>
+            )}
             {toast && (
               <span className="detail-copy-toast" onAnimationEnd={() => setToast('')}>{toast}</span>
             )}
