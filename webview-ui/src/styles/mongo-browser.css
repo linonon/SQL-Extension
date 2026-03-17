@@ -284,8 +284,8 @@
 
 .mongo-document-detail .detail-header {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
+  gap: 6px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.35));
   flex-shrink: 0;
