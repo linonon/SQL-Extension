@@ -132,6 +132,14 @@ export class ConnectionPool {
     return entry.driver as IDatabaseDriver;
   }
 
+  getMongoDriver(id: string): MongoDriver {
+    const entry = this.getEntry(id);
+    if (entry.driverType !== 'mongodb') {
+      throw new Error(`Connection ${id} is not MongoDB`);
+    }
+    return entry.driver as MongoDriver;
+  }
+
   getRedisDriver(id: string): IRedisDriver {
     const entry = this.getEntry(id);
     if (entry.driverType !== 'redis') {
