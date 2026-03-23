@@ -136,4 +136,66 @@ export function registerConnectTools(server: McpServer, pool: ConnectionPool, ip
       return makeResult({ connections: result });
     }
   );
+
+  server.registerTool(
+    'db_save_connection',
+    {
+      title: 'Save Connection',
+      description: 'Save a database connection configuration to VS Code extension. Requires VS Code to be running. The saved connection will appear in the extension sidebar.',
+      inputSchema: {
+        name: z.string().describe('Display name for the connection'),
+        driverType: z.enum(DRIVER_TYPES).describe('Database type'),
+        host: z.string().describe('Database host (the actual target host, not the SSH jump host)'),
+        port: z.number().int().positive().describe('Database port'),
+        username: z.string().optional().describe('Username'),
+        password: z.string().optional().describe('Password'),
+        database: z.string().optional().describe('Default database name'),
+        ssh: z.object({
+          enabled: z.boolean(),
+          host: z.string(),
+          port: z.number().int().positive(),
+          username: z.string(),
+          authType: z.enum(['password', 'privateKey']),
+          password: z.string().optional(),
+          privateKeyPath: z.string().optional(),
+        }).optional().describe('SSH tunnel configuration'),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
+    async (params) => {
+      try {
+        if (!ipc.connected) {
+          return makeError('VS Code extension is not running. Cannot save connections.', 'IPC_NOT_AVAILABLE');
+        }
+        const id = `conn_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        const config: Record<string, unknown> = {
+          id,
+          name: params.name,
+          driverType: params.driverType,
+          host: params.host,
+          port: params.port,
+          username: params.username ?? '',
+          database: params.database ?? '',
+        };
+        if (params.ssh) {
+          config.ssh = {
+            enabled: params.ssh.enabled,
+            host: params.ssh.host,
+            port: params.ssh.port,
+            username: params.ssh.username,
+            authType: params.ssh.authType,
+            privateKeyPath: params.ssh.privateKeyPath,
+          };
+        }
+        const result = await ipc.request('saveConnection', {
+          config,
+          password: params.password ?? '',
+          sshPassword: params.ssh?.password,
+        });
+        return makeResult(result);
+      } catch (err) {
+        return makeError(toErrorMessage(err), 'SAVE_FAILED');
+      }
+    }
+  );
 }

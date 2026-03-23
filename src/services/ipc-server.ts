@@ -223,6 +223,29 @@ export class IpcServer {
         return await driver.getTableDDL(database, table);
       }
 
+      case 'saveConnection': {
+        const config = params.config as Record<string, unknown>;
+        const password = (params.password as string) ?? '';
+        const sshPassword = params.sshPassword as string | undefined;
+        const id = config.id as string || `conn_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        const connConfig = {
+          id,
+          name: (config.name as string) || id,
+          driverType: config.driverType as string,
+          host: config.host as string,
+          port: config.port as number,
+          username: (config.username as string) ?? '',
+          database: (config.database as string) ?? '',
+          ssh: config.ssh as Record<string, unknown> | undefined,
+        };
+        await this.connectionManager.addConnection(
+          connConfig as unknown as import('../types/connection.js').ConnectionConfig,
+          password,
+          sshPassword,
+        );
+        return { success: true, connectionId: id };
+      }
+
       default:
         throw new Error(`Unknown IPC method: ${method}`);
     }
