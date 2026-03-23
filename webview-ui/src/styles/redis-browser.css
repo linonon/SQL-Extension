@@ -435,6 +435,10 @@
 
 
 /* Command bar */
+.redis-db-select {
+  flex-shrink: 0;
+}
+
 .redis-command-bar {
   display: flex;
   gap: 8px;

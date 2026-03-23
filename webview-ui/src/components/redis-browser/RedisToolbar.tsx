@@ -73,6 +73,15 @@ export function RedisToolbar({
 
   return (
     <div className="redis-toolbar">
+      <select
+        className="redis-db-select"
+        value={database}
+        onChange={(e) => onDatabaseChange(Number(e.target.value))}
+      >
+        {databases.map((d) => (
+          <option key={d.index} value={d.index}>{d.keyCount >= 0 ? `db${d.index} (${d.keyCount})` : `db${d.index}`}</option>
+        ))}
+      </select>
       <div className="redis-command-bar">
         <textarea
           ref={textareaRef}
@@ -88,14 +97,6 @@ export function RedisToolbar({
         </button>
       </div>
       <div className="redis-toolbar-actions">
-        <select
-          value={database}
-          onChange={(e) => onDatabaseChange(Number(e.target.value))}
-        >
-          {databases.map((d) => (
-            <option key={d.index} value={d.index}>{d.keyCount >= 0 ? `db${d.index} (${d.keyCount})` : `db${d.index}`}</option>
-          ))}
-        </select>
         <button className="icon-btn" title="Refresh" onClick={onRefresh}>
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
             <path d="M13.451 5.609l-.579-.939-1.068.812-.076.094c.335.57.527 1.225.527 1.924a4.008 4.008 0 0 1-4.006 4.006 4.007 4.007 0 0 1-3.742-2.555l1.244-.009-.067-1.5-3.456.024.025 3.456 1.5-.01-.01-1.252A5.508 5.508 0 0 0 8.249 13.006 5.509 5.509 0 0 0 13.755 7.5c0-0.675-.122-1.32-.304-1.891zM8.249 2.494a5.508 5.508 0 0 0-5.175 3.61l.579.939 1.068-.812.076-.094A3.98 3.98 0 0 1 5.27 4.913 4.007 4.007 0 0 1 8.249 2.994a4.008 4.008 0 0 1 3.742 2.555l-1.244.009.067 1.5 3.456-.024-.025-3.456-1.5.01.01 1.252A5.508 5.508 0 0 0 8.249 2.494z"/>
