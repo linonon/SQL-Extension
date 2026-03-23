@@ -34,6 +34,9 @@ interface UseMongoAutocompleteOptions {
   readonly value: string;
   readonly onChange: (value: string) => void;
   readonly onApply?: () => void;
+  // true: 只在有 prefix 时触发补全 (edit document 场景)
+  // false/undefined: 空 prefix 也触发, 显示所有候选 (filter input 场景)
+  readonly requirePrefix?: boolean;
 }
 
 interface UseMongoAutocompleteResult {
@@ -51,6 +54,7 @@ export function useMongoAutocomplete({
   value,
   onChange,
   onApply,
+  requirePrefix = false,
 }: UseMongoAutocompleteOptions): UseMongoAutocompleteResult {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const cursorPosRef = useRef<number>(0);
@@ -83,13 +87,18 @@ export function useMongoAutocomplete({
 
   const updateCompletion = useCallback((text: string, cursorPos: number) => {
     const ctx = getMongoAutocompleteContext(text, cursorPos);
+    // requirePrefix 模式: prefix 为空时不弹出补全
+    if (requirePrefix && ctx.prefix === '') {
+      setCompletionItems([]);
+      return;
+    }
     const items = getMongoCompletionItems(ctx, fieldNames);
     setCompletionItems(items);
     setSelectedIndex(0);
     if (items.length > 0) {
       updatePopupPosition(cursorPos);
     }
-  }, [fieldNames, updatePopupPosition]);
+  }, [fieldNames, requirePrefix, updatePopupPosition]);
 
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -108,25 +117,12 @@ export function useMongoAutocomplete({
 
     // 根据引号上下文适配插入内容
     let insertion = item;
+    let cursorBack = 0;
     if (ctx.triggerType === 'function') {
       const NO_ARG_FUNCTIONS = new Set(['MinKey', 'MaxKey']);
       insertion = NO_ARG_FUNCTIONS.has(item) ? item + '()' : item + '("")';
-      const cursorBack = NO_ARG_FUNCTIONS.has(item) ? 0 : 2;
-      const before = currentValue.slice(0, insertStart);
-      const after = currentValue.slice(cursorPos);
-      const newValue = before + insertion + after;
-      onChange(newValue);
-      setCompletionItems([]);
-      const newCursorPos = insertStart + insertion.length - cursorBack;
-      cursorPosRef.current = newCursorPos;
-      requestAnimationFrame(() => {
-        textarea.selectionStart = newCursorPos;
-        textarea.selectionEnd = newCursorPos;
-      });
-      return;
-    }
-    // 自动补关闭引号 + ": "
-    if (ctx.triggerType === 'field' || ctx.triggerType === 'operator') {
+      cursorBack = NO_ARG_FUNCTIONS.has(item) ? 0 : 2;
+    } else if (ctx.triggerType === 'field' || ctx.triggerType === 'operator') {
       const charBefore = insertStart > 0 ? currentValue[insertStart - 1] : '';
       if (charBefore === '"') {
         insertion = item + '": ';
@@ -137,18 +133,22 @@ export function useMongoAutocomplete({
       }
     }
 
-    const before = currentValue.slice(0, insertStart);
-    const after = currentValue.slice(cursorPos);
-    const newValue = before + insertion + after;
-    onChange(newValue);
+    // 用 execCommand 插入, 保持浏览器原生 undo 栈
+    textarea.focus();
+    textarea.selectionStart = insertStart;
+    textarea.selectionEnd = cursorPos;
+    document.execCommand('insertText', false, insertion);
+
     setCompletionItems([]);
-    const newCursorPos = insertStart + insertion.length;
+    const newCursorPos = insertStart + insertion.length - cursorBack;
     cursorPosRef.current = newCursorPos;
-    requestAnimationFrame(() => {
-      textarea.selectionStart = newCursorPos;
-      textarea.selectionEnd = newCursorPos;
-    });
-  }, [onChange]);
+    if (cursorBack > 0) {
+      requestAnimationFrame(() => {
+        textarea.selectionStart = newCursorPos;
+        textarea.selectionEnd = newCursorPos;
+      });
+    }
+  }, []);
 
   const handleChange = useCallback((e: ChangeEvent<HTMLTextAreaElement>) => {
     const newValue = e.target.value;

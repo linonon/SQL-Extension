@@ -65,7 +65,7 @@ export function MongoDocumentDetail({ document, mode, fieldNames, onClose, onSav
   const {
     textareaRef, completionItems, selectedIndex, popupPos,
     handleChange: autocompleteHandleChange, handleKeyDown: autocompleteHandleKeyDown, applyCompletion,
-  } = useMongoAutocomplete({ fieldNames, value: text, onChange: setText });
+  } = useMongoAutocomplete({ fieldNames, value: text, onChange: setText, requirePrefix: true });
 
   // onChange: 透传原始 event 给 autocomplete hook, 同时更新 local state
   const handleEditorChange = useCallback((e: ChangeEvent<HTMLTextAreaElement>) => {
