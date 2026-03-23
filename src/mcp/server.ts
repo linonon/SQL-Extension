@@ -5,6 +5,7 @@ import { IpcClient } from './ipc-client.js';
 import { registerConnectTools } from './tools/connect.js';
 import { registerReadTools } from './tools/query.js';
 import { registerExecuteTools } from './tools/execute.js';
+import { registerResources } from './resources.js';
 
 const pool = new ConnectionPool();
 const ipc = new IpcClient();
@@ -17,6 +18,7 @@ const server = new McpServer({
 registerConnectTools(server, pool, ipc);
 registerReadTools(server, pool, ipc);
 registerExecuteTools(server, pool, ipc);
+registerResources(server, pool, ipc);
 
 function cleanup(): void {
   pool.dispose();
