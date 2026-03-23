@@ -102,16 +102,14 @@ export class MongoDriver implements IDatabaseDriver {
     _params?: unknown[],
     database?: string
   ): { promise: Promise<QueryResult>; cancel: () => void } {
-    this.assertConnected();
     let cancelled = false;
 
     const promise = (async (): Promise<QueryResult> => {
       const cmd = parseMongoQuery(query);
       const dbName = database ?? 'test';
-      const coll = this.client!.db(dbName).collection(cmd.collection);
       const start = Date.now();
 
-      const result = await dispatchMethod(coll, cmd.method, cmd.args);
+      const result = await this.dispatchToCollection(dbName, cmd.collection, cmd.method, cmd.args);
 
       if (cancelled) {
         return { columns: [], rows: [], affectedRows: 0, executionTime: 0 };
@@ -184,6 +182,89 @@ export class MongoDriver implements IDatabaseDriver {
     return inserted;
   }
 
+  async dispatchToCollection(
+    database: string,
+    collection: string,
+    method: string,
+    args: readonly unknown[],
+    options?: { limit?: number },
+  ): Promise<DispatchResult> {
+    this.assertConnected();
+    const coll = this.client!.db(database).collection(collection);
+    switch (method) {
+      case 'find': {
+        const filter = autoConvertIds(convertEjsonToBson(args[0] ?? {}) as Record<string, unknown>);
+        const opts = (args[1] ?? {}) as Record<string, unknown>;
+        const limit = options?.limit ?? 1000;
+        const docs = await coll.find(filter, { projection: opts.projection }).limit(limit).toArray();
+        return { docs };
+      }
+      case 'findOne': {
+        const filter = autoConvertIds(convertEjsonToBson(args[0] ?? {}) as Record<string, unknown>);
+        const doc = await coll.findOne(filter);
+        return { docs: doc ? [doc] : [] };
+      }
+      case 'insertOne': {
+        const doc = convertEjsonToBson(args[0] ?? {}) as Record<string, unknown>;
+        await coll.insertOne(doc);
+        return { affectedRows: 1 };
+      }
+      case 'insertMany': {
+        const docs = (convertEjsonToBson(args[0] ?? []) as unknown[]);
+        const result = await coll.insertMany(docs);
+        return { affectedRows: result.insertedCount };
+      }
+      case 'updateOne': {
+        const filter = autoConvertIds(convertEjsonToBson(args[0] ?? {}) as Record<string, unknown>);
+        const update = convertEjsonToBson(args[1] as Record<string, unknown>) as Record<string, unknown>;
+        const result = await coll.updateOne(filter, update);
+        return { affectedRows: result.modifiedCount };
+      }
+      case 'updateMany': {
+        const filter = autoConvertIds(convertEjsonToBson(args[0] ?? {}) as Record<string, unknown>);
+        const update = args[1] as Record<string, unknown>;
+        const result = await coll.updateMany(filter, update);
+        return { affectedRows: result.modifiedCount };
+      }
+      case 'deleteOne': {
+        const filter = autoConvertIds(convertEjsonToBson(args[0] ?? {}) as Record<string, unknown>);
+        const result = await coll.deleteOne(filter);
+        return { affectedRows: result.deletedCount };
+      }
+      case 'deleteMany': {
+        const filter = autoConvertIds(convertEjsonToBson(args[0] ?? {}) as Record<string, unknown>);
+        const result = await coll.deleteMany(filter);
+        return { affectedRows: result.deletedCount };
+      }
+      case 'aggregate': {
+        const pipeline = convertEjsonToBson(args[0] ?? []) as unknown[];
+        let docs = await coll.aggregate(pipeline).toArray();
+        if (options?.limit && docs.length > options.limit) {
+          docs = docs.slice(0, options.limit);
+        }
+        return { docs };
+      }
+      case 'countDocuments': {
+        const filter = autoConvertIds(convertEjsonToBson(args[0] ?? {}) as Record<string, unknown>);
+        const count = await coll.countDocuments(filter);
+        return { docs: [{ count }] };
+      }
+      case 'createIndex': {
+        const keys = args[0] as Record<string, number>;
+        const indexOptions = (args[1] ?? {}) as Record<string, unknown>;
+        await coll.createIndex(keys, indexOptions);
+        return { affectedRows: 1 };
+      }
+      case 'dropIndex': {
+        const indexName = args[0] as string;
+        await coll.dropIndex(indexName);
+        return { affectedRows: 1 };
+      }
+      default:
+        throw new Error(`Unsupported method: ${method}`);
+    }
+  }
+
   private assertConnected(): void {
     if (!this.client) {
       throw new Error('MongoDB driver is not connected');
@@ -205,70 +286,9 @@ function buildUri(config: ConnectionConfig & { readonly password: string }): str
 
 // --- method 分发 ---
 
-type DispatchResult =
+export type DispatchResult =
   | { readonly docs: Record<string, unknown>[] }
   | { readonly affectedRows: number };
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function dispatchMethod(coll: any, method: string, args: readonly unknown[]): Promise<DispatchResult> {
-  switch (method) {
-    case 'find': {
-      const filter = autoConvertIds(convertEjsonToBson(args[0] ?? {}) as Record<string, unknown>);
-      const options = (args[1] ?? {}) as Record<string, unknown>;
-      const docs = await coll.find(filter, { projection: options.projection }).limit(1000).toArray();
-      return { docs };
-    }
-    case 'findOne': {
-      const filter = autoConvertIds(convertEjsonToBson(args[0] ?? {}) as Record<string, unknown>);
-      const doc = await coll.findOne(filter);
-      return { docs: doc ? [doc] : [] };
-    }
-    case 'insertOne': {
-      const doc = convertEjsonToBson(args[0] ?? {}) as Record<string, unknown>;
-      await coll.insertOne(doc);
-      return { affectedRows: 1 };
-    }
-    case 'insertMany': {
-      const docs = (convertEjsonToBson(args[0] ?? []) as unknown[]);
-      const result = await coll.insertMany(docs);
-      return { affectedRows: result.insertedCount };
-    }
-    case 'updateOne': {
-      const filter = autoConvertIds(convertEjsonToBson(args[0] ?? {}) as Record<string, unknown>);
-      const update = convertEjsonToBson(args[1] as Record<string, unknown>) as Record<string, unknown>;
-      const result = await coll.updateOne(filter, update);
-      return { affectedRows: result.modifiedCount };
-    }
-    case 'updateMany': {
-      const filter = autoConvertIds(convertEjsonToBson(args[0] ?? {}) as Record<string, unknown>);
-      const update = args[1] as Record<string, unknown>;
-      const result = await coll.updateMany(filter, update);
-      return { affectedRows: result.modifiedCount };
-    }
-    case 'deleteOne': {
-      const filter = autoConvertIds(convertEjsonToBson(args[0] ?? {}) as Record<string, unknown>);
-      const result = await coll.deleteOne(filter);
-      return { affectedRows: result.deletedCount };
-    }
-    case 'deleteMany': {
-      const filter = autoConvertIds(convertEjsonToBson(args[0] ?? {}) as Record<string, unknown>);
-      const result = await coll.deleteMany(filter);
-      return { affectedRows: result.deletedCount };
-    }
-    case 'aggregate': {
-      const pipeline = convertEjsonToBson(args[0] ?? []) as unknown[];
-      const docs = await coll.aggregate(pipeline).toArray();
-      return { docs };
-    }
-    case 'countDocuments': {
-      const filter = autoConvertIds(convertEjsonToBson(args[0] ?? {}) as Record<string, unknown>);
-      const count = await coll.countDocuments(filter);
-      return { docs: [{ count }] };
-    }
-    default:
-      throw new Error(`Unsupported method: ${method}`);
-  }
-}
 
 // --- ObjectId 自动转换 ---
 
