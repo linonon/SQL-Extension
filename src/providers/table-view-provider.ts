@@ -215,6 +215,7 @@ export class TableViewProvider implements vscode.Disposable {
         username: config.username,
         password,
         database: config.database,
+        authSource: config.authSource,
         separator: config.separator ?? ':',
         sshEnabled: config.ssh?.enabled ?? false,
         sshHost: config.ssh?.host ?? '',
@@ -918,7 +919,7 @@ export class TableViewProvider implements vscode.Disposable {
 
   private async testConnection(
     panel: vscode.WebviewPanel,
-    config: { driverType: DriverType; host: string; port: number; username: string; password: string; database: string } & ConnectionFormSSH
+    config: { driverType: DriverType; host: string; port: number; username: string; password: string; database: string; authSource?: string } & ConnectionFormSSH
   ): Promise<void> {
     type TestableDriver = { connect(config: import('../types/connection.js').ConnectionConfig & { readonly password: string }): Promise<void>; disconnect(): Promise<void> };
     const DRIVER_FACTORIES: Record<string, () => Promise<TestableDriver>> = {
@@ -955,6 +956,7 @@ export class TableViewProvider implements vscode.Disposable {
         username: config.username,
         password: config.password,
         database: config.database,
+        authSource: config.authSource,
       });
       await driver.disconnect();
       panel.webview.postMessage({ type: 'connectionTestResult', success: true });
@@ -983,6 +985,7 @@ export class TableViewProvider implements vscode.Disposable {
         port: config.port,
         username: config.username,
         database: config.database,
+        authSource: config.authSource,
         separator: config.separator,
         ssh: buildSSHConfig(config),
       },
@@ -1007,6 +1010,7 @@ export class TableViewProvider implements vscode.Disposable {
         port: config.port,
         username: config.username,
         database: config.database,
+        authSource: config.authSource,
         separator: config.separator,
         ssh: buildSSHConfig(config),
       },

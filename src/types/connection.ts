@@ -19,6 +19,7 @@ export interface ConnectionConfig {
   readonly port: number;
   readonly username: string;
   readonly database: string;
+  readonly authSource?: string;
   readonly separator?: string;
   readonly ssh?: SSHTunnelConfig;
 }

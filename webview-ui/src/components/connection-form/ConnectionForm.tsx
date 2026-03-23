@@ -12,6 +12,7 @@ interface FormState {
   readonly username: string;
   readonly password: string;
   readonly database: string;
+  readonly authSource: string;
   readonly separator: string;
   readonly sshEnabled: boolean;
   readonly sshHost: string;
@@ -39,6 +40,7 @@ const initialState: FormState = {
   username: 'root',
   password: '',
   database: '',
+  authSource: '',
   separator: ':',
   sshEnabled: false,
   sshHost: '',
@@ -58,6 +60,7 @@ interface EditConnection {
   readonly username: string;
   readonly password: string;
   readonly database: string;
+  readonly authSource?: string;
   readonly separator?: string;
   readonly sshEnabled: boolean;
   readonly sshHost: string;
@@ -97,6 +100,7 @@ export function ConnectionForm({ editConnection }: ConnectionFormProps) {
       username: editConnection.username,
       password: editConnection.password,
       database: editConnection.database,
+      authSource: editConnection.authSource ?? '',
       separator: editConnection.separator ?? ':',
       sshEnabled: editConnection.sshEnabled,
       sshHost: editConnection.sshHost,
@@ -163,6 +167,7 @@ export function ConnectionForm({ editConnection }: ConnectionFormProps) {
         username: form.username,
         password: form.password,
         database: form.database,
+        ...(form.driverType === 'mongodb' && form.authSource ? { authSource: form.authSource } : {}),
         ...sshFields(form),
       },
     });
@@ -171,6 +176,7 @@ export function ConnectionForm({ editConnection }: ConnectionFormProps) {
   const handleSave = useCallback(() => {
     if (!form.name.trim()) { return; }
     const separatorField = form.driverType === 'redis' ? { separator: form.separator || ':' } : {};
+    const authSourceField = form.driverType === 'mongodb' && form.authSource ? { authSource: form.authSource } : {};
     if (isEdit) {
       postMessage({
         type: 'updateConnection',
@@ -184,6 +190,7 @@ export function ConnectionForm({ editConnection }: ConnectionFormProps) {
           password: form.password,
           database: form.database,
           ...separatorField,
+          ...authSourceField,
           ...sshFields(form),
         },
       });
@@ -199,6 +206,7 @@ export function ConnectionForm({ editConnection }: ConnectionFormProps) {
           password: form.password,
           database: form.database,
           ...separatorField,
+          ...authSourceField,
           ...sshFields(form),
         },
       });
@@ -323,6 +331,17 @@ export function ConnectionForm({ editConnection }: ConnectionFormProps) {
             value={form.database}
             onChange={(e) => updateField('database', e.target.value)}
             placeholder="(optional)"
+          />
+        </div>
+      )}
+
+      {form.driverType === 'mongodb' && (
+        <div className="form-group">
+          <label>Auth Database</label>
+          <input
+            value={form.authSource}
+            onChange={(e) => updateField('authSource', e.target.value)}
+            placeholder="admin"
           />
         </div>
       )}

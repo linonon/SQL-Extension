@@ -27,6 +27,7 @@ export function registerConnectTools(server: McpServer, pool: ConnectionPool, ip
         username: z.string().optional().describe('Username'),
         password: z.string().optional().describe('Password'),
         database: z.string().optional().describe('Database name'),
+        authSource: z.string().optional().describe('MongoDB auth database (default: admin)'),
         ssh: z.object({
           enabled: z.boolean(),
           host: z.string(),
@@ -43,9 +44,6 @@ export function registerConnectTools(server: McpServer, pool: ConnectionPool, ip
       try {
         // IPC mode: 用 connectionId 连接保存的连接
         if (params.connectionId) {
-          if (!ipc.connected) {
-            return makeError('VS Code extension is not running. Cannot connect saved connections.', 'IPC_NOT_AVAILABLE');
-          }
           await ipc.request('connect', { connectionId: params.connectionId });
           return makeResult({ connectionId: params.connectionId, mode: 'ipc' });
         }
@@ -65,6 +63,7 @@ export function registerConnectTools(server: McpServer, pool: ConnectionPool, ip
           username: params.username,
           password: params.password,
           database: params.database,
+          authSource: params.authSource,
           ssh: params.ssh ? { ...params.ssh, enabled: params.ssh.enabled } : undefined,
         });
         return makeResult({
@@ -150,6 +149,7 @@ export function registerConnectTools(server: McpServer, pool: ConnectionPool, ip
         username: z.string().optional().describe('Username'),
         password: z.string().optional().describe('Password'),
         database: z.string().optional().describe('Default database name'),
+        authSource: z.string().optional().describe('MongoDB auth database (default: admin)'),
         ssh: z.object({
           enabled: z.boolean(),
           host: z.string(),
@@ -164,9 +164,6 @@ export function registerConnectTools(server: McpServer, pool: ConnectionPool, ip
     },
     async (params) => {
       try {
-        if (!ipc.connected) {
-          return makeError('VS Code extension is not running. Cannot save connections.', 'IPC_NOT_AVAILABLE');
-        }
         const id = `conn_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
         const config: Record<string, unknown> = {
           id,
@@ -176,6 +173,7 @@ export function registerConnectTools(server: McpServer, pool: ConnectionPool, ip
           port: params.port,
           username: params.username ?? '',
           database: params.database ?? '',
+          authSource: params.authSource,
         };
         if (params.ssh) {
           config.ssh = {

@@ -236,6 +236,7 @@ export class IpcServer {
           port: config.port as number,
           username: (config.username as string) ?? '',
           database: (config.database as string) ?? '',
+          authSource: config.authSource as string | undefined,
           ssh: config.ssh as Record<string, unknown> | undefined,
         };
         await this.connectionManager.addConnection(

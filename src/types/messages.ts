@@ -21,6 +21,7 @@ interface ConnectionFormBase extends ConnectionFormSSH {
   readonly username: string;
   readonly password: string;
   readonly database: string;
+  readonly authSource?: string;
   readonly separator?: string;
 }
 

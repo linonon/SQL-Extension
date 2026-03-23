@@ -33,6 +33,7 @@ export interface ConnectParams {
   readonly username?: string;
   readonly password?: string;
   readonly database?: string;
+  readonly authSource?: string;
   readonly ssh?: SSHTunnelConfig & { readonly password?: string };
 }
 
@@ -80,6 +81,7 @@ export class ConnectionPool {
       port: connectPort,
       username: params.username ?? '',
       database: params.database ?? '',
+      authSource: params.authSource,
       password: params.password ?? '',
     };
 

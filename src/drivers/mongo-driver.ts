@@ -281,7 +281,9 @@ function buildUri(config: ConnectionConfig & { readonly password: string }): str
     auth = password ? `${encodeURIComponent(username)}:${encodeURIComponent(password)}@` : `${encodeURIComponent(username)}@`;
   }
   const dbPart = database ? `/${database}` : '';
-  return `mongodb://${auth}${host}:${port}${dbPart}`;
+  const authSource = config.authSource;
+  const query = authSource ? `?authSource=${encodeURIComponent(authSource)}` : '';
+  return `mongodb://${auth}${host}:${port}${dbPart}${query}`;
 }
 
 // --- method 分发 ---
