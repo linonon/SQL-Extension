@@ -8,18 +8,20 @@ import { IpcServer } from './ipc-server.js';
 const SOCKET_PATH = path.join(os.homedir(), '.sql-extension', 'ipc.sock');
 
 function makeConnectionManager() {
+  const config = {
+    id: 'test-id',
+    name: 'test-db',
+    driverType: 'mysql',
+    host: 'localhost',
+    port: 3306,
+    username: 'root',
+    database: 'mydb',
+  };
   return {
+    getConnections: vi.fn().mockReturnValue([config]),
     getConnectionInfo: vi.fn().mockReturnValue([
       {
-        config: {
-          id: 'test-id',
-          name: 'test-db',
-          driverType: 'mysql',
-          host: 'localhost',
-          port: 3306,
-          username: 'root',
-          database: 'mydb',
-        },
+        config,
         state: 'disconnected',
       },
     ]),
@@ -119,8 +121,8 @@ describe('IpcServer', () => {
     await new Promise(r => setTimeout(r, 100));
     const resp = await sendRequest(SOCKET_PATH, {
       id: '4',
-      method: 'query',
-      params: { connectionId: 'test-id', sql: 'SELECT 1' },
+      method: 'execute',
+      params: { connectionId: 'test-id', query: 'SELECT 1' },
     });
     expect(resp.result.rows).toEqual([{ id: 1 }]);
   });
