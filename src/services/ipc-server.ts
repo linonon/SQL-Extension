@@ -96,34 +96,154 @@ export class IpcServer {
         return { success: true };
       }
 
-      case 'query': {
+      case 'read':
+      case 'execute': {
         const id = params.connectionId as string;
-        const sql = params.sql as string;
+        const query = params.query as string;
         const database = params.database as string | undefined;
-        const driver = this.connectionManager.getDriver(id);
-        if (database) {
-          const { promise } = driver.executeCancellable(sql, undefined, database);
-          return await promise;
+        const config = this.connectionManager.getConnections().find(c => c.id === id);
+        if (!config) { throw new Error(`Connection not found: ${id}`); }
+        const driverType = config.driverType;
+
+        switch (driverType) {
+          case 'mysql':
+          case 'postgresql': {
+            const driver = this.connectionManager.getDriver(id);
+            if (database) {
+              const { promise } = driver.executeCancellable(query, undefined, database);
+              return await promise;
+            }
+            return await driver.execute(query);
+          }
+          case 'redis': {
+            const { parseRedisCommand } = await import('../mcp/parsers/redis-parser.js');
+            const args = parseRedisCommand(query);
+            const driver = this.connectionManager.getRedisDriver(id);
+            if (database !== undefined) {
+              const dbIndex = parseInt(database, 10);
+              if (!isNaN(dbIndex) && dbIndex >= 0 && dbIndex <= 15) {
+                await driver.selectDatabase(dbIndex);
+              }
+            }
+            return await driver.executeCommand(args);
+          }
+          case 'mongodb': {
+            const { parseMongoQuery } = await import('../mcp/parsers/mongo-parser.js');
+            const parsed = parseMongoQuery(query);
+            const mArgs: unknown[] = [];
+            switch (parsed.method) {
+              case 'find': mArgs.push(parsed.filter ?? {}, { projection: parsed.projection }); break;
+              case 'aggregate': mArgs.push(parsed.pipeline ?? []); break;
+              case 'countDocuments': mArgs.push(parsed.filter ?? {}); break;
+              case 'insertOne': mArgs.push(parsed.document ?? {}); break;
+              case 'insertMany': mArgs.push(parsed.documents ?? []); break;
+              case 'updateOne': case 'updateMany': mArgs.push(parsed.filter ?? {}, parsed.update ?? {}); break;
+              case 'deleteOne': case 'deleteMany': mArgs.push(parsed.filter ?? {}); break;
+              case 'createIndex': mArgs.push(parsed.keys ?? {}, parsed.options ?? {}); break;
+              case 'dropIndex': mArgs.push(parsed.indexName ?? ''); break;
+            }
+            const driver = this.connectionManager.getDriver(id);
+            // MongoDriver has dispatchToCollection as public method
+            const mongoDriver = driver as unknown as { dispatchToCollection: (db: string, coll: string, method: string, args: readonly unknown[], options?: { limit?: number }) => Promise<unknown> };
+            return await mongoDriver.dispatchToCollection(database ?? 'test', parsed.collection, parsed.method, mArgs, parsed.limit ? { limit: parsed.limit } : undefined);
+          }
+          case 'kafka': {
+            const { parseKafkaQuery } = await import('../mcp/parsers/kafka-parser.js');
+            const kParams = parseKafkaQuery(query);
+            const driver = this.connectionManager.getKafkaDriver(id);
+            switch (kParams.action) {
+              case 'listTopics': return await driver.listTopics();
+              case 'describeTopic': return await driver.getTopicPartitions(kParams.topic!);
+              case 'fetch': return await driver.fetchMessages(kParams.topic!, kParams.partition ?? 0, kParams.offset ?? '0', kParams.limit ?? 500);
+              case 'produce': return await driver.produceMessage(kParams.topic!, kParams.key ?? null, kParams.value ?? '', kParams.headers ?? {}, kParams.partition);
+              default: throw new Error(`Unknown Kafka action: ${kParams.action}`);
+            }
+          }
+          case 'rabbitmq': {
+            if (method === 'execute') { throw new Error('RabbitMQ does not support write operations yet.'); }
+            const { parseRabbitMQQuery } = await import('../mcp/parsers/rabbitmq-parser.js');
+            const rParams = parseRabbitMQQuery(query);
+            const driver = this.connectionManager.getRabbitMQDriver(id);
+            switch (rParams.action) {
+              case 'listQueues': return await driver.listQueues();
+              case 'peek': return await driver.peekMessages(rParams.queue!, rParams.count ?? 10);
+              default: throw new Error(`Unknown RabbitMQ action: ${rParams.action}`);
+            }
+          }
+          default:
+            throw new Error(`Unsupported driver type: ${driverType}`);
         }
-        return await driver.execute(sql);
       }
 
-      case 'redisCommand': {
+      case 'listDatabases': {
         const id = params.connectionId as string;
-        const db = (params.db as number) ?? 0;
-        const args = params.args as string[];
-        const driver = this.connectionManager.getRedisDriver(id);
-        await driver.selectDatabase(db);
-        return await driver.executeCommand(args);
+        const config = this.connectionManager.getConnections().find(c => c.id === id);
+        if (!config) { throw new Error(`Connection not found: ${id}`); }
+        if (config.driverType === 'redis') {
+          return Array.from({ length: 16 }, (_, i) => ({ name: String(i) }));
+        }
+        if (config.driverType === 'kafka' || config.driverType === 'rabbitmq') {
+          return { error: 'N/A for this database type' };
+        }
+        const driver = this.connectionManager.getDriver(id);
+        return await driver.listDatabases();
       }
 
-      case 'mongoQuery': {
+      case 'listTables': {
         const id = params.connectionId as string;
         const database = params.database as string;
-        const query = params.query as string;
+        const config = this.connectionManager.getConnections().find(c => c.id === id);
+        if (!config) { throw new Error(`Connection not found: ${id}`); }
+        if (config.driverType === 'kafka') {
+          return await this.connectionManager.getKafkaDriver(id).listTopics();
+        }
+        if (config.driverType === 'rabbitmq') {
+          return await this.connectionManager.getRabbitMQDriver(id).listQueues();
+        }
+        if (config.driverType === 'redis') {
+          return { error: 'N/A for Redis' };
+        }
         const driver = this.connectionManager.getDriver(id);
-        const { promise } = driver.executeCancellable(query, undefined, database);
-        return await promise;
+        return await driver.listTables(database);
+      }
+
+      case 'listColumns': {
+        const id = params.connectionId as string;
+        const database = params.database as string;
+        const table = params.table as string;
+        const driver = this.connectionManager.getDriver(id);
+        return await driver.listColumns(database, table);
+      }
+
+      case 'getTableDDL': {
+        const id = params.connectionId as string;
+        const database = params.database as string;
+        const table = params.table as string;
+        const driver = this.connectionManager.getDriver(id);
+        return await driver.getTableDDL(database, table);
+      }
+
+      case 'saveConnection': {
+        const config = params.config as Record<string, unknown>;
+        const password = (params.password as string) ?? '';
+        const sshPassword = params.sshPassword as string | undefined;
+        const id = config.id as string || `conn_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        const connConfig = {
+          id,
+          name: (config.name as string) || id,
+          driverType: config.driverType as string,
+          host: config.host as string,
+          port: config.port as number,
+          username: (config.username as string) ?? '',
+          database: (config.database as string) ?? '',
+          ssh: config.ssh as Record<string, unknown> | undefined,
+        };
+        await this.connectionManager.addConnection(
+          connConfig as unknown as import('../types/connection.js').ConnectionConfig,
+          password,
+          sshPassword,
+        );
+        return { success: true, connectionId: id };
       }
 
       default:

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isReadonlySQL, enforceLimit } from './sql-validator.js';
+import { isReadonlySQL, enforceLimit, isMultiStatement } from './sql-validator.js';
 
 describe('isReadonlySQL', () => {
   // 合法的只读语句
@@ -88,5 +88,20 @@ describe('enforceLimit', () => {
 
   it('should strip trailing semicolon before appending LIMIT', () => {
     expect(enforceLimit('SELECT * FROM users;')).toBe('SELECT * FROM users LIMIT 500');
+  });
+});
+
+describe('isMultiStatement', () => {
+  it('should return false for single statement', () => {
+    expect(isMultiStatement('SELECT 1')).toBe(false);
+  });
+  it('should return false for trailing semicolon', () => {
+    expect(isMultiStatement('SELECT 1;')).toBe(false);
+  });
+  it('should return true for multiple statements', () => {
+    expect(isMultiStatement('SELECT 1; DROP TABLE users')).toBe(true);
+  });
+  it('should ignore semicolons in strings', () => {
+    expect(isMultiStatement("SELECT * FROM t WHERE name = 'a;b'")).toBe(false);
   });
 });

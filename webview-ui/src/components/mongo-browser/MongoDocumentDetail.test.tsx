@@ -41,7 +41,7 @@ describe('MongoDocumentDetail - save 流程', () => {
     const doc = { _id: 'ObjectId("507f1f77bcf86cd799439011")', name: 'test' };
     render(<MongoDocumentDetail {...defaultProps} document={doc} mode="edit" onSave={onSave} />);
 
-    const textarea = document.querySelector('.detail-editor') as HTMLTextAreaElement;
+    const textarea = document.querySelector('.highlight-editor-textarea') as HTMLTextAreaElement;
     fireEvent.change(textarea, { target: { value: '{"name": "updated"}' } });
 
     const saveBtn = screen.getByText('Save');
@@ -55,7 +55,7 @@ describe('MongoDocumentDetail - save 流程', () => {
     const onSave = vi.fn();
     render(<MongoDocumentDetail {...defaultProps} document={null} mode="insert" onSave={onSave} />);
 
-    const textarea = document.querySelector('.detail-editor') as HTMLTextAreaElement;
+    const textarea = document.querySelector('.highlight-editor-textarea') as HTMLTextAreaElement;
     fireEvent.change(textarea, { target: { value: '{"name": "new"}' } });
 
     fireEvent.click(screen.getByText('Save'));
@@ -66,7 +66,7 @@ describe('MongoDocumentDetail - save 流程', () => {
     const onSave = vi.fn();
     render(<MongoDocumentDetail {...defaultProps} document={null} mode="insert" onSave={onSave} />);
 
-    const textarea = document.querySelector('.detail-editor') as HTMLTextAreaElement;
+    const textarea = document.querySelector('.highlight-editor-textarea') as HTMLTextAreaElement;
     fireEvent.change(textarea, { target: { value: '{invalid json' } });
     fireEvent.click(screen.getByText('Save'));
 
@@ -84,7 +84,7 @@ describe('MongoDocumentDetail - save 流程', () => {
     render(<MongoDocumentDetail {...defaultProps} document={doc} mode="edit" onSave={onSave} />);
 
     // textarea 初始值由 jsonToShell(JSON.stringify(stripId(doc))) 生成
-    const textarea = document.querySelector('.detail-editor') as HTMLTextAreaElement;
+    const textarea = document.querySelector('.highlight-editor-textarea') as HTMLTextAreaElement;
     const displayText = textarea.value;
 
     // 修改一下触发 dirty, 然后改回带 ObjectId 的内容
@@ -103,7 +103,7 @@ describe('MongoDocumentDetail - save 流程', () => {
     const doc = { _id: 'myid', name: 'test' };
     render(<MongoDocumentDetail {...defaultProps} document={doc} mode="edit" onSave={onSave} />);
 
-    const textarea = document.querySelector('.detail-editor') as HTMLTextAreaElement;
+    const textarea = document.querySelector('.highlight-editor-textarea') as HTMLTextAreaElement;
     fireEvent.change(textarea, { target: { value: '{"date": ISODate("2024-01-15T00:00:00.000Z")}' } });
     fireEvent.click(screen.getByText('Save'));
 
@@ -115,7 +115,7 @@ describe('MongoDocumentDetail - save 流程', () => {
     const doc = { _id: 'myid', name: 'test' };
     render(<MongoDocumentDetail {...defaultProps} document={doc} mode="edit" onSave={onSave} />);
 
-    const textarea = document.querySelector('.detail-editor') as HTMLTextAreaElement;
+    const textarea = document.querySelector('.highlight-editor-textarea') as HTMLTextAreaElement;
     fireEvent.change(textarea, { target: { value: '{"big": NumberLong("9999999999")}' } });
     fireEvent.click(screen.getByText('Save'));
 
@@ -127,7 +127,7 @@ describe('MongoDocumentDetail - save 流程', () => {
     const doc = { _id: 'ObjectId("507f1f77bcf86cd799439011")', name: 'test' };
     render(<MongoDocumentDetail {...defaultProps} document={doc} mode="edit" onSave={onSave} />);
 
-    const textarea = document.querySelector('.detail-editor') as HTMLTextAreaElement;
+    const textarea = document.querySelector('.highlight-editor-textarea') as HTMLTextAreaElement;
     const mixedDoc = '{"name": "test", "ref": ObjectId("aabbccddeeff00112233aabb"), "date": ISODate("2024-01-15T00:00:00.000Z"), "count": NumberInt(42), "big": NumberLong("999"), "price": NumberDecimal("19.99"), "lo": MinKey(), "hi": MaxKey()}';
     fireEvent.change(textarea, { target: { value: mixedDoc } });
     fireEvent.click(screen.getByText('Save'));

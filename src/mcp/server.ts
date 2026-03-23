@@ -3,22 +3,22 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ConnectionPool } from './connection-pool.js';
 import { IpcClient } from './ipc-client.js';
 import { registerConnectTools } from './tools/connect.js';
-import { registerQueryTools } from './tools/query.js';
-import { registerRedisTools } from './tools/redis.js';
-import { registerMongoTools } from './tools/mongo.js';
+import { registerReadTools } from './tools/query.js';
+import { registerExecuteTools } from './tools/execute.js';
+import { registerResources } from './resources.js';
 
 const pool = new ConnectionPool();
 const ipc = new IpcClient();
 
 const server = new McpServer({
   name: 'sql-extension',
-  version: '0.1.0',
+  version: '0.2.0',
 });
 
 registerConnectTools(server, pool, ipc);
-registerQueryTools(server, pool, ipc);
-registerRedisTools(server, pool, ipc);
-registerMongoTools(server, pool, ipc);
+registerReadTools(server, pool, ipc);
+registerExecuteTools(server, pool, ipc);
+registerResources(server, pool, ipc);
 
 function cleanup(): void {
   pool.dispose();

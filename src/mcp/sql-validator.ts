@@ -7,6 +7,12 @@ const ALLOWED_PREFIXES = ['SELECT', 'SHOW', 'DESCRIBE', 'DESC', 'EXPLAIN', 'WITH
 
 const MAX_LIMIT = 500;
 
+export function isMultiStatement(sql: string): boolean {
+  const noStrings = sql.replace(/'[^']*'/g, '').replace(/"[^"]*"/g, '');
+  const semiIdx = noStrings.indexOf(';');
+  return semiIdx >= 0 && noStrings.slice(semiIdx + 1).trim().length > 0;
+}
+
 export function isReadonlySQL(sql: string): boolean {
   const trimmed = sql.trim().toUpperCase();
   if (!ALLOWED_PREFIXES.some(p => trimmed.startsWith(p))) {
@@ -17,9 +23,7 @@ export function isReadonlySQL(sql: string): boolean {
     return false;
   }
   // 拒绝多语句: 去掉字符串常量后检查分号
-  const noStrings = sql.replace(/'[^']*'/g, '').replace(/"[^"]*"/g, '');
-  const semiIdx = noStrings.indexOf(';');
-  if (semiIdx >= 0 && noStrings.slice(semiIdx + 1).trim().length > 0) {
+  if (isMultiStatement(sql)) {
     return false;
   }
   return true;

@@ -2,59 +2,36 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { ConnectionPool } from '../connection-pool.js';
 import type { IpcClient } from '../ipc-client.js';
-import { isReadonlySQL, enforceLimit } from '../sql-validator.js';
-import { makeResult, makeError, toErrorMessage } from './mcp-result.js';
-import type { QueryResultData } from './types.js';
+import { routeQuery } from '../query-router.js';
 
-export function registerQueryTools(server: McpServer, pool: ConnectionPool, ipc: IpcClient): void {
-  server.tool(
-    'db_query',
-    'Execute a read-only SQL query. Only SELECT, SHOW, DESCRIBE, DESC, EXPLAIN, WITH statements are allowed. Results are limited to 500 rows maximum. Works with MySQL and PostgreSQL connections.',
+const DB_READ_DESCRIPTION = [
+  'Execute read-only queries. Query format by database type:',
+  '- MySQL/PostgreSQL: SQL string, e.g. "SELECT * FROM users LIMIT 10"',
+  '- Redis: command string, e.g. "GET key1", "HGETALL myhash"',
+  '- MongoDB: JSON, e.g. {"collection":"users","method":"find","filter":{}}',
+  '- Kafka: JSON, e.g. {"action":"listTopics"}, {"action":"fetch","topic":"t1","partition":0,"offset":"0","limit":10}',
+  '- RabbitMQ: JSON, e.g. {"action":"listQueues"}, {"action":"peek","queue":"q1","count":10}',
+  'The database parameter is optional for MySQL (schema context), required for MongoDB, and for Redis it selects db index (0-15).',
+].join('\n');
+
+export function registerReadTools(server: McpServer, pool: ConnectionPool, ipc: IpcClient): void {
+  server.registerTool(
+    'db_read',
     {
-      connectionId: z.string().describe('Connection ID'),
-      sql: z.string().describe('SQL query (read-only)'),
-      database: z.string().optional().describe('Database name (for MySQL USE context)'),
+      title: 'Read Query',
+      description: DB_READ_DESCRIPTION,
+      inputSchema: {
+        connectionId: z.string().describe('Connection ID'),
+        query: z.string().describe('Query string (format depends on database type)'),
+        database: z.string().optional().describe('Database/schema name (MySQL context, MongoDB required, Redis db index 0-15)'),
+      },
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
-    async (params) => {
-      try {
-        if (!isReadonlySQL(params.sql)) {
-          return makeError(
-            'Only read-only SQL is allowed (SELECT, SHOW, DESCRIBE, DESC, EXPLAIN, WITH). Write operations are not permitted.',
-            'READONLY_VIOLATION',
-          );
-        }
-
-        const safeSql = enforceLimit(params.sql);
-        let result: QueryResultData;
-
-        // IPC mode: 非 pool 连接
-        if (!params.connectionId.startsWith('conn_') && ipc.connected) {
-          result = await ipc.request('query', {
-            connectionId: params.connectionId,
-            sql: safeSql,
-            database: params.database,
-          }) as QueryResultData;
-        } else {
-          // Standalone mode: pool 连接
-          const driver = pool.getDriver(params.connectionId);
-          const entry = pool.getEntry(params.connectionId);
-          if (params.database && entry.driverType === 'mysql') {
-            const { promise } = driver.executeCancellable(safeSql, undefined, params.database);
-            result = await promise as QueryResultData;
-          } else {
-            result = await driver.execute(safeSql) as QueryResultData;
-          }
-        }
-
-        return makeResult({
-          columns: result.columns?.map(c => ({ name: c.name, dataType: c.dataType })) ?? [],
-          rows: result.rows,
-          rowCount: result.rows.length,
-          executionTime: result.executionTime,
-        });
-      } catch (err) {
-        return makeError(toErrorMessage(err), 'QUERY_FAILED');
-      }
-    }
+    async (params) => routeQuery('read', params.connectionId, params.query, params.database, pool, ipc),
   );
 }
