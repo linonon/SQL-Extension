@@ -104,11 +104,10 @@ describe('RedisKeyList', () => {
     ];
     render(<RedisKeyList {...defaultProps} keys={keys} />);
 
-    // 应显示组头 "user:"
-    expect(screen.getByText('user:')).toBeInTheDocument();
-    // 组内 key 只显示前缀后部分
-    expect(screen.getByText('alice')).toBeInTheDocument();
-    expect(screen.getByText('bob')).toBeInTheDocument();
+    // 树形分组: 组头显示 segment "user", 叶子节点显示完整 key
+    expect(screen.getByText('user')).toBeInTheDocument();
+    expect(screen.getByText('user:alice')).toBeInTheDocument();
+    expect(screen.getByText('user:bob')).toBeInTheDocument();
   });
 
   it('点击组头可折叠/展开', () => {
@@ -119,15 +118,15 @@ describe('RedisKeyList', () => {
     render(<RedisKeyList {...defaultProps} keys={keys} />);
 
     // 默认展开, 可以看到子 key
-    expect(screen.getByText('1')).toBeInTheDocument();
+    expect(screen.getByText('user:1')).toBeInTheDocument();
 
-    // 点击组头折叠
-    fireEvent.click(screen.getByText('user:'));
-    expect(screen.queryByText('1')).not.toBeInTheDocument();
+    // 点击组头 (segment "user") 折叠
+    fireEvent.click(screen.getByText('user'));
+    expect(screen.queryByText('user:1')).not.toBeInTheDocument();
 
     // 再点击展开
-    fireEvent.click(screen.getByText('user:'));
-    expect(screen.getByText('1')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('user'));
+    expect(screen.getByText('user:1')).toBeInTheDocument();
   });
 
   it('显示组内 key 数量', () => {
@@ -173,12 +172,12 @@ describe('RedisKeyList', () => {
     ];
     const { rerender } = render(<RedisKeyList {...defaultProps} keys={keys} filterQuery="" />);
 
-    // 折叠 user: 组
-    fireEvent.click(screen.getByText('user:'));
-    expect(screen.queryByText('1')).not.toBeInTheDocument();
+    // 折叠 user 组
+    fireEvent.click(screen.getByText('user'));
+    expect(screen.queryByText('user:1')).not.toBeInTheDocument();
 
     // 改变 filterQuery, 折叠状态应重置, 子 key 重新可见
     rerender(<RedisKeyList {...defaultProps} keys={keys} filterQuery="user" />);
-    expect(screen.getByText('1')).toBeInTheDocument();
+    expect(screen.getByText('user:1')).toBeInTheDocument();
   });
 });

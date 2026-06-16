@@ -274,13 +274,16 @@ describe('ConnectionForm', () => {
       expect(screen.getByDisplayValue('6379')).toHaveValue(6379);
     });
 
-    it('Redis 隐藏 Username', () => {
+    it('Redis 显示 Username (Redis 6 ACL, 可选)', () => {
       render(<ConnectionForm />);
 
       const dbTypeSelect = screen.getByRole('combobox');
       fireEvent.change(dbTypeSelect, { target: { value: 'redis' } });
 
-      expect(screen.queryByText('Username')).not.toBeInTheDocument();
+      expect(screen.getByText('Username')).toBeInTheDocument();
+      const formGroup = screen.getByText('Username').closest('.form-group');
+      const usernameInput = formGroup?.querySelector('input') as HTMLInputElement;
+      expect(usernameInput.placeholder).toBe('(optional)');
     });
 
     it('Redis 显示 DB Index 下拉 (0-15)', () => {
@@ -303,11 +306,12 @@ describe('ConnectionForm', () => {
 
       const dbTypeSelect = screen.getByRole('combobox');
 
-      // 先切到 Redis
+      // 先切到 Redis: Database 变成 DB Index 下拉
       fireEvent.change(dbTypeSelect, { target: { value: 'redis' } });
-      expect(screen.queryByText('Username')).not.toBeInTheDocument();
+      expect(screen.getByText('DB Index')).toBeInTheDocument();
+      expect(screen.queryByText('Database')).not.toBeInTheDocument();
 
-      // 切回 MySQL
+      // 切回 MySQL: 恢复 Database 文本字段和默认 port
       fireEvent.change(dbTypeSelect, { target: { value: 'mysql' } });
       expect(screen.getByText('Username')).toBeInTheDocument();
       expect(screen.getByText('Database')).toBeInTheDocument();
