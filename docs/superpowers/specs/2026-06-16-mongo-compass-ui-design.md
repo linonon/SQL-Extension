@@ -35,7 +35,9 @@
 - delete: `db.coll.deleteOne({"_id": id})`
 - 驱动仅对 24-hex ObjectId 把字符串强转为 ObjectId ([mongo-driver.ts:302](/Users/linonon/Workspace/tools/SQL-Extension/src/drivers/mongo-driver.ts:302))
 
-`rows` 已是解析好的对象数组: 嵌套对象 / 数组是真实 JS 对象, 日期等类型由后端预序列化成 shell 字符串形式 (如 `ISODate("...")` / `ObjectId("...")`). 视图渲染据此处理.
+**关键约束 (已验证)**: 浏览器取数 (`mongoFindDocuments`) 与查询编辑器 (`mongoRunQuery`) 共用 [mongo-driver.ts:124](/Users/linonon/Workspace/tools/SQL-Extension/src/drivers/mongo-driver.ts:124) 的 `flattenDocument` -> `flattenValue` ([mongo-driver.ts:321](/Users/linonon/Workspace/tools/SQL-Extension/src/drivers/mongo-driver.ts:321)), 它把嵌套对象 / 数组 `JSON.stringify` 成**字符串**, 叶子 BSON 类型转成 shell 字符串 (`ObjectId("...")` / `ISODate("...")` / `NumberLong("...")` 等). 因此 webview 收到的 `rows[i].nested` 是字符串而非对象 -- 真嵌套结构已被破坏, 无法直接递归成树. 这也是现有编辑器把嵌套文档当带引号字符串显示的根因.
+
+客户端 [mongo-shell-to-json.ts](/Users/linonon/Workspace/tools/SQL-Extension/webview-ui/src/utils/mongo-shell-to-json.ts) 的 `jsonToShell` / `convertShellToJson` / `stripShellTypes` 全是正则, 对上述 shell-tag 叶子无视嵌套深度生效.
 
 ## 目标组件结构
 
@@ -71,23 +73,31 @@ MongoDocumentPanel (现 MongoDocumentTable 改名)
 
 ## 数据流
 
-- 视图切换纯前端: 同一份 `rows` 换渲染方式, 零新增 round-trip
+后端需要一条**不拍平**的浏览器取数路径 (1a 引入), 让 webview 拿到真嵌套结构, 才能渲染折叠树:
+
+- 新增 `deepFormatValue` / `deepFormatDocument` (即 `flattenValue` 去掉 object / array 分支的 `JSON.stringify`, 保留真实嵌套, 叶子仍转 shell-tag 字符串). 保留原 `flattenValue` 不动, 查询编辑器 (`mongoRunQuery`) 与其测试不受影响.
+- 新增驱动方法 (如 `findDocumentsForBrowser`) 返回 `{ rows: docs.map(deepFormatDocument), columns: inferSchema(docs) }`; 重指向 handler 的 `mongoFindDocuments` 到此方法.
+- `mongoDocumentList` 消息形状不变 (仍是 `columns` + `rows`), 只是 `rows` 里嵌套值由字符串变为真实对象 / 数组. 客户端工具链 (`jsonToShell` 等) 因纯正则而零改.
+
+其余保存路径不变:
+
 - 编辑保存: `onUpdateDocument(id, doc)` -> 现有 `mongoUpdateDocument` (`_id` 仍 strip)
 - 新建保存: `onInsertDocument(doc)` -> 现有 `mongoInsertDocument`
 - Clone 保存: 走 insert 路径, `doc` 含用户改过的 `_id` (insert 天然保留 `_id` 及其类型)
 - 删除: `onDeleteDocument(id)` -> 现有 `mongoDeleteDocument`
 
-后端在 1a / 1b 零改动; 1c 需验证 insert 路径对 `_id` 的透传与类型保留 (见待验证项).
+视图切换 (List / JSON / Table) 纯前端, 同一份 `rows` 换渲染, 零新增 round-trip. 1c 需验证 insert 路径对 `_id` 的透传与类型保留 (见待验证项).
 
 ## 分期计划
 
 ### 1a 读 (多视图) -- 解决"看不清嵌套 + 多视图"
 
+- 后端: 新增 `deepFormatValue` / `deepFormatDocument` + `findDocumentsForBrowser`, 重指向 `mongoFindDocuments` (见数据流)
 - 加 ViewToggle (List / JSON / Table), 默认 List
-- MongoTableView: 把现有 `<table>` 原样抽出, 行为不变
+- MongoTableView: 把现有 `<table>` 抽出; 单元格渲染需处理嵌套值 (object / array -> `JSON.stringify` 预览, 同 [MongoQueryEditor.tsx:128](/Users/linonon/Workspace/tools/SQL-Extension/webview-ui/src/components/mongo-browser/MongoQueryEditor.tsx:128) 的做法)
 - MongoDocumentList + MongoDocumentCard (view 态) + MongoJsonTree: List 视图渲染可折叠树, JSON 视图渲染 pretty shell 文本 (只读高亮)
 - 卡片悬停操作行: 本期只接 Copy 与 Delete (复用现有 delete 链路); Edit 临时打开旧的全屏 [MongoDocumentDetail.tsx](/Users/linonon/Workspace/tools/SQL-Extension/webview-ui/src/components/mongo-browser/MongoDocumentDetail.tsx) 作桥, 不破坏编辑能力; Clone 按钮先禁用/隐藏
-- 测试: JsonTree (嵌套 / 折叠展开 / 类型 badge / 长串截断), ViewToggle 切换, Card view 态渲染
+- 测试: deepFormatValue (嵌套保留 + 叶子 shell-tag), JsonTree (嵌套 / 折叠展开 / 类型 badge / 长串截断), ViewToggle 切换, Card view 态渲染
 
 ### 1b in-card 编辑 -- 解决"切走整个表格"
 
@@ -123,4 +133,4 @@ filter builder / 查询历史 / 常用条件一键填充. 另开 spec.
 ## 待验证项
 
 - 后端 `mongoInsertDocument` 是否透传 `_id` 并保留其 BSON 类型 (1c 前置验证)
-- `rows` 中各 BSON 类型的实际线格式 (日期 / Decimal128 / 数组内对象), 决定 MongoJsonTree 的类型 badge 与递归策略 (1a 前置确认)
+- ~~`rows` 线格式~~ 已确认: 现有路径拍平嵌套为字符串, 1a 引入 `deepFormatDocument` 保留嵌套 + 叶子 shell-tag (见数据流). MongoJsonTree 按 shell-tag 正则识别叶子类型打 badge.
