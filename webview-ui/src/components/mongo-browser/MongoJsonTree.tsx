@@ -69,7 +69,7 @@ function TreeNode({ name, value, depth }: TreeNodeProps) {
         onClick={() => setExpanded((e) => !e)}
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded((x) => !x); } }}
       >
-        <i className={`ti ti-chevron-${expanded ? 'down' : 'right'} mongo-tree-chevron`} aria-hidden="true" />
+        <span className="mongo-tree-chevron" aria-hidden="true">{expanded ? '▾' : '▸'}</span>
         <span className="mongo-tree-key">{name}</span>
         {!expanded && <span className="mongo-tree-summary"> {summary}</span>}
       </div>

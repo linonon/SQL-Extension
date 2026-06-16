@@ -18,10 +18,10 @@ export function MongoDocumentCard({ doc, view, onEdit, onClone, onDelete }: Mong
   return (
     <div className="mongo-doc-card">
       <div className="mongo-doc-card-actions">
-        <button className="btn-small" aria-label="Edit" title="Edit" onClick={() => onEdit(doc)}><i className="ti ti-edit" /></button>
-        <button className="btn-small" aria-label="Copy" title="Copy" onClick={() => navigator.clipboard.writeText(shellText)}><i className="ti ti-copy" /></button>
-        <button className="btn-small" aria-label="Clone" title="Clone (coming soon)" disabled onClick={() => onClone(doc)}><i className="ti ti-copy-plus" /></button>
-        <button className="btn-small btn-danger" aria-label="Delete" title="Delete" onClick={() => onDelete(id)}><i className="ti ti-trash" /></button>
+        <button className="btn-small" title="Edit" onClick={() => onEdit(doc)}>Edit</button>
+        <button className="btn-small" title="Copy" onClick={() => navigator.clipboard.writeText(shellText)}>Copy</button>
+        <button className="btn-small" title="Clone (coming soon)" disabled onClick={() => onClone(doc)}>Clone</button>
+        <button className="btn-small btn-danger" title="Delete" onClick={() => onDelete(id)}>Delete</button>
       </div>
       {view === 'list'
         ? <MongoJsonTree value={doc} />
