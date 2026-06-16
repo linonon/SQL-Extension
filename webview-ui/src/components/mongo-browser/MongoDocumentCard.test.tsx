@@ -21,4 +21,11 @@ describe('MongoDocumentCard', () => {
     fireEvent.click(screen.getByRole('button', { name: /edit/i }));
     expect(onEdit).toHaveBeenCalledWith(doc);
   });
+
+  it('Delete 传去 ObjectId 内的裸 id 而非 shell-tag', () => {
+    const onDelete = vi.fn();
+    render(<MongoDocumentCard doc={{ _id: 'ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa")', aid: 'w' }} view="list" onEdit={vi.fn()} onClone={vi.fn()} onDelete={onDelete} />);
+    fireEvent.click(screen.getByRole('button', { name: /delete/i }));
+    expect(onDelete).toHaveBeenCalledWith('aaaaaaaaaaaaaaaaaaaaaaaa');
+  });
 });

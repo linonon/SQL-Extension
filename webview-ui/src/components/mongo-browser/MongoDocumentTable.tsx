@@ -43,7 +43,6 @@ interface MongoDocumentTableProps {
   readonly onSwitchCancelled?: () => void;
 }
 
-
 export function MongoDocumentTable({
   collection,
   columns,
