@@ -3,6 +3,9 @@ import type { ColumnInfo } from '../../types/database';
 import { extractFieldPaths } from './mongo-autocomplete';
 import { MongoDocumentDetail } from './MongoDocumentDetail';
 import { MongoFilterInput } from './MongoFilterInput';
+import { ViewToggle, type MongoView } from './ViewToggle';
+import { MongoDocumentList } from './MongoDocumentList';
+import { MongoTableView } from './MongoTableView';
 
 type DetailState =
   | { readonly mode: 'edit'; readonly doc: Record<string, unknown> }
@@ -40,11 +43,6 @@ interface MongoDocumentTableProps {
   readonly onSwitchCancelled?: () => void;
 }
 
-function truncate(value: unknown, max: number): string {
-  if (value === null || value === undefined) { return '(null)'; }
-  const s = String(value);
-  return s.length > max ? s.slice(0, max) + '...' : s;
-}
 
 export function MongoDocumentTable({
   collection,
@@ -78,6 +76,7 @@ export function MongoDocumentTable({
 }: MongoDocumentTableProps) {
   const [detail, setDetail] = useState<DetailState>(null);
   const [isDirty, setIsDirty] = useState(false);
+  const [view, setView] = useState<MongoView>('list');
   const [showSwitchDialog, setShowSwitchDialog] = useState(false);
   const [saveTrigger, setSaveTrigger] = useState(0);
   const [switchAfterSave, setSwitchAfterSave] = useState(false);
@@ -178,6 +177,7 @@ export function MongoDocumentTable({
       <div className="mongo-document-header">
         <div className="mongo-header-row">
           <h3>{collection}</h3>
+          <ViewToggle value={view} onChange={setView} />
           <button
             className="btn-small btn-primary"
             onClick={() => setDetail({ mode: 'insert' })}
@@ -276,30 +276,15 @@ export function MongoDocumentTable({
           <div className="mongo-empty">No documents found</div>
         )}
         {!loading && !queryError && rows.length > 0 && (
-          <table className="mongo-table">
-            <thead>
-              <tr>
-                {columns.map((col) => (
-                  <th key={col.name} title={col.dataType}>{col.name}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row, idx) => (
-                <tr
-                  key={String(row._id ?? idx)}
-                  className="mongo-document-row"
-                  onClick={() => setDetail({ mode: 'edit', doc: row })}
-                >
-                  {columns.map((col) => (
-                    <td key={col.name} title={String(row[col.name] ?? '')}>
-                      {truncate(row[col.name], 80)}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          view === 'table'
+            ? <MongoTableView columns={columns} rows={rows} onRowClick={(row) => setDetail({ mode: 'edit', doc: row })} />
+            : <MongoDocumentList
+                rows={rows}
+                view={view}
+                onEdit={(doc) => setDetail({ mode: 'edit', doc })}
+                onClone={(doc) => setDetail({ mode: 'edit', doc })}
+                onDelete={(id) => onDeleteDocument(id)}
+              />
         )}
       </div>
       {total > 0 && (

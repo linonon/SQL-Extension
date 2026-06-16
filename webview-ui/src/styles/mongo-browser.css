@@ -810,3 +810,8 @@
 .mongo-doc-card-actions { position: absolute; top: 6px; right: 8px; display: flex; gap: 4px; opacity: 0; transition: opacity .12s; }
 .mongo-doc-card:hover .mongo-doc-card-actions { opacity: 1; }
 .mongo-doc-card-json { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: var(--vscode-editor-font-family, monospace); font-size: 12.5px; line-height: 1.6; }
+.mongo-view-toggle { display: inline-flex; border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border)); border-radius: 5px; overflow: hidden; }
+.mongo-view-toggle-btn { background: transparent; border: none; padding: 3px 10px; font-size: 12px; color: var(--vscode-foreground); cursor: pointer; border-left: 1px solid var(--vscode-widget-border, var(--vscode-panel-border)); }
+.mongo-view-toggle-btn:first-child { border-left: none; }
+.mongo-view-toggle-btn:hover { background: var(--vscode-toolbar-hoverBackground); }
+.mongo-view-toggle-btn.active { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }

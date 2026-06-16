@@ -63,7 +63,11 @@ function TreeNode({ name, value, depth }: TreeNodeProps) {
       <div
         className="mongo-tree-row mongo-tree-toggle"
         style={{ paddingLeft: depth * 16 }}
+        role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
         onClick={() => setExpanded((e) => !e)}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded((x) => !x); } }}
       >
         <i className={`ti ti-chevron-${expanded ? 'down' : 'right'} mongo-tree-chevron`} aria-hidden="true" />
         <span className="mongo-tree-key">{name}</span>
