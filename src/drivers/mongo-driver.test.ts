@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { MongoDriver } from './mongo-driver';
+import { MongoDriver, deepFormatValue, deepFormatDocument } from './mongo-driver';
+import { ObjectId, Long } from 'mongodb';
 
 // Mock mongodb
 const mockCollection = {
@@ -675,5 +676,28 @@ describe('MongoDriver', () => {
       const matchStage = pipelineArg[0].$match;
       expect(matchStage.date.$gt).toBeInstanceOf(Date);
     });
+  });
+});
+
+describe('deepFormatValue', () => {
+  it('保留嵌套对象与数组, 叶子转 shell-tag 字符串', () => {
+    const out = deepFormatValue({
+      _id: new ObjectId('a'.repeat(24)),
+      bind: { aid: 'w-1', at: new Date('2020-05-11T02:56:02.131Z'), n: Long.fromString('14') },
+      tags: ['x', { k: 1 }],
+    }) as Record<string, unknown>;
+
+    expect(out._id).toBe(`ObjectId("${'a'.repeat(24)}")`);
+    expect((out.bind as Record<string, unknown>).aid).toBe('w-1');
+    expect((out.bind as Record<string, unknown>).at).toBe('ISODate("2020-05-11T02:56:02.131Z")');
+    expect((out.bind as Record<string, unknown>).n).toBe('NumberLong("14")');
+    expect(Array.isArray(out.tags)).toBe(true);
+    expect((out.tags as unknown[])[1]).toEqual({ k: 1 });
+  });
+
+  it('null/标量原样', () => {
+    expect(deepFormatValue(null)).toBe(null);
+    expect(deepFormatValue(42)).toBe(42);
+    expect(deepFormatValue('plain')).toBe('plain');
   });
 });

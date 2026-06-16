@@ -341,6 +341,39 @@ function flattenValue(value: unknown): unknown {
   return value;
 }
 
+// deep 格式化: 保留嵌套结构 (object/array 不 JSON.stringify), 叶子 BSON 转 shell-tag 字符串.
+// 供文档浏览器渲染折叠树用; flattenValue 仍服务于查询编辑器的扁平表格.
+export function deepFormatValue(value: unknown): unknown {
+  if (value === null || value === undefined) { return null; }
+  if (value instanceof ObjectId) { return `ObjectId("${value.toString()}")`; }
+  if (value instanceof Date) { return `ISODate("${value.toISOString()}")`; }
+  if (Array.isArray(value)) { return value.map(deepFormatValue); }
+  if (typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    if ('_bsontype' in obj) {
+      const bt = (obj as { _bsontype: string })._bsontype;
+      if (bt === 'Long') { return `NumberLong("${String(value)}")`; }
+      if (bt === 'Int32') { return `NumberInt(${String(value)})`; }
+      if (bt === 'Decimal128') { return `NumberDecimal("${String(value)}")`; }
+      if (bt === 'MinKey') { return 'MinKey()'; }
+      if (bt === 'MaxKey') { return 'MaxKey()'; }
+      return String(value);
+    }
+    const result: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(obj)) { result[k] = deepFormatValue(v); }
+    return result;
+  }
+  return value;
+}
+
+export function deepFormatDocument(doc: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(doc)) {
+    result[key] = deepFormatValue(value);
+  }
+  return result;
+}
+
 // --- schema 推断 ---
 
 function inferSchema(docs: Record<string, unknown>[]): ColumnInfo[] {
