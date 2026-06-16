@@ -792,3 +792,17 @@
   font-size: 11px;
   padding: 2px 6px;
 }
+
+.mongo-json-tree { font-family: var(--vscode-editor-font-family, monospace); font-size: 12.5px; line-height: 1.7; }
+.mongo-tree-row { white-space: pre-wrap; word-break: break-word; }
+.mongo-tree-toggle { cursor: pointer; user-select: none; }
+.mongo-tree-chevron { font-size: 13px; vertical-align: -2px; opacity: 0.7; margin-right: 2px; }
+.mongo-tree-key { color: var(--vscode-symbolIcon-propertyForeground, #9cdcfe); }
+.mongo-tree-summary { color: var(--vscode-descriptionForeground); opacity: 0.7; }
+.mongo-tree-leaf.leaf-str { color: var(--vscode-debugTokenExpression-string, #ce9178); }
+.mongo-tree-leaf.leaf-num { color: var(--vscode-debugTokenExpression-number, #b5cea8); }
+.mongo-tree-leaf.leaf-bool { color: var(--vscode-debugTokenExpression-boolean, #569cd6); }
+.mongo-tree-leaf.leaf-null { color: var(--vscode-descriptionForeground); }
+.mongo-tree-leaf.leaf-id, .mongo-tree-leaf.leaf-date, .mongo-tree-leaf.leaf-key { color: var(--vscode-debugTokenExpression-name, #4ec9b0); }
+.mongo-tree-badge { margin-left: 6px; font-size: 10px; padding: 0 4px; border-radius: 3px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
+.mongo-tree-more { margin-left: 6px; font-size: 10px; background: none; border: none; color: var(--vscode-textLink-foreground); cursor: pointer; padding: 0; }
