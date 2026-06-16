@@ -49,12 +49,12 @@ export async function handleMongoMessage(
       const { database, collection, filter, sort, projection, skip, limit } = message;
       try {
         const pipeline = buildAggregatePipeline(filter, sort, projection, skip, limit);
-        const query = `db.${collection}.aggregate(${JSON.stringify(pipeline)})`;
         const countFilter = filter.trim() ? convertShellToJson(filter.trim()) : '{}';
         const countQuery = `db.${collection}.countDocuments(${countFilter})`;
 
+        const mongo = driver as unknown as MongoDriver;
         const [docsResult, countResult] = await Promise.all([
-          driver.executeCancellable(query, undefined, database).promise,
+          mongo.findDocumentsForBrowser(database, collection, pipeline),
           driver.executeCancellable(countQuery, undefined, database).promise,
         ]);
 

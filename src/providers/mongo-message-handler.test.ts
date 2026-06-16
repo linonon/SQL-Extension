@@ -124,8 +124,6 @@ describe('handleMongoMessage', () => {
       const docsResult = {
         columns: [{ name: '_id', dataType: 'string', nullable: false, isPrimaryKey: true, defaultValue: null, extra: '' }],
         rows: [{ _id: '1', name: 'Alice' }],
-        affectedRows: 0,
-        executionTime: 10,
       };
       const countResult = {
         columns: [],
@@ -134,11 +132,11 @@ describe('handleMongoMessage', () => {
         executionTime: 5,
       };
 
-      (driver.executeCancellable as any).mockImplementation((query: string) => {
-        if (query.includes('countDocuments')) {
-          return { promise: Promise.resolve(countResult), cancel: vi.fn() };
-        }
-        return { promise: Promise.resolve(docsResult), cancel: vi.fn() };
+      // 文档通过 findDocumentsForBrowser 获取, count 仍走 executeCancellable
+      (driver as any).findDocumentsForBrowser = vi.fn().mockResolvedValue(docsResult);
+      (driver.executeCancellable as any).mockReturnValue({
+        promise: Promise.resolve(countResult),
+        cancel: vi.fn(),
       });
 
       const msg = {
@@ -164,10 +162,8 @@ describe('handleMongoMessage', () => {
     });
 
     it('driver 抛错时返回 error', async () => {
-      (driver.executeCancellable as any).mockReturnValue({
-        promise: Promise.reject(new Error('aggregation failed')),
-        cancel: vi.fn(),
-      });
+      // findDocumentsForBrowser 抛错时 catch 块捕获并返回 error
+      (driver as any).findDocumentsForBrowser = vi.fn().mockRejectedValue(new Error('aggregation failed'));
 
       const msg = {
         type: 'mongoFindDocuments',
@@ -192,6 +188,8 @@ describe('handleMongoMessage', () => {
     });
 
     it('countResult 为空 rows 时 total = 0', async () => {
+      // findDocumentsForBrowser 返回空 rows, executeCancellable 处理 count 返回空
+      (driver as any).findDocumentsForBrowser = vi.fn().mockResolvedValue({ columns: [], rows: [] });
       (driver.executeCancellable as any).mockReturnValue({
         promise: Promise.resolve({ columns: [], rows: [], affectedRows: 0, executionTime: 0 }),
         cancel: vi.fn(),
@@ -338,6 +336,33 @@ describe('handleMongoMessage', () => {
         success: false,
         error: 'delete failed',
       });
+    });
+  });
+
+  describe('mongoFindDocuments 深取数', () => {
+    it('用 findDocumentsForBrowser 的嵌套 rows 发 mongoDocumentList', async () => {
+      const posted: any[] = [];
+      const driver: any = {
+        findDocumentsForBrowser: vi.fn().mockResolvedValue({
+          rows: [{ _id: 'ObjectId("c")', bind: { aid: 'w-1' } }],
+          columns: [{ name: '_id', dataType: 'ObjectId', nullable: false, isPrimaryKey: true, defaultValue: null, extra: '' }],
+        }),
+        executeCancellable: vi.fn().mockReturnValue({
+          promise: Promise.resolve({ columns: [], rows: [{ count: 1 }], affectedRows: 0, executionTime: 0 }),
+          cancel: vi.fn(),
+        }),
+      };
+
+      await handleMongoMessage(
+        { type: 'mongoFindDocuments', database: 'db', collection: 'coll', filter: '', sort: '', projection: '', skip: 0, limit: 50 } as any,
+        driver,
+        (m) => posted.push(m),
+      );
+
+      expect(driver.findDocumentsForBrowser).toHaveBeenCalledWith('db', 'coll', expect.any(Array));
+      const list = posted.find((m) => m.type === 'mongoDocumentList');
+      expect(list.rows[0].bind).toEqual({ aid: 'w-1' });
+      expect(list.total).toBe(1);
     });
   });
 
