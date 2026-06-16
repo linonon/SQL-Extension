@@ -806,3 +806,7 @@
 .mongo-tree-leaf.leaf-id, .mongo-tree-leaf.leaf-date, .mongo-tree-leaf.leaf-key { color: var(--vscode-debugTokenExpression-name, #4ec9b0); }
 .mongo-tree-badge { margin-left: 6px; font-size: 10px; padding: 0 4px; border-radius: 3px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
 .mongo-tree-more { margin-left: 6px; font-size: 10px; background: none; border: none; color: var(--vscode-textLink-foreground); cursor: pointer; padding: 0; }
+.mongo-doc-card { position: relative; background: var(--vscode-editorWidget-background); border: 1px solid var(--vscode-widget-border, transparent); border-radius: 6px; padding: 10px 12px; margin-bottom: 10px; }
+.mongo-doc-card-actions { position: absolute; top: 6px; right: 8px; display: flex; gap: 4px; opacity: 0; transition: opacity .12s; }
+.mongo-doc-card:hover .mongo-doc-card-actions { opacity: 1; }
+.mongo-doc-card-json { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: var(--vscode-editor-font-family, monospace); font-size: 12.5px; line-height: 1.6; }
