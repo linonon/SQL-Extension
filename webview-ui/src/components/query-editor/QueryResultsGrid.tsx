@@ -57,6 +57,7 @@ export function QueryResultsGrid({
   const [rowSelection, setRowSelection] = useState<Record<string, boolean>>({});
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; rowIndex: number | null } | null>(null);
   const [cloneRow, setCloneRow] = useState<Record<string, unknown> | null>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const { addChange, isCellChanged, getCellValue, buildUpdates, clearChanges, pendingCount } =
     useBatchEdits();
 
@@ -193,8 +194,6 @@ export function QueryResultsGrid({
       </div>
     );
   }
-
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   return (
     <div className="query-results">
