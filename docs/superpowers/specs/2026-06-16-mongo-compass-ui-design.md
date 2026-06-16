@@ -107,6 +107,14 @@ MongoDocumentPanel (现 MongoDocumentTable 改名)
 - 移除全屏 MongoDocumentDetail (其能力已并入共享编辑器)
 - 测试: edit -> save 调 `onUpdateDocument` 且 doc 已 strip `_id`; dirty 追踪; Cancel 还原; 未保存拦截
 
+**编辑器 UX 改进 (1a 手动验证发现, 现全屏编辑器的问题, 在 in-card 重写时一并解决):**
+
+- **工具栏层级**: 现状 `Copy as / Find / Delete(红) / Save / Cancel` 平铺, 破坏性的 Delete 夹在中间易误点, 主操作 Save 不突出. 改: Save 实心主按钮 + Cancel 成一组 (右), 工具类 (Copy as / Find) 一组, **Delete 单独隔开** (移到卡片底部或左侧, 远离 Save).
+- **`_id` 行**: 加 `read-only` 标 + 一键 copy + "clone to change `_id`" 入口 (接 1c).
+- **校验 / 脏状态反馈**: JSON 错误给行级标记 (不只顶部一条); 底部显式 "unsaved changes" 提示.
+- **行号**: 编辑器加行号 gutter, 便于大文档定位.
+- **图标约束**: webview **不加载 Tabler 图标字体**, 按钮一律用文字 / 项目现有 emoji 约定, 不可用 `ti ti-*` (见 [[webview-no-tabler-icon-font]]).
+
 ### 1c Clone -- 解决"换 `_id`"
 
 - Clone 操作: 源文档 (含 `_id`) 作为 seed 塞进 composing insert 卡片, `_id` 可编辑
