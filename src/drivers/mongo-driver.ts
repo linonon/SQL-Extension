@@ -155,6 +155,17 @@ export class MongoDriver implements IDatabaseDriver {
     return { json, count: docs.length };
   }
 
+  async findDocumentsForBrowser(
+    database: string,
+    collection: string,
+    pipeline: unknown[]
+  ): Promise<{ rows: Record<string, unknown>[]; columns: ColumnInfo[] }> {
+    this.assertConnected();
+    const docs = await this.client!.db(database).collection(collection)
+      .aggregate(pipeline).toArray();
+    return { rows: docs.map(deepFormatDocument), columns: inferSchema(docs) };
+  }
+
   async importDocuments(
     database: string,
     collection: string,

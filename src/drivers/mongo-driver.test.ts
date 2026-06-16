@@ -677,6 +677,27 @@ describe('MongoDriver', () => {
       expect(matchStage.date.$gt).toBeInstanceOf(Date);
     });
   });
+
+  describe('findDocumentsForBrowser', () => {
+    it('返回深层 rows (嵌套保留) + inferSchema columns', async () => {
+      mockDb.command.mockResolvedValue({ ok: 1 });
+      await driver.connect({
+        id: 't', name: 't', driverType: 'mongodb',
+        host: 'localhost', port: 27017, username: '', password: '', database: '',
+      });
+      mockCollection.aggregate.mockReturnValue({
+        toArray: vi.fn().mockResolvedValue([
+          { _id: new ObjectId('b'.repeat(24)), bind: { aid: 'w-1' } },
+        ]),
+      });
+
+      const res = await driver.findDocumentsForBrowser('db', 'coll', []);
+
+      expect(res.rows[0].bind).toEqual({ aid: 'w-1' });
+      expect(res.rows[0]._id).toBe(`ObjectId("${'b'.repeat(24)}")`);
+      expect(res.columns.some((c) => c.name === '_id')).toBe(true);
+    });
+  });
 });
 
 describe('deepFormatValue', () => {
