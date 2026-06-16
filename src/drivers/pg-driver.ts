@@ -3,6 +3,14 @@ import type { ConnectionConfig } from '../types/connection.js';
 import type { IDatabaseDriver } from '../types/driver.js';
 import type { ColumnInfo, DetailedColumnInfo, QueryResult, TableInfo } from '../types/query.js';
 
+// node-postgres 默认把 DATE/TIMESTAMP/TIMESTAMPTZ 解析成 JS Date, JSON 序列化后
+// 变成 ISO ("2018-12-11T15:00:00.000Z"), 写回 PG 会因格式不符被拒, 且 Date 时区
+// 换算会静默改变显示值. 注册 identity parser 让这些类型保持 PG 原生字符串,
+// 编辑保存所见即所存. (TIME/TIMETZ 默认已是字符串.)
+for (const oid of [pg.types.builtins.DATE, pg.types.builtins.TIMESTAMP, pg.types.builtins.TIMESTAMPTZ]) {
+  pg.types.setTypeParser(oid, (value: string) => value);
+}
+
 export class PgDriver implements IDatabaseDriver {
   readonly driverType = 'postgresql';
   private pool: pg.Pool | null = null;

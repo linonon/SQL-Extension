@@ -18,6 +18,10 @@ vi.mock('pg', () => {
         end = mockPool.end;
         on = mockPool.on;
       },
+      types: {
+        builtins: { DATE: 1082, TIMESTAMP: 1114, TIMESTAMPTZ: 1184 },
+        setTypeParser: vi.fn(),
+      },
     },
   };
 });
