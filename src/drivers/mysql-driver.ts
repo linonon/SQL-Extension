@@ -14,6 +14,10 @@ export class MySQLDriver implements IDatabaseDriver {
       user: config.username,
       password: config.password,
       database: config.database,
+      // DATE/DATETIME/TIMESTAMP 以 MySQL 原生字符串返回 (如 "2018-12-11 15:00:00"),
+      // 而非 JS Date. 避免 Date -> JSON 变成 ISO ("...T...Z") 后写回 MySQL 被拒,
+      // 也避免 Date 时区换算静默改变显示值. 编辑保存所见即所存.
+      dateStrings: true,
       connectionLimit: 5,
       idleTimeout: 30000,
       connectTimeout: 5000,
