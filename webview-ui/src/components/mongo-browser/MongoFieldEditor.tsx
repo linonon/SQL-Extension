@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { coerceToType, docToEjson, documentToFields } from './mongo-field-editor';
+import { coerceToType, convertTags, documentToFields } from './mongo-field-editor';
 
 interface MongoFieldEditorProps {
   readonly document: Record<string, unknown>;
@@ -56,13 +56,22 @@ export function MongoFieldEditor({ document: doc, onSave, onCancel, onDirtyChang
   const addField = () =>
     setRows((prev) => [...prev, { key: '', draft: '', original: '', editable: true, isNew: true, deleted: false }]);
 
+  const [error, setError] = useState('');
+
   const save = () => {
-    const out: Record<string, unknown> = {};
-    for (const r of rows) {
-      if (r.deleted || r.key.trim() === '') { continue; }
-      out[r.key] = r.editable ? coerceToType(r.original, r.draft) : r.original;
+    try {
+      const out: Record<string, unknown> = {};
+      for (const r of rows) {
+        if (r.deleted || r.key.trim() === '') { continue; }
+        // 可编辑值是用户字面量 (按类型 coerce, 不做 shell 转换);
+        // 只读值来自 deepFormatValue, 才把其中真 shell-tag 还原为 EJSON.
+        out[r.key] = r.editable ? coerceToType(r.original, r.draft) : convertTags(r.original);
+      }
+      setError('');
+      onSave(out);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to build document');
     }
-    onSave(docToEjson(out));
   };
 
   return (
@@ -102,6 +111,7 @@ export function MongoFieldEditor({ document: doc, onSave, onCancel, onDirtyChang
           </div>
         ))}
       </div>
+      {error && <div className="mongo-fe-error">{error}</div>}
       <div className="mongo-fe-actions">
         <button className="btn-small" onClick={addField}>+ 添加字段</button>
         <span className="mongo-fe-spacer" style={{ flex: 1 }} />

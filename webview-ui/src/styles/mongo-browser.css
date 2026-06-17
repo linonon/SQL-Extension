@@ -399,6 +399,7 @@
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .mongo-fe-actions { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+.mongo-fe-error { color: var(--vscode-errorForeground, #f48771); font-size: 12px; margin-top: 6px; }
 
 /* 聚合 pipeline 构建器 */
 .mongo-agg {

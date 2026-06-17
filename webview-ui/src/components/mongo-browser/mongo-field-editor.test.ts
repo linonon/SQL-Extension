@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isEditableLeaf, coerceToType, docToEjson, documentToFields } from './mongo-field-editor';
+import { isEditableLeaf, coerceToType, convertTags, documentToFields } from './mongo-field-editor';
 
 describe('isEditableLeaf', () => {
   it('标量 string/number/boolean 可编辑', () => {
@@ -41,13 +41,26 @@ describe('documentToFields', () => {
   });
 });
 
-describe('docToEjson', () => {
-  it('shell-tag 叶子转 EJSON', () => {
-    expect(docToEjson({ name: 'Alice', ref: 'ObjectId("507f1f77bcf86cd799439011")', n: 5 }))
-      .toEqual({ name: 'Alice', ref: { $oid: '507f1f77bcf86cd799439011' }, n: 5 });
+describe('convertTags (按叶子, 仅转真 shell-tag)', () => {
+  it('真 shell-tag 叶子转 EJSON', () => {
+    expect(convertTags('ObjectId("507f1f77bcf86cd799439011")')).toEqual({ $oid: '507f1f77bcf86cd799439011' });
   });
-  it('嵌套结构内的 shell-tag 也转换', () => {
-    expect(docToEjson({ a: { b: 'ISODate("2024-01-01T00:00:00.000Z")' } }))
+  it('标量原样', () => {
+    expect(convertTags(5)).toBe(5);
+    expect(convertTags('Alice')).toBe('Alice');
+    expect(convertTags(true)).toBe(true);
+  });
+  it('形似 tag 但非法的字符串保持字符串 (不崩溃/不误转) — C2', () => {
+    expect(convertTags('ObjectId("xyz")')).toBe('ObjectId("xyz")');
+  });
+  it('负数 Long / Int 正确转 EJSON — C1', () => {
+    expect(convertTags('NumberInt(-5)')).toEqual({ $numberInt: '-5' });
+    expect(convertTags('NumberLong("-5")')).toEqual({ $numberLong: '-5' });
+  });
+  it('递归嵌套结构', () => {
+    expect(convertTags({ a: { b: 'ISODate("2024-01-01T00:00:00.000Z")' } }))
       .toEqual({ a: { b: { $date: '2024-01-01T00:00:00.000Z' } } });
+    expect(convertTags(['ObjectId("507f1f77bcf86cd799439011")', 'plain']))
+      .toEqual([{ $oid: '507f1f77bcf86cd799439011' }, 'plain']);
   });
 });

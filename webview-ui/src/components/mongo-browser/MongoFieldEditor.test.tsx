@@ -55,6 +55,29 @@ describe('MongoFieldEditor', () => {
     expect(screen.getByDisplayValue('Alice')).toBeInTheDocument();
   });
 
+  it('C1: 只读负数 Int 字段保存时类型/值不损坏', () => {
+    const onSave = vi.fn();
+    const d = { _id: 'ObjectId("507f1f77bcf86cd799439011")', name: 'Alice', n: 'NumberInt(-5)' };
+    render(<MongoFieldEditor document={d} onSave={onSave} onCancel={vi.fn()} />);
+    // 改 name 触发 dirty
+    fireEvent.change(screen.getByDisplayValue('Alice'), { target: { value: 'Bob' } });
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ name: 'Bob', n: { $numberInt: '-5' } }));
+  });
+
+  it('C2: 新字段填入形似 tag 的字符串按字面量保存, 不崩溃', () => {
+    const onSave = vi.fn();
+    render(<MongoFieldEditor document={doc} onSave={onSave} onCancel={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: /添加字段/ }));
+    const keyInputs = document.querySelectorAll('.mongo-fe-key-input');
+    fireEvent.change(keyInputs[keyInputs.length - 1], { target: { value: 'note' } });
+    const rows = document.querySelectorAll('.mongo-fe-row');
+    const valueInput = rows[rows.length - 1].querySelector('.mongo-fe-value-input') as HTMLInputElement;
+    fireEvent.change(valueInput, { target: { value: 'ObjectId("xyz")' } });
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ note: 'ObjectId("xyz")' }));
+  });
+
   it('添加字段 -> Save 含新字段', () => {
     const onSave = vi.fn();
     render(<MongoFieldEditor document={doc} onSave={onSave} onCancel={vi.fn()} />);

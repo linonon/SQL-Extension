@@ -27,27 +27,27 @@ const SHELL_PATTERNS: ReadonlyArray<{
     replace: () => `{"$date":"${new Date().toISOString()}"}`,
   },
   {
-    pattern: /NumberLong\(\s*"(\d+)"\s*\)/g,
+    pattern: /NumberLong\(\s*"(-?\d+)"\s*\)/g,
     replace: (_, n) => `{"$numberLong":"${n}"}`,
   },
   {
-    pattern: /NumberLong\(\s*(\d+)\s*\)/g,
+    pattern: /NumberLong\(\s*(-?\d+)\s*\)/g,
     replace: (_, n) => `{"$numberLong":"${n}"}`,
   },
   {
-    pattern: /Long\(\s*"(\d+)"\s*\)/g,
+    pattern: /Long\(\s*"(-?\d+)"\s*\)/g,
     replace: (_, n) => `{"$numberLong":"${n}"}`,
   },
   {
-    pattern: /Long\(\s*(\d+)\s*\)/g,
+    pattern: /Long\(\s*(-?\d+)\s*\)/g,
     replace: (_, n) => `{"$numberLong":"${n}"}`,
   },
   {
-    pattern: /NumberInt\(\s*(\d+)\s*\)/g,
+    pattern: /NumberInt\(\s*(-?\d+)\s*\)/g,
     replace: (_, n) => `{"$numberInt":"${n}"}`,
   },
   {
-    pattern: /Int32\(\s*(\d+)\s*\)/g,
+    pattern: /Int32\(\s*(-?\d+)\s*\)/g,
     replace: (_, n) => `{"$numberInt":"${n}"}`,
   },
   {

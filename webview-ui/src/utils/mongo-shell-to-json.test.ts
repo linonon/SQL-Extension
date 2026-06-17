@@ -36,6 +36,12 @@ describe('convertShellToJson', () => {
       .toBe('{"$numberInt":"42"}');
   });
 
+  it('负数 NumberLong / NumberInt 保留负号', () => {
+    expect(convertShellToJson('NumberLong("-5")')).toBe('{"$numberLong":"-5"}');
+    expect(convertShellToJson('NumberLong(-5)')).toBe('{"$numberLong":"-5"}');
+    expect(convertShellToJson('NumberInt(-5)')).toBe('{"$numberInt":"-5"}');
+  });
+
   it('NumberDecimal -> $numberDecimal', () => {
     expect(convertShellToJson('NumberDecimal("3.14")'))
       .toBe('{"$numberDecimal":"3.14"}');
@@ -148,6 +154,11 @@ describe('jsonToShell', () => {
   it('还原 NumberInt', () => {
     const jsonStr = '"NumberInt(42)"';
     expect(jsonToShell(jsonStr)).toBe('NumberInt(42)');
+  });
+
+  it('还原负数 NumberLong / NumberInt', () => {
+    expect(jsonToShell('"NumberLong(\\"-5\\")"')).toBe('NumberLong("-5")');
+    expect(jsonToShell('"NumberInt(-5)"')).toBe('NumberInt(-5)');
   });
 
   it('还原 NumberDecimal', () => {

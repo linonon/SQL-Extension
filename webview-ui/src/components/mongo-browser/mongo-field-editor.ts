@@ -1,4 +1,4 @@
-import { jsonToShell, convertShellToJson } from '../../utils/mongo-shell-to-json';
+import { convertShellToJson } from '../../utils/mongo-shell-to-json';
 import { detectLeafType } from './mongo-leaf-type';
 
 // 结构化字段编辑器的纯逻辑.
@@ -34,8 +34,25 @@ export function documentToFields(doc: Record<string, unknown>): FieldDescriptor[
     .map(([key, value]) => ({ key, value, editable: isEditableLeaf(value) }));
 }
 
-// 把含 shell-tag 字符串叶子的文档转成 EJSON (供 onSave -> replaceOne).
-// 复用 JSON 编辑器同一序列化链: doc -> JSON -> shell 文本 -> EJSON.
-export function docToEjson(doc: Record<string, unknown>): Record<string, unknown> {
-  return JSON.parse(convertShellToJson(jsonToShell(JSON.stringify(doc)))) as Record<string, unknown>;
+// 按叶子转换: 只把"真正的 shell-tag 字符串" (detectLeafType 判为非 string, 来自 deepFormatValue)
+// 还原为 EJSON; 普通字符串/标量原样保留. 递归处理 object/array.
+// 不对整篇文档跑正则 (那会把用户字面字符串如 'ObjectId("xyz")' 误转或让 JSON.parse 崩溃 — C2).
+export function convertTags(value: unknown): unknown {
+  if (typeof value === 'string') {
+    if (detectLeafType(value) !== 'string') {
+      return JSON.parse(convertShellToJson(value));
+    }
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map(convertTags);
+  }
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = convertTags(v);
+    }
+    return out;
+  }
+  return value;
 }
