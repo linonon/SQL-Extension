@@ -78,4 +78,21 @@ describe('MongoDocumentCard', () => {
     render(<MongoDocumentCard doc={doc} view="list" onEdit={vi.fn()} onClone={vi.fn()} onDelete={vi.fn()} />);
     expect(document.querySelector('.highlight-editor-textarea')).toBeNull();
   });
+
+  it('editing 默认 JSON 模式; 切到 Fields 模式渲染结构化字段编辑器', () => {
+    render(
+      <MongoDocumentCard
+        doc={doc} view="list" editing fieldNames={[]}
+        onEdit={vi.fn()} onClone={vi.fn()} onDelete={vi.fn()}
+        onSave={vi.fn()} onCancelEdit={vi.fn()}
+      />,
+    );
+    // 默认 JSON: textarea 在, 字段编辑器不在
+    expect(document.querySelector('.highlight-editor-textarea')).not.toBeNull();
+    expect(document.querySelector('.mongo-fe')).toBeNull();
+    // 切到 Fields
+    fireEvent.click(screen.getByRole('button', { name: /^fields$/i }));
+    expect(document.querySelector('.mongo-fe')).not.toBeNull();
+    expect(document.querySelector('.highlight-editor-textarea')).toBeNull();
+  });
 });

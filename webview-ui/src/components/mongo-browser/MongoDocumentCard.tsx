@@ -1,8 +1,10 @@
+import { useState } from 'react';
 import { MongoJsonTree } from './MongoJsonTree';
 import { jsonToShell } from '../../utils/mongo-shell-to-json';
 import type { MongoView } from './ViewToggle';
 import { idToShell } from './mongo-id';
 import { MongoDocumentDetail } from './MongoDocumentDetail';
+import { MongoFieldEditor } from './MongoFieldEditor';
 
 interface MongoDocumentCardProps {
   readonly doc: Record<string, unknown>;
@@ -32,21 +34,45 @@ export function MongoDocumentCard({
   saveSignal,
 }: MongoDocumentCardProps) {
   const id = idToShell(doc._id);
+  const [editMode, setEditMode] = useState<'json' | 'fields'>('json');
 
-  // in-card 编辑: 复用 MongoDocumentDetail 编辑器内核, 列表上下文不动 (Compass 文档列表模型)
+  // in-card 编辑: Fields (结构化逐字段) 与 JSON (textarea) 两种模式, 列表上下文不动 (Compass 文档列表模型)
   if (editing && onSave) {
     return (
       <div className="mongo-doc-card mongo-doc-card-editing">
-        <MongoDocumentDetail
-          document={doc}
-          mode="edit"
-          fieldNames={fieldNames ?? []}
-          onClose={() => onCancelEdit?.()}
-          onSave={onSave}
-          onDelete={onDelete}
-          onDirtyChange={onDirtyChange}
-          saveSignal={saveSignal}
-        />
+        <div className="mongo-edit-mode-toggle">
+          <button
+            className={`btn-small${editMode === 'fields' ? ' is-active' : ''}`}
+            onClick={() => setEditMode('fields')}
+          >
+            Fields
+          </button>
+          <button
+            className={`btn-small${editMode === 'json' ? ' is-active' : ''}`}
+            onClick={() => setEditMode('json')}
+          >
+            JSON
+          </button>
+        </div>
+        {editMode === 'fields' ? (
+          <MongoFieldEditor
+            document={doc}
+            onSave={(ejson) => onSave(idToShell(doc._id), ejson)}
+            onCancel={() => onCancelEdit?.()}
+            onDirtyChange={onDirtyChange}
+          />
+        ) : (
+          <MongoDocumentDetail
+            document={doc}
+            mode="edit"
+            fieldNames={fieldNames ?? []}
+            onClose={() => onCancelEdit?.()}
+            onSave={onSave}
+            onDelete={onDelete}
+            onDirtyChange={onDirtyChange}
+            saveSignal={saveSignal}
+          />
+        )}
       </div>
     );
   }
