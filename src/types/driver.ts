@@ -18,7 +18,12 @@ export interface IDatabaseDriver {
 
   execute(sql: string, params?: unknown[]): Promise<QueryResult>;
 
-  executeCancellable(sql: string, params?: unknown[], database?: string): {
+  executeCancellable(
+    sql: string,
+    params?: unknown[],
+    database?: string,
+    options?: { readonly autoConvertIds?: boolean },
+  ): {
     promise: Promise<QueryResult>;
     cancel: () => void;
   };

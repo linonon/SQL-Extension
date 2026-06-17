@@ -282,6 +282,7 @@ describe('handleMongoMessage', () => {
         expect.stringContaining('replaceOne'),
         undefined,
         'mydb',
+        { autoConvertIds: false },
       );
       expect(postMessage).toHaveBeenCalledWith({
         type: 'mongoOperationResult',

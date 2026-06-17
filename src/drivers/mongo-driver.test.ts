@@ -305,6 +305,38 @@ describe('MongoDriver', () => {
       expect(result.affectedRows).toBe(0);
     });
 
+    it('CRUD 传 autoConvertIds:false 时 24-hex 字符串 _id 不被强转 ObjectId (保字符串)', async () => {
+      mockCollection.replaceOne.mockResolvedValue({ matchedCount: 1, modifiedCount: 1 });
+      await driver.executeCancellable(
+        'db.users.replaceOne({"_id":"507f1f77bcf86cd799439011"},{"name":"X"})',
+        undefined,
+        'mydb',
+        { autoConvertIds: false },
+      ).promise;
+      const filterArg = mockCollection.replaceOne.mock.calls[0][0];
+      expect(typeof filterArg._id).toBe('string');
+      expect(filterArg._id).toBe('507f1f77bcf86cd799439011');
+    });
+
+    it('deleteOne 传 autoConvertIds:false 时字符串 _id 保字符串', async () => {
+      mockCollection.deleteOne.mockResolvedValue({ deletedCount: 1 });
+      await driver.executeCancellable(
+        'db.users.deleteOne({"_id":"aaaaaaaaaaaaaaaaaaaaaaaa"})',
+        undefined,
+        'mydb',
+        { autoConvertIds: false },
+      ).promise;
+      const filterArg = mockCollection.deleteOne.mock.calls[0][0];
+      expect(typeof filterArg._id).toBe('string');
+    });
+
+    it('默认 (不传 options) 仍对 24-hex 字符串 _id 自动转 ObjectId (查询编辑器便利)', async () => {
+      mockCollection.replaceOne.mockResolvedValue({ matchedCount: 1, modifiedCount: 1 });
+      await driver.execute('db.users.replaceOne({"_id":"507f1f77bcf86cd799439011"},{"name":"X"})');
+      const filterArg = mockCollection.replaceOne.mock.calls[0][0];
+      expect(filterArg._id).toBeInstanceOf(ObjectId);
+    });
+
     it('explainFind 返回精简 explain 摘要 (全表扫描)', async () => {
       mockCollection.find.mockReturnValue({
         sort: vi.fn().mockReturnThis(),

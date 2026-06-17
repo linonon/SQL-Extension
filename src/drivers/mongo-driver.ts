@@ -101,7 +101,8 @@ export class MongoDriver implements IDatabaseDriver {
   executeCancellable(
     query: string,
     _params?: unknown[],
-    database?: string
+    database?: string,
+    options?: { readonly autoConvertIds?: boolean }
   ): { promise: Promise<QueryResult>; cancel: () => void } {
     let cancelled = false;
 
@@ -110,7 +111,9 @@ export class MongoDriver implements IDatabaseDriver {
       const dbName = database ?? 'test';
       const start = Date.now();
 
-      const result = await this.dispatchToCollection(dbName, cmd.collection, cmd.method, cmd.args);
+      const result = await this.dispatchToCollection(dbName, cmd.collection, cmd.method, cmd.args, {
+        autoConvertIds: options?.autoConvertIds,
+      });
 
       if (cancelled) {
         return { columns: [], rows: [], affectedRows: 0, executionTime: 0 };
@@ -217,20 +220,28 @@ export class MongoDriver implements IDatabaseDriver {
     collection: string,
     method: string,
     args: readonly unknown[],
-    options?: { limit?: number },
+    options?: { limit?: number; autoConvertIds?: boolean },
   ): Promise<DispatchResult> {
     this.assertConnected();
     const coll = this.client!.db(database).collection(collection);
+    // 把 filter 还原成 BSON. autoConvertIds (24-hex 字符串 -> ObjectId) 是查询编辑器手敲裸字符串的
+    // 便利; CRUD 路径 (filter 经 buildIdFilter 已显式带类型) 传 autoConvertIds:false 跳过它,
+    // 否则真字符串 _id (恰好 24-hex) 会被误转成 ObjectId 而匹配不上 (review H1/H3).
+    const ac = options?.autoConvertIds !== false;
+    const toFilter = (a: unknown): Record<string, unknown> => {
+      const f = convertEjsonToBson(a ?? {}) as Record<string, unknown>;
+      return ac ? autoConvertIds(f) : f;
+    };
     switch (method) {
       case 'find': {
-        const filter = autoConvertIds(convertEjsonToBson(args[0] ?? {}) as Record<string, unknown>);
+        const filter = toFilter(args[0]);
         const opts = (args[1] ?? {}) as Record<string, unknown>;
         const limit = options?.limit ?? 1000;
         const docs = await coll.find(filter, { projection: opts.projection }).limit(limit).toArray();
         return { docs };
       }
       case 'findOne': {
-        const filter = autoConvertIds(convertEjsonToBson(args[0] ?? {}) as Record<string, unknown>);
+        const filter = toFilter(args[0]);
         const doc = await coll.findOne(filter);
         return { docs: doc ? [doc] : [] };
       }
@@ -245,13 +256,13 @@ export class MongoDriver implements IDatabaseDriver {
         return { affectedRows: result.insertedCount };
       }
       case 'updateOne': {
-        const filter = autoConvertIds(convertEjsonToBson(args[0] ?? {}) as Record<string, unknown>);
+        const filter = toFilter(args[0]);
         const update = convertEjsonToBson(args[1] as Record<string, unknown>) as Record<string, unknown>;
         const result = await coll.updateOne(filter, update);
         return { affectedRows: result.modifiedCount };
       }
       case 'updateMany': {
-        const filter = autoConvertIds(convertEjsonToBson(args[0] ?? {}) as Record<string, unknown>);
+        const filter = toFilter(args[0]);
         const update = args[1] as Record<string, unknown>;
         const result = await coll.updateMany(filter, update);
         return { affectedRows: result.modifiedCount };
@@ -259,18 +270,18 @@ export class MongoDriver implements IDatabaseDriver {
       case 'replaceOne': {
         // 整文档替换: 替换文档不含 _id, _id 由 filter 保持; 不在 replacement 内的字段被移除.
         // affectedRows 取 matchedCount (是否命中), 而非 modifiedCount, 以便无改动的保存仍判定为成功.
-        const filter = autoConvertIds(convertEjsonToBson(args[0] ?? {}) as Record<string, unknown>);
+        const filter = toFilter(args[0]);
         const replacement = convertEjsonToBson(args[1] ?? {}) as Record<string, unknown>;
         const result = await coll.replaceOne(filter, replacement);
         return { affectedRows: result.matchedCount };
       }
       case 'deleteOne': {
-        const filter = autoConvertIds(convertEjsonToBson(args[0] ?? {}) as Record<string, unknown>);
+        const filter = toFilter(args[0]);
         const result = await coll.deleteOne(filter);
         return { affectedRows: result.deletedCount };
       }
       case 'deleteMany': {
-        const filter = autoConvertIds(convertEjsonToBson(args[0] ?? {}) as Record<string, unknown>);
+        const filter = toFilter(args[0]);
         const result = await coll.deleteMany(filter);
         return { affectedRows: result.deletedCount };
       }
@@ -283,7 +294,7 @@ export class MongoDriver implements IDatabaseDriver {
         return { docs };
       }
       case 'countDocuments': {
-        const filter = autoConvertIds(convertEjsonToBson(args[0] ?? {}) as Record<string, unknown>);
+        const filter = toFilter(args[0]);
         const count = await coll.countDocuments(filter);
         return { docs: [{ count }] };
       }

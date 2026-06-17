@@ -95,7 +95,7 @@ export async function handleMongoMessage(
         // _id filter 经 idToShell -> convertShellToJson 还原 BSON 类型, 避免数值/ObjectId 被当字符串匹配不上.
         const filterJson = buildIdFilter(id);
         const query = `db.${collection}.replaceOne(${filterJson},${JSON.stringify(document)})`;
-        const result = await driver.executeCancellable(query, undefined, database).promise;
+        const result = await driver.executeCancellable(query, undefined, database, { autoConvertIds: false }).promise;
         if (result.affectedRows === 0) {
           post({ type: 'mongoOperationResult', success: false, error: `未匹配到 _id 为 ${id} 的文档, 未更新 (请检查 _id 类型)` });
         } else {
@@ -116,7 +116,7 @@ export async function handleMongoMessage(
         const filterJson = buildIdFilter(id);
         const setJson = JSON.stringify({ [path]: value });
         const query = `db.${collection}.updateOne(${filterJson},{"$set":${setJson}})`;
-        const result = await driver.executeCancellable(query, undefined, database).promise;
+        const result = await driver.executeCancellable(query, undefined, database, { autoConvertIds: false }).promise;
         if (result.affectedRows === 0) {
           post({ type: 'mongoOperationResult', success: false, error: `未匹配到 _id 为 ${id} 的文档, 未更新 (请检查 _id 类型)` });
         } else {
@@ -134,7 +134,7 @@ export async function handleMongoMessage(
       try {
         const filterJson = buildIdFilter(id);
         const query = `db.${collection}.deleteOne(${filterJson})`;
-        const result = await driver.executeCancellable(query, undefined, database).promise;
+        const result = await driver.executeCancellable(query, undefined, database, { autoConvertIds: false }).promise;
         if (result.affectedRows === 0) {
           post({ type: 'mongoOperationResult', success: false, error: `未匹配到 _id 为 ${id} 的文档, 未删除 (请检查 _id 类型)` });
         } else {
