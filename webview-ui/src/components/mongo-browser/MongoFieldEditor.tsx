@@ -67,6 +67,10 @@ export function MongoFieldEditor({ document: doc, onSave, onCancel, onDirtyChang
 
   const save = () => {
     try {
+      // 新增字段填了值却没填 key -> 阻止保存而非静默丢弃 (review L2)
+      const orphan = rows.find((r) => !r.deleted && r.key.trim() === '' && r.isNew && r.draft.trim() !== '');
+      if (orphan) { setError('新增字段缺少字段名 (key)'); return; }
+
       const out: Record<string, unknown> = {};
       for (const r of rows) {
         if (r.deleted || r.key.trim() === '') { continue; }

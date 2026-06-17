@@ -33,6 +33,7 @@ export interface UpdateConnectionConfig extends SaveConnectionConfig {
   readonly id: string;
 }
 
+// 镜像 webview-ui src/types/messages.ts 的同名 interface (两 package 各一份, 须手动保持同步)
 export interface MongoExplainSummary {
   readonly stage: string;
   readonly indexName?: string;

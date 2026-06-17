@@ -19,8 +19,9 @@ const SUPPORTED_METHODS = new Set([
 ]);
 
 // 匹配 db.<collection>.<method>(...)
-// 允许末尾分号和空白
-const QUERY_PATTERN = /^\s*db\.([a-zA-Z_$][\w$]*)\.(\w+)\s*\(([\s\S]*)\)\s*;?\s*$/;
+// collection 用贪婪 .+ 以支持含 . 和 - 的合法 Mongo 集合名 (如 my-app.events);
+// 贪婪回溯到最后一个 .<method>( 处切分. 允许末尾分号和空白.
+const QUERY_PATTERN = /^\s*db\.(.+)\.(\w+)\s*\(([\s\S]*)\)\s*;?\s*$/;
 
 export function parseMongoQuery(input: string): MongoCommand {
   const trimmed = input.trim();

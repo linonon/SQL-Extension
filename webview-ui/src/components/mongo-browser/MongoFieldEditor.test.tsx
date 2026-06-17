@@ -97,6 +97,18 @@ describe('MongoFieldEditor', () => {
     expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ note: 'ObjectId("xyz")' }));
   });
 
+  it('L2: 新字段有值但 key 为空 -> 阻止保存并提示', () => {
+    const onSave = vi.fn();
+    render(<MongoFieldEditor document={doc} onSave={onSave} onCancel={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: /添加字段/ }));
+    const rows = document.querySelectorAll('.mongo-fe-row');
+    const valueInput = rows[rows.length - 1].querySelector('.mongo-fe-value-input') as HTMLInputElement;
+    fireEvent.change(valueInput, { target: { value: 'orphan' } });
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+    expect(onSave).not.toHaveBeenCalled();
+    expect(screen.getByText(/字段名|key/i)).toBeInTheDocument();
+  });
+
   it('添加字段 -> Save 含新字段', () => {
     const onSave = vi.fn();
     render(<MongoFieldEditor document={doc} onSave={onSave} onCancel={vi.fn()} />);

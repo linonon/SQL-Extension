@@ -264,7 +264,8 @@ export class MongoDriver implements IDatabaseDriver {
       }
       case 'updateMany': {
         const filter = toFilter(args[0]);
-        const update = args[1] as Record<string, unknown>;
+        // 与 updateOne 一致还原 EJSON 类型 ($oid/$date/$numberLong 等), 否则写入畸形子文档 (review M1)
+        const update = convertEjsonToBson(args[1] as Record<string, unknown>) as Record<string, unknown>;
         const result = await coll.updateMany(filter, update);
         return { affectedRows: result.modifiedCount };
       }

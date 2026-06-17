@@ -51,4 +51,30 @@ describe('summarizeExplain', () => {
     expect(s.docsExamined).toBe(0);
     expect(s.isCollScan).toBe(false);
   });
+
+  it('分片 explain: 从 shards 提取 stage / indexName — M9', () => {
+    const sharded = {
+      queryPlanner: {
+        winningPlan: {
+          stage: 'SHARD_MERGE',
+          shards: [
+            { winningPlan: { stage: 'FETCH', inputStage: { stage: 'IXSCAN', indexName: 'a_1' } } },
+          ],
+        },
+      },
+      executionStats: { nReturned: 3, totalDocsExamined: 3, totalKeysExamined: 3, executionTimeMillis: 1 },
+    };
+    const s = summarizeExplain(sharded);
+    expect(s.stage).toBe('IXSCAN');
+    expect(s.indexName).toBe('a_1');
+    expect(s.isCollScan).toBe(false);
+  });
+
+  it('分片 explain 全表扫描: isCollScan=true — M9', () => {
+    const sharded = {
+      queryPlanner: { winningPlan: { stage: 'SHARD_MERGE', shards: [{ winningPlan: { stage: 'COLLSCAN' } }] } },
+      executionStats: { nReturned: 1, totalDocsExamined: 999, totalKeysExamined: 0, executionTimeMillis: 9 },
+    };
+    expect(summarizeExplain(sharded).isCollScan).toBe(true);
+  });
 });

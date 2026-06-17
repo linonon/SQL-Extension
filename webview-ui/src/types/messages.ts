@@ -36,6 +36,7 @@ export interface UpdateConnectionConfig extends SaveConnectionConfig {
   readonly id: string;
 }
 
+// 镜像 ext-host src/types/messages.ts 的同名 interface (两 package 各一份, 须手动保持同步)
 export interface MongoExplainSummary {
   readonly stage: string;
   readonly indexName?: string;
@@ -79,7 +80,7 @@ export type ExtensionMessage =
   | { type: 'mongoCollectionList'; collections: readonly { readonly name: string; readonly count: number }[] }
   | { type: 'mongoDocumentList'; columns: readonly ColumnInfo[]; rows: readonly Record<string, unknown>[]; total: number; error?: string }
   | { type: 'mongoAllCollectionList'; collections: readonly { readonly database: string; readonly name: string; readonly count: number }[] }
-  | { type: 'mongoOperationResult'; success: boolean; error?: string }
+  | { type: 'mongoOperationResult'; success: boolean; error?: string; affectedRows?: number }
   | { type: 'mongoExportResult'; success: boolean; count?: number; error?: string }
   | { type: 'mongoImportResult'; success: boolean; inserted?: number; error?: string }
   | { type: 'mongoCollectionCreated'; success: boolean; error?: string }

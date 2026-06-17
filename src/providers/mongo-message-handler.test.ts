@@ -548,6 +548,22 @@ describe('handleMongoMessage', () => {
       expect(postMessage).toHaveBeenCalledWith({ type: 'mongoExplainResult', summary });
     });
 
+    it('sort 非空时解析后传给 explainFind (第四参非 undefined) — M8', async () => {
+      const summary = { stage: 'IXSCAN', indexName: 'age_-1', docsExamined: 1, keysExamined: 1, nReturned: 1, executionTimeMillis: 0, isCollScan: false };
+      (driver as any).explainFind = vi.fn().mockResolvedValue(summary);
+
+      const msg = {
+        type: 'mongoExplainQuery',
+        database: 'mydb',
+        collection: 'users',
+        filter: '',
+        sort: '{"age": -1}',
+      } as WebviewMessage;
+
+      await handleMongoMessage(msg, driver, postMessage);
+      expect((driver as any).explainFind).toHaveBeenCalledWith('mydb', 'users', {}, { age: -1 });
+    });
+
     it('explainFind 抛错时返回 error', async () => {
       (driver as any).explainFind = vi.fn().mockRejectedValue(new Error('explain failed'));
 

@@ -86,6 +86,13 @@ describe('parseMongoQuery', () => {
       const cmd = parseMongoQuery('db.$my_collection.find({})');
       expect(cmd.collection).toBe('$my_collection');
     });
+
+    it('collection 名含 . 和 - (合法 Mongo 命名) — M3', () => {
+      const cmd = parseMongoQuery('db.my-app.events.deleteOne({"_id": "x"})');
+      expect(cmd.collection).toBe('my-app.events');
+      expect(cmd.method).toBe('deleteOne');
+      expect(cmd.args).toEqual([{ _id: 'x' }]);
+    });
   });
 
   describe('异常', () => {

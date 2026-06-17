@@ -369,6 +369,23 @@ describe('MongoDriver', () => {
       expect(filterArg._id).toBeInstanceOf(ObjectId);
     });
 
+    it('explainFind 带 sort 时调用 cursor.sort — M8', async () => {
+      const sortFn = vi.fn().mockReturnThis();
+      mockCollection.find.mockReturnValue({
+        sort: sortFn,
+        explain: vi.fn().mockResolvedValue({ queryPlanner: { winningPlan: { stage: 'COLLSCAN' } }, executionStats: {} }),
+      });
+      await (driver as any).explainFind('mydb', 'users', { a: 1 }, { a: -1 });
+      expect(sortFn).toHaveBeenCalledWith({ a: -1 });
+    });
+
+    it('updateMany 也还原 update 文档的 EJSON 类型 (与 updateOne 一致) — M1', async () => {
+      mockCollection.updateMany.mockResolvedValue({ matchedCount: 2, modifiedCount: 2 });
+      await driver.execute('db.users.updateMany({"active": true}, {"$set": {"ref": {"$oid": "507f1f77bcf86cd799439011"}}})');
+      const updateArg = mockCollection.updateMany.mock.calls[0][1];
+      expect(updateArg.$set.ref).toBeInstanceOf(ObjectId);
+    });
+
     it('deleteMany 返回 deletedCount', async () => {
       mockCollection.deleteMany.mockResolvedValue({ deletedCount: 5 });
 
