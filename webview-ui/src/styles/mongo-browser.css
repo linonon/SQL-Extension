@@ -237,7 +237,20 @@
   position: sticky;
   top: 0;
   background: var(--vscode-editor-background);
+  white-space: nowrap;
 }
+
+.mongo-th-toggle {
+  margin-left: 4px;
+  padding: 0 4px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--vscode-textLink-foreground, #3794ff);
+  font-size: 11px;
+  line-height: 1;
+}
+.mongo-th-toggle:hover { color: var(--vscode-textLink-activeForeground, #4daafc); }
 
 .mongo-table td {
   padding: 4px 8px;
