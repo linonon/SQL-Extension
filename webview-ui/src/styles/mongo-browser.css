@@ -369,6 +369,45 @@
 .mongo-explain-error { color: var(--vscode-errorForeground, #f48771); }
 .mongo-explain-stats { display: flex; gap: 14px; flex-wrap: wrap; color: var(--vscode-descriptionForeground); }
 
+/* 聚合 pipeline 构建器 */
+.mongo-agg {
+  border: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.35));
+  border-radius: 4px;
+  padding: 8px;
+  margin: 6px 8px;
+  background: var(--vscode-textBlockQuote-background, rgba(128, 128, 128, 0.05));
+}
+.mongo-agg-top { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.mongo-agg-coll-label { font-size: 12px; font-weight: 600; }
+.mongo-agg-collection {
+  flex: 1; padding: 2px 6px;
+  background: var(--vscode-input-background); color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, rgba(128, 128, 128, 0.4)));
+  border-radius: 3px; font-family: var(--vscode-editor-font-family, monospace);
+}
+.mongo-agg-stages { display: flex; flex-direction: column; gap: 6px; }
+.mongo-agg-stage {
+  border: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.3));
+  border-radius: 4px; padding: 6px; background: var(--vscode-editor-background);
+}
+.mongo-agg-stage-head { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; }
+.mongo-agg-op {
+  padding: 2px 4px; font-family: var(--vscode-editor-font-family, monospace); font-size: 12px;
+  background: var(--vscode-dropdown-background, var(--vscode-input-background));
+  color: var(--vscode-dropdown-foreground, var(--vscode-input-foreground));
+  border: 1px solid var(--vscode-dropdown-border, var(--vscode-widget-border, rgba(128, 128, 128, 0.4)));
+  border-radius: 3px;
+}
+.mongo-agg-body {
+  width: 100%; box-sizing: border-box; resize: vertical;
+  padding: 4px 6px; font-family: var(--vscode-editor-font-family, monospace); font-size: 12px;
+  background: var(--vscode-input-background); color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, rgba(128, 128, 128, 0.4)));
+  border-radius: 3px;
+}
+.mongo-agg-error { color: var(--vscode-errorForeground, #f48771); font-size: 12px; margin-top: 6px; }
+.mongo-agg-actions { display: flex; justify-content: space-between; gap: 6px; margin-top: 8px; }
+
 /* 渲染上限提示 */
 .mongo-render-cap-notice {
   padding: 5px 10px;

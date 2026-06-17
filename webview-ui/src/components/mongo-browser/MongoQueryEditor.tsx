@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import vscodeApi from '../../vscode';
 import type { ExtensionMessage } from '../../types/messages';
 import type { ColumnInfo } from '../../types/database';
+import { MongoAggregationBuilder } from './MongoAggregationBuilder';
 import '../../styles/mongo-browser.css';
 
 interface Props {
@@ -23,6 +24,7 @@ export function MongoQueryEditor({ connectionId, database, connectionName }: Pro
   const [queryText, setQueryText] = useState('db.collection.find({})');
   const [executing, setExecuting] = useState(false);
   const [result, setResult] = useState<QueryResult | null>(null);
+  const [showAggBuilder, setShowAggBuilder] = useState(false);
 
   const handleExecute = useCallback(() => {
     if (!queryText.trim() || executing) { return; }
@@ -91,8 +93,18 @@ export function MongoQueryEditor({ connectionId, database, connectionName }: Pro
             Cancel
           </button>
         )}
+        <button className="btn-small" onClick={() => setShowAggBuilder((v) => !v)}>
+          Aggregation Builder {showAggBuilder ? '▴' : '▾'}
+        </button>
         <span className="mongo-query-hint">Ctrl/Cmd+Enter to execute</span>
       </div>
+
+      {showAggBuilder && (
+        <MongoAggregationBuilder
+          collection="collection"
+          onGenerate={(q) => { setQueryText(q); setShowAggBuilder(false); }}
+        />
+      )}
 
       {result?.truncated && (
         <div className="mongo-query-truncated-warning">
