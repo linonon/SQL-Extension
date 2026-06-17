@@ -396,6 +396,19 @@
   display: flex;
   align-items: center;
   gap: 6px;
+  width: 100%;
+}
+
+.detail-tool-group,
+.detail-primary-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Delete 与主操作 (Save/Cancel) 之间留出明显间隔, 降低误点 */
+.detail-delete-btn {
+  margin-right: 10px;
 }
 
 /* Copy dropdown */
@@ -457,12 +470,37 @@
 
 /* Detail ID bar */
 .detail-id-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 4px 12px;
   font-size: 12px;
   font-family: var(--vscode-editor-font-family, monospace);
   color: var(--vscode-descriptionForeground);
   background: var(--vscode-textBlockQuote-background, rgba(128, 128, 128, 0.1));
   border-bottom: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.35));
+  flex-shrink: 0;
+}
+
+.detail-id-label { font-weight: 600; }
+.detail-id-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.detail-id-readonly {
+  flex-shrink: 0;
+  padding: 0 6px;
+  border-radius: 8px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--vscode-badge-foreground, #fff);
+  background: var(--vscode-badge-background, rgba(128, 128, 128, 0.4));
+}
+.detail-id-copy { flex-shrink: 0; margin-left: auto; }
+
+/* 未保存改动提示 */
+.detail-dirty-hint {
+  padding: 3px 12px;
+  font-size: 11px;
+  color: var(--vscode-editorWarning-foreground, #cca700);
   flex-shrink: 0;
 }
 
@@ -810,6 +848,12 @@
 .mongo-doc-card-actions { position: absolute; top: 6px; right: 8px; display: flex; gap: 4px; opacity: 0; transition: opacity .12s; }
 .mongo-doc-card:hover .mongo-doc-card-actions { opacity: 1; }
 .mongo-doc-card-json { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: var(--vscode-editor-font-family, monospace); font-size: 12.5px; line-height: 1.6; }
+
+/* in-card 编辑: 卡片内嵌编辑器, 高度自适应内容并设上限滚动 (不再依赖整面板高度) */
+.mongo-doc-card-editing { padding: 0; border-color: var(--vscode-focusBorder, #007fd4); }
+.mongo-doc-card-editing .mongo-document-detail { height: auto; }
+.mongo-doc-card-editing .detail-body { min-height: 200px; max-height: 50vh; overflow: auto; }
+.mongo-doc-card-composing { border-style: dashed; }
 .mongo-view-toggle { display: inline-flex; border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border)); border-radius: 5px; overflow: hidden; }
 .mongo-view-toggle-btn { background: transparent; border: none; padding: 3px 10px; font-size: 12px; color: var(--vscode-foreground); cursor: pointer; border-left: 1px solid var(--vscode-widget-border, var(--vscode-panel-border)); }
 .mongo-view-toggle-btn:first-child { border-left: none; }

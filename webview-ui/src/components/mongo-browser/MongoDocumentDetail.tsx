@@ -176,36 +176,56 @@ export function MongoDocumentDetail({ document, mode, fieldNames, onClose, onSav
       <div className="detail-header">
         <h3>{mode === 'edit' ? 'Edit Document' : 'New Document'}</h3>
         <div className="detail-header-actions">
-          <div className="detail-copy-group" ref={copyMenuRef}>
-            <button className="btn-small" onClick={() => setShowCopyMenu(v => !v)}>Copy as...</button>
-            {showCopyMenu && (
-              <div className="detail-copy-menu">
-                <button className="detail-copy-menu-item" onClick={handleCopyShell}>Shell</button>
-                <button className="detail-copy-menu-item" onClick={handleCopyEjson}>EJSON</button>
-                <button className="detail-copy-menu-item" onClick={handleCopyJson}>JSON</button>
-              </div>
-            )}
-            {toast && (
-              <span className="detail-copy-toast" onAnimationEnd={() => setToast('')}>{toast}</span>
-            )}
+          {/* 工具组: 非破坏性 */}
+          <div className="detail-tool-group">
+            <div className="detail-copy-group" ref={copyMenuRef}>
+              <button className="btn-small" onClick={() => setShowCopyMenu(v => !v)}>Copy as...</button>
+              {showCopyMenu && (
+                <div className="detail-copy-menu">
+                  <button className="detail-copy-menu-item" onClick={handleCopyShell}>Shell</button>
+                  <button className="detail-copy-menu-item" onClick={handleCopyEjson}>EJSON</button>
+                  <button className="detail-copy-menu-item" onClick={handleCopyJson}>JSON</button>
+                </div>
+              )}
+              {toast && (
+                <span className="detail-copy-toast" onAnimationEnd={() => setToast('')}>{toast}</span>
+              )}
+            </div>
+            <button className="btn-small" onClick={openSearch} title="Search (Ctrl+F)">Find</button>
           </div>
-          <button className="btn-small" onClick={openSearch} title="Search (Ctrl+F)">Find</button>
+          {/* spacer 把破坏性的 Delete 推离主操作 */}
+          <span className="detail-action-spacer" style={{ flex: 1 }} />
           {mode === 'edit' && (
-            <button className="btn-small btn-danger" onClick={handleDelete}>Delete</button>
+            <button className="btn-small btn-danger detail-delete-btn" onClick={handleDelete}>Delete</button>
           )}
-          <button
-            className="btn-small btn-primary"
-            onClick={handleSave}
-            disabled={!dirty && mode === 'edit'}
-          >
-            Save
-          </button>
-          <button className="btn-small" onClick={onClose}>Cancel</button>
+          {/* 主操作组: Save/Cancel 成一组, 远离 Delete */}
+          <div className="detail-primary-group">
+            <button
+              className="btn-small btn-primary"
+              onClick={handleSave}
+              disabled={!dirty && mode === 'edit'}
+            >
+              Save
+            </button>
+            <button className="btn-small" onClick={onClose}>Cancel</button>
+          </div>
         </div>
       </div>
       {mode === 'edit' && displayId && (
-        <div className="detail-id-bar">_id: {displayId}</div>
+        <div className="detail-id-bar">
+          <span className="detail-id-label">_id:</span>
+          <span className="detail-id-value">{displayId}</span>
+          <span className="detail-id-readonly" title="_id 不可改; 如需更名请用 Clone">read-only</span>
+          <button
+            className="btn-small detail-id-copy"
+            title="Copy _id"
+            onClick={() => { navigator.clipboard.writeText(docId); showToast('Copied _id'); }}
+          >
+            Copy _id
+          </button>
+        </div>
       )}
+      {dirty && <div className="detail-dirty-hint">● unsaved changes</div>}
       {error && <div className="detail-error">{error}</div>}
       {showSearch && (
         <div className="detail-search-bar">

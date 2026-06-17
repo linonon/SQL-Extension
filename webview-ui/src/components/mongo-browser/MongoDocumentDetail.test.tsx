@@ -144,3 +144,26 @@ describe('MongoDocumentDetail - save 流程', () => {
     });
   });
 });
+
+describe('MongoDocumentDetail - UX 改进', () => {
+  it('U1: _id 行有 read-only 标记 + Copy _id 按钮 (复制 shell 形式)', () => {
+    const writeText = vi.fn();
+    Object.assign(navigator, { clipboard: { writeText } });
+    const doc = { _id: 'ObjectId("507f1f77bcf86cd799439011")', name: 'test' };
+    render(<MongoDocumentDetail {...defaultProps} document={doc} mode="edit" />);
+
+    expect(screen.getByText(/read-only/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /copy _id/i }));
+    expect(writeText).toHaveBeenCalledWith('ObjectId("507f1f77bcf86cd799439011")');
+  });
+
+  it('U2: 编辑产生改动时显示 unsaved changes 提示, 无改动时不显示', () => {
+    const doc = { _id: 'ObjectId("507f1f77bcf86cd799439011")', name: 'test' };
+    render(<MongoDocumentDetail {...defaultProps} document={doc} mode="edit" />);
+
+    expect(screen.queryByText(/unsaved/i)).toBeNull();
+    const textarea = document.querySelector('.highlight-editor-textarea') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: '{"name": "changed"}' } });
+    expect(screen.getByText(/unsaved/i)).toBeInTheDocument();
+  });
+});
