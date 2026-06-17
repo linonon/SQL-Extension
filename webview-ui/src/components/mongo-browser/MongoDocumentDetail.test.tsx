@@ -145,6 +145,29 @@ describe('MongoDocumentDetail - save 流程', () => {
   });
 });
 
+describe('MongoDocumentDetail - clone', () => {
+  it('J9: insert + seed 含 _id (clone) -> _id 在编辑区可改, save 随文档提交', () => {
+    const onSave = vi.fn();
+    const seed = { _id: 'ObjectId("507f1f77bcf86cd799439011")', name: 'orig' };
+    render(<MongoDocumentDetail {...defaultProps} document={seed} mode="insert" onSave={onSave} />);
+
+    const textarea = document.querySelector('.highlight-editor-textarea') as HTMLTextAreaElement;
+    // seed 的 _id 不被 strip, 出现在可编辑文本里
+    expect(textarea.value).toContain('_id');
+
+    fireEvent.change(textarea, {
+      target: { value: '{"_id": ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa"), "name": "clone"}' },
+    });
+    fireEvent.click(screen.getByText('Save'));
+
+    // insert 路径: id=null, doc 含改过的 _id (EJSON), backend insertOne 保留类型
+    expect(onSave).toHaveBeenCalledWith(null, {
+      _id: { '$oid': 'aaaaaaaaaaaaaaaaaaaaaaaa' },
+      name: 'clone',
+    });
+  });
+});
+
 describe('MongoDocumentDetail - UX 改进', () => {
   it('U1: _id 行有 read-only 标记 + Copy _id 按钮 (复制 shell 形式)', () => {
     const writeText = vi.fn();

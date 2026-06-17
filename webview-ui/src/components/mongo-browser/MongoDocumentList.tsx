@@ -39,6 +39,11 @@ export function MongoDocumentList({
     <div className="mongo-doc-list">
       {composing != null && onSave && (
         <div className="mongo-doc-card mongo-doc-card-editing mongo-doc-card-composing">
+          {hasSeed && (
+            <div className="mongo-clone-hint">
+              Clone: 保存将按当前 _id 新建文档; 原文档仍保留. 如意在更名 _id, 请另行删除原文档.
+            </div>
+          )}
           <MongoDocumentDetail
             document={hasSeed ? composing : null}
             mode="insert"

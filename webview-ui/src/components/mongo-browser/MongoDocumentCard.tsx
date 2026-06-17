@@ -58,7 +58,7 @@ export function MongoDocumentCard({
       <div className="mongo-doc-card-actions">
         <button className="btn-small" title="Edit" onClick={() => onEdit(doc)}>Edit</button>
         <button className="btn-small" title="Copy" onClick={() => navigator.clipboard.writeText(shellText)}>Copy</button>
-        <button className="btn-small" title="Clone (coming soon)" disabled onClick={() => onClone(doc)}>Clone</button>
+        <button className="btn-small" title="Clone (复制为新建, _id 可改)" onClick={() => onClone(doc)}>Clone</button>
         <button className="btn-small btn-danger" title="Delete" onClick={() => onDelete(id)}>Delete</button>
       </div>
       {view === 'list'

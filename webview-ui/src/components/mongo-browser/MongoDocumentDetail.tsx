@@ -28,9 +28,10 @@ export function MongoDocumentDetail({ document, mode, fieldNames, onClose, onSav
   const displayId = document ? String(document._id ?? '') : '';
   // docId 携带 _id 的 shell 形式 (保留类型), 供 update/delete filter 在 backend 还原
   const docId = document ? idToShell(document._id) : '';
+  // edit: _id 单列只读, body 去掉 _id; insert(含 clone seed): 保留 _id 让其可编辑
   const initialText = useMemo(
-    () => document ? jsonToShell(JSON.stringify(stripId(document), null, 2)) : '{}',
-    [document]
+    () => document ? jsonToShell(JSON.stringify(mode === 'edit' ? stripId(document) : document, null, 2)) : '{}',
+    [document, mode]
   );
 
   const [text, setText] = useState(initialText);

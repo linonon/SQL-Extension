@@ -43,6 +43,15 @@ describe('MongoDocumentCard', () => {
     expect(onDelete).toHaveBeenCalledWith('ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa")');
   });
 
+  it('Clone 按钮可用, 点击回调带完整文档 (含 _id)', () => {
+    const onClone = vi.fn();
+    render(<MongoDocumentCard doc={doc} view="list" onEdit={vi.fn()} onClone={onClone} onDelete={vi.fn()} />);
+    const btn = screen.getByRole('button', { name: /clone/i });
+    expect(btn).not.toBeDisabled();
+    fireEvent.click(btn);
+    expect(onClone).toHaveBeenCalledWith(doc);
+  });
+
   it('editing 模式渲染内联编辑器 (列表不动), Save 调 onSave(idShell, doc)', () => {
     const onSave = vi.fn();
     render(

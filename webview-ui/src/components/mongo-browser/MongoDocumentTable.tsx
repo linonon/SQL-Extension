@@ -114,6 +114,12 @@ export function MongoDocumentTable({
     setComposing({});
   }, []);
 
+  // Clone: 整文档 (含 _id) 作 seed 塞进顶部新建卡片, _id 可编辑, 保存走 insert (天然保留 _id 类型)
+  const handleClone = useCallback((doc: Record<string, unknown>) => {
+    setEditingId(null);
+    setComposing({ ...doc });
+  }, []);
+
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!pendingSwitchSignal) { return; }
@@ -282,7 +288,7 @@ export function MongoDocumentTable({
                 editingId={editingId}
                 composing={composing}
                 onEdit={handleEnterEdit}
-                onClone={handleEnterEdit}
+                onClone={handleClone}
                 onDelete={(id) => onDeleteDocument(id)}
                 onSave={handleSave}
                 onCancelEdit={clearEditor}
