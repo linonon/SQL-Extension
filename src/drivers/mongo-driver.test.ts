@@ -305,6 +305,33 @@ describe('MongoDriver', () => {
       expect(result.affectedRows).toBe(0);
     });
 
+    it('explainFind 返回精简 explain 摘要 (全表扫描)', async () => {
+      mockCollection.find.mockReturnValue({
+        sort: vi.fn().mockReturnThis(),
+        explain: vi.fn().mockResolvedValue({
+          queryPlanner: { winningPlan: { stage: 'COLLSCAN' } },
+          executionStats: { nReturned: 1, totalDocsExamined: 50, totalKeysExamined: 0, executionTimeMillis: 3 },
+        }),
+      });
+
+      const s = await (driver as any).explainFind('mydb', 'users', { age: { $gt: 18 } });
+      expect(s.isCollScan).toBe(true);
+      expect(s.docsExamined).toBe(50);
+      expect(s.nReturned).toBe(1);
+    });
+
+    it('explainFind 带 EJSON _id filter 还原类型后 explain', async () => {
+      const explain = vi.fn().mockResolvedValue({
+        queryPlanner: { winningPlan: { stage: 'IDHACK' } },
+        executionStats: { nReturned: 1, totalDocsExamined: 1, totalKeysExamined: 1, executionTimeMillis: 0 },
+      });
+      mockCollection.find.mockReturnValue({ sort: vi.fn().mockReturnThis(), explain });
+
+      await (driver as any).explainFind('mydb', 'users', { _id: { $oid: '507f1f77bcf86cd799439011' } });
+      const filterArg = mockCollection.find.mock.calls[0][0];
+      expect(filterArg._id).toBeInstanceOf(ObjectId);
+    });
+
     it('deleteMany 返回 deletedCount', async () => {
       mockCollection.deleteMany.mockResolvedValue({ deletedCount: 5 });
 

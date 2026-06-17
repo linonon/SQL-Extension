@@ -344,6 +344,31 @@
 .mongo-fb-remove { flex-shrink: 0; }
 .mongo-fb-actions { display: flex; justify-content: space-between; gap: 6px; margin-top: 8px; }
 
+/* explain plan 面板 */
+.mongo-explain-panel {
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.35));
+  background: var(--vscode-textBlockQuote-background, rgba(128, 128, 128, 0.06));
+  font-size: 12px;
+}
+.mongo-explain-header { display: flex; justify-content: space-between; align-items: center; padding: 4px 10px; }
+.mongo-explain-title { font-weight: 600; }
+.mongo-explain-body { padding: 4px 10px 8px; display: flex; flex-direction: column; gap: 5px; }
+.mongo-explain-row { display: flex; align-items: center; gap: 10px; }
+.mongo-explain-stage {
+  padding: 1px 8px;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 11px;
+  color: #fff;
+}
+.mongo-explain-stage.is-ixscan { background: #22863a; }
+.mongo-explain-stage.is-collscan { background: var(--vscode-editorWarning-foreground, #cca700); color: #1e1e1e; }
+.mongo-explain-index { font-family: var(--vscode-editor-font-family, monospace); }
+.mongo-explain-warn { color: var(--vscode-editorWarning-foreground, #cca700); }
+.mongo-explain-error { color: var(--vscode-errorForeground, #f48771); }
+.mongo-explain-stats { display: flex; gap: 14px; flex-wrap: wrap; color: var(--vscode-descriptionForeground); }
+
 .mongo-table td {
   padding: 4px 8px;
   border-bottom: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.12));

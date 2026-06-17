@@ -36,9 +36,20 @@ export interface UpdateConnectionConfig extends SaveConnectionConfig {
   readonly id: string;
 }
 
+export interface MongoExplainSummary {
+  readonly stage: string;
+  readonly indexName?: string;
+  readonly docsExamined: number;
+  readonly keysExamined: number;
+  readonly nReturned: number;
+  readonly executionTimeMillis: number;
+  readonly isCollScan: boolean;
+}
+
 // Extension -> Webview
 export type ExtensionMessage =
   | { type: 'tableData'; columns: ColumnInfo[]; rows: Record<string, unknown>[]; total: number; offset: number; limit: number }
+  | { type: 'mongoExplainResult'; summary?: MongoExplainSummary; error?: string }
   | { type: 'queryResult'; columns: ColumnInfo[]; rows: Record<string, unknown>[]; affectedRows: number; executionTime: number; error?: string }
   | { type: 'columnsResult'; columns: ColumnInfo[] }
   | { type: 'batchUpdateResult'; success: boolean; error?: string }
@@ -139,6 +150,7 @@ export type WebviewMessage =
   | { type: 'mongoInsertDocument'; database: string; collection: string; document: Record<string, unknown> }
   | { type: 'mongoUpdateDocument'; database: string; collection: string; id: string; document: Record<string, unknown> }
   | { type: 'mongoUpdateField'; database: string; collection: string; id: string; path: string; value: unknown }
+  | { type: 'mongoExplainQuery'; database: string; collection: string; filter: string; sort: string }
   | { type: 'mongoDeleteDocument'; database: string; collection: string; id: string }
   | { type: 'mongoExportCollection'; database: string; collection: string; filter: string; sort: string; projection?: string }
   | { type: 'mongoImportCollection'; database: string; collection: string }

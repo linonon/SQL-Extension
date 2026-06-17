@@ -8,6 +8,8 @@ import { MongoTableView } from './MongoTableView';
 import { idToShell } from './mongo-id';
 import { useMongoFilterHistory, MongoFilterHistory, type FilterHistoryEntry } from './MongoFilterHistory';
 import { MongoFilterBuilder } from './MongoFilterBuilder';
+import { MongoExplainPanel } from './MongoExplainPanel';
+import type { MongoExplainSummary } from '../../types/messages';
 
 interface MongoDocumentTableProps {
   readonly collection: string;
@@ -36,6 +38,9 @@ interface MongoDocumentTableProps {
   readonly queryError: string | null;
   readonly onExport?: () => void;
   readonly onImport?: () => void;
+  readonly onExplain?: () => void;
+  readonly explain?: { readonly loading?: boolean; readonly summary?: MongoExplainSummary; readonly error?: string } | null;
+  readonly onCloseExplain?: () => void;
   readonly pendingSwitchSignal?: number;
   readonly onSwitchConfirmed?: () => void;
   readonly onSwitchCancelled?: () => void;
@@ -68,6 +73,9 @@ export function MongoDocumentTable({
   queryError,
   onExport,
   onImport,
+  onExplain,
+  explain,
+  onCloseExplain,
   pendingSwitchSignal,
   onSwitchConfirmed,
   onSwitchCancelled,
@@ -310,6 +318,11 @@ export function MongoDocumentTable({
               )}
             </div>
             <div className="mongo-data-ops">
+              {onExplain && (
+                <button className="btn-small" onClick={onExplain} title="Explain: 查看索引使用 / 是否全表扫描">
+                  Explain
+                </button>
+              )}
               <button className="btn-small" onClick={handleCopyQuery}>
                 Copy
               </button>
@@ -327,6 +340,14 @@ export function MongoDocumentTable({
           </div>
         </div>
       </div>
+      {explain && (
+        <MongoExplainPanel
+          summary={explain.summary}
+          error={explain.error}
+          loading={explain.loading}
+          onClose={() => onCloseExplain?.()}
+        />
+      )}
       <div className="mongo-document-body">
         {loading && (
           <div className="mongo-spinner-wrap">

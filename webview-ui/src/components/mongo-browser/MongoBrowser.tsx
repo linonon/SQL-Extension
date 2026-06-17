@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useVSCodeMessage } from '../../hooks/useVSCodeMessage';
 import { usePostMessage } from '../../hooks/usePostMessage';
-import type { ExtensionMessage } from '../../types/messages';
+import type { ExtensionMessage, MongoExplainSummary } from '../../types/messages';
 import type { ColumnInfo } from '../../types/database';
 import { MongoCollectionList } from './MongoCollectionList';
 import { MongoDocumentTable } from './MongoDocumentTable';
@@ -53,6 +53,7 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
   const [queryError, setQueryError] = useState<string | null>(null);
   const [panelWidth, setPanelWidth] = useState(220);
   const [pendingSwitchSignal, setPendingSwitchSignal] = useState(0);
+  const [explain, setExplain] = useState<{ loading?: boolean; summary?: MongoExplainSummary; error?: string } | null>(null);
   const pendingSwitchTarget = useRef<{ database: string; name: string } | null>(null);
 
   const postMessage = usePostMessage();
@@ -127,6 +128,9 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
         } else {
           handleRefetch();
         }
+        break;
+      case 'mongoExplainResult':
+        setExplain({ summary: msg.summary, error: msg.error });
         break;
       case 'mongoCollectionCreated':
         if (!msg.success) {
@@ -264,6 +268,18 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
     });
   }, [selected, postMessage]);
 
+  const handleExplain = useCallback(() => {
+    if (!selected) { return; }
+    setExplain({ loading: true });
+    postMessage({
+      type: 'mongoExplainQuery',
+      database: selected.database,
+      collection: selected.name,
+      filter: filterRef.current,
+      sort: sortRef.current,
+    });
+  }, [selected, postMessage]);
+
   const handleUpdateField = useCallback((id: string, path: string, value: unknown) => {
     if (!selected) { return; }
     postMessage({
@@ -374,6 +390,9 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
               queryError={queryError}
               onExport={handleExport}
               onImport={handleImport}
+              onExplain={handleExplain}
+              explain={explain}
+              onCloseExplain={() => setExplain(null)}
               pendingSwitchSignal={pendingSwitchSignal}
               onSwitchConfirmed={onSwitchConfirmed}
               onSwitchCancelled={onSwitchCancelled}

@@ -527,6 +527,42 @@ describe('handleMongoMessage', () => {
     });
   });
 
+  describe('mongoExplainQuery', () => {
+    it('调用 driver.explainFind 并返回 mongoExplainResult', async () => {
+      const summary = { stage: 'COLLSCAN', docsExamined: 100, keysExamined: 0, nReturned: 3, executionTimeMillis: 5, isCollScan: true };
+      (driver as any).explainFind = vi.fn().mockResolvedValue(summary);
+
+      const msg = {
+        type: 'mongoExplainQuery',
+        database: 'mydb',
+        collection: 'users',
+        filter: '{"age": {"$gt": 18}}',
+        sort: '',
+      } as WebviewMessage;
+
+      const handled = await handleMongoMessage(msg, driver, postMessage);
+
+      expect(handled).toBe(true);
+      expect((driver as any).explainFind).toHaveBeenCalledWith('mydb', 'users', { age: { $gt: 18 } }, undefined);
+      expect(postMessage).toHaveBeenCalledWith({ type: 'mongoExplainResult', summary });
+    });
+
+    it('explainFind 抛错时返回 error', async () => {
+      (driver as any).explainFind = vi.fn().mockRejectedValue(new Error('explain failed'));
+
+      const msg = {
+        type: 'mongoExplainQuery',
+        database: 'mydb',
+        collection: 'users',
+        filter: '',
+        sort: '',
+      } as WebviewMessage;
+
+      await handleMongoMessage(msg, driver, postMessage);
+      expect(postMessage).toHaveBeenCalledWith({ type: 'mongoExplainResult', error: 'explain failed' });
+    });
+  });
+
   describe('mongoCountDocuments', () => {
     it('正常路径: 返回 total', async () => {
       (driver.executeCancellable as any).mockReturnValue({

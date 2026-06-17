@@ -5,6 +5,7 @@ import type { IDatabaseDriver } from '../types/driver.js';
 import type { ColumnInfo, DetailedColumnInfo, QueryResult, TableInfo } from '../types/query.js';
 import { parseMongoQuery } from '../utils/mongo-query-parser.js';
 import { convertEjsonToBson } from '../utils/mongo-shell-to-json.js';
+import { summarizeExplain, type ExplainSummary } from '../utils/mongo-explain.js';
 
 export class MongoDriver implements IDatabaseDriver {
   readonly driverType = 'mongodb';
@@ -130,6 +131,24 @@ export class MongoDriver implements IDatabaseDriver {
     const cancel = () => { cancelled = true; };
 
     return { promise, cancel };
+  }
+
+  // explain 浏览查询的 find (filter + sort 决定索引选择), 返回精简摘要供 UI 展示索引使用情况.
+  async explainFind(
+    database: string,
+    collection: string,
+    filter: Record<string, unknown>,
+    sort?: Record<string, unknown>,
+  ): Promise<ExplainSummary> {
+    this.assertConnected();
+    const coll = this.client!.db(database).collection(collection);
+    const f = autoConvertIds(convertEjsonToBson(filter ?? {}) as Record<string, unknown>);
+    const cursor = coll.find(f);
+    if (sort && Object.keys(sort).length > 0) {
+      cursor.sort(convertEjsonToBson(sort) as Record<string, number>);
+    }
+    const raw = await cursor.explain('executionStats');
+    return summarizeExplain(raw);
   }
 
   async createCollection(database: string, collectionName: string): Promise<void> {

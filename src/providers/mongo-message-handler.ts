@@ -164,6 +164,21 @@ export async function handleMongoMessage(
       return true;
     }
 
+    case 'mongoExplainQuery': {
+      const { database, collection, filter, sort } = message;
+      try {
+        const filterObj = filter.trim() ? JSON.parse(convertShellToJson(filter.trim())) : {};
+        const sortObj = sort.trim() ? JSON.parse(convertShellToJson(sort.trim())) : undefined;
+        const mongo = driver as unknown as MongoDriver;
+        const summary = await mongo.explainFind(database, collection, filterObj, sortObj);
+        post({ type: 'mongoExplainResult', summary });
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        post({ type: 'mongoExplainResult', error: errorMsg });
+      }
+      return true;
+    }
+
     case 'mongoCreateCollection': {
       const { database, collection } = message as { database: string; collection: string };
       try {
