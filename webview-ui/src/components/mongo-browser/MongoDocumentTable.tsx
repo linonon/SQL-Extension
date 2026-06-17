@@ -6,6 +6,7 @@ import { ViewToggle, type MongoView } from './ViewToggle';
 import { MongoDocumentList } from './MongoDocumentList';
 import { MongoTableView } from './MongoTableView';
 import { idToShell } from './mongo-id';
+import { useMongoFilterHistory, MongoFilterHistory, type FilterHistoryEntry } from './MongoFilterHistory';
 
 interface MongoDocumentTableProps {
   readonly collection: string;
@@ -137,6 +138,23 @@ export function MongoDocumentTable({
     }
   }, [editorActive, switchAfterSave, onSwitchConfirmed]);
 
+  const { entries: filterHistory, addEntry: addFilterHistory } = useMongoFilterHistory();
+  const [showHistory, setShowHistory] = useState(false);
+
+  // Apply 时记录查询历史 (在真实 filter/sort/projection 上)
+  const applyAndRecord = useCallback(() => {
+    addFilterHistory(filter, sort, projection);
+    onApply();
+  }, [addFilterHistory, filter, sort, projection, onApply]);
+
+  // 从历史恢复: 回填三个字段, 用户再点 Apply (避免与受控状态更新竞态)
+  const handleRestoreQuery = useCallback((e: FilterHistoryEntry) => {
+    onFilterChange(e.filter);
+    onSortChange(e.sort);
+    onProjectionChange(e.projection);
+    setShowHistory(false);
+  }, [onFilterChange, onSortChange, onProjectionChange]);
+
   const handleCopyQuery = useCallback(() => {
     const f = filter.trim() || '{}';
     const p = projection.trim();
@@ -197,7 +215,7 @@ export function MongoDocumentTable({
               <MongoFilterInput
                 value={filter}
                 onChange={onFilterChange}
-                onApply={onApply}
+                onApply={applyAndRecord}
                 fieldNames={fieldNames}
                 placeholder='{ status: "active" }'
               />
@@ -209,7 +227,7 @@ export function MongoDocumentTable({
               <MongoFilterInput
                 value={sort}
                 onChange={onSortChange}
-                onApply={onApply}
+                onApply={applyAndRecord}
                 fieldNames={fieldNames}
                 placeholder='{ _id: -1 }'
               />
@@ -221,7 +239,7 @@ export function MongoDocumentTable({
               <MongoFilterInput
                 value={projection}
                 onChange={onProjectionChange}
-                onApply={onApply}
+                onApply={applyAndRecord}
                 fieldNames={fieldNames}
                 placeholder='{ name: 1, email: 1 }'
               />
@@ -234,7 +252,7 @@ export function MongoDocumentTable({
               className="mongo-numeric-input"
               value={customLimit}
               onChange={(e) => onLimitChange(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); onApply(); } }}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); applyAndRecord(); } }}
               placeholder="50"
             />
             <label className="mongo-filter-label-inline">Skip:</label>
@@ -243,12 +261,27 @@ export function MongoDocumentTable({
               className="mongo-numeric-input"
               value={customSkip}
               onChange={(e) => onSkipChange(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); onApply(); } }}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); applyAndRecord(); } }}
               placeholder="0"
             />
-            <button className="btn-small btn-primary" onClick={onApply} disabled={loading}>
+            <button className="btn-small btn-primary" onClick={applyAndRecord} disabled={loading}>
               Apply
             </button>
+            <div className="mongo-history-group">
+              <button
+                className="btn-small"
+                onClick={() => setShowHistory((v) => !v)}
+                title="Recent queries"
+                aria-label="Query history"
+              >
+                History ▾
+              </button>
+              {showHistory && (
+                <div className="mongo-filter-history-dropdown">
+                  <MongoFilterHistory entries={filterHistory} onSelect={handleRestoreQuery} />
+                </div>
+              )}
+            </div>
             <div className="mongo-data-ops">
               <button className="btn-small" onClick={handleCopyQuery}>
                 Copy

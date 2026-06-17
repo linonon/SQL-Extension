@@ -265,6 +265,47 @@
   font-size: var(--vscode-editor-font-size, 13px);
 }
 
+/* 查询历史 */
+.mongo-history-group { position: relative; display: inline-block; }
+.mongo-filter-history-dropdown {
+  position: absolute;
+  top: calc(100% + 2px);
+  right: 0;
+  z-index: 30;
+  min-width: 280px;
+  max-width: 420px;
+  max-height: 300px;
+  overflow: auto;
+  background: var(--vscode-menu-background, var(--vscode-editor-background));
+  border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border, rgba(128, 128, 128, 0.35)));
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+.mongo-filter-history-empty { padding: 8px 10px; font-size: 12px; color: var(--vscode-descriptionForeground); }
+.mongo-filter-history-list { display: flex; flex-direction: column; }
+.mongo-filter-history-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: baseline;
+  padding: 5px 10px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.12));
+  cursor: pointer;
+  text-align: left;
+  color: var(--vscode-foreground);
+}
+.mongo-filter-history-item:hover { background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.12)); }
+.mongo-filter-history-q {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mongo-filter-history-meta { flex-shrink: 0; font-size: 10.5px; color: var(--vscode-descriptionForeground); }
+
 .mongo-table td {
   padding: 4px 8px;
   border-bottom: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.12));
