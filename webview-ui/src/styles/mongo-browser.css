@@ -369,6 +369,15 @@
 .mongo-explain-error { color: var(--vscode-errorForeground, #f48771); }
 .mongo-explain-stats { display: flex; gap: 14px; flex-wrap: wrap; color: var(--vscode-descriptionForeground); }
 
+/* 渲染上限提示 */
+.mongo-render-cap-notice {
+  padding: 5px 10px;
+  font-size: 11.5px;
+  color: var(--vscode-editorWarning-foreground, #cca700);
+  background: var(--vscode-textBlockQuote-background, rgba(128, 128, 128, 0.06));
+  border-bottom: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.2));
+}
+
 .mongo-table td {
   padding: 4px 8px;
   border-bottom: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.12));

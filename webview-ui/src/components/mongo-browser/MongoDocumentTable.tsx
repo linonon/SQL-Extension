@@ -9,6 +9,7 @@ import { idToShell } from './mongo-id';
 import { useMongoFilterHistory, MongoFilterHistory, type FilterHistoryEntry } from './MongoFilterHistory';
 import { MongoFilterBuilder } from './MongoFilterBuilder';
 import { MongoExplainPanel } from './MongoExplainPanel';
+import { capRows } from './mongo-render-cap';
 import type { MongoExplainSummary } from '../../types/messages';
 
 interface MongoDocumentTableProps {
@@ -91,6 +92,7 @@ export function MongoDocumentTable({
   const fieldNames = useMemo(() => extractFieldPaths(rows), [rows]);
 
   const editorActive = editingId !== null || composing !== null;
+  const capped = capRows(rows);
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const startRow = page * pageSize + 1;
@@ -361,11 +363,16 @@ export function MongoDocumentTable({
         {!loading && !queryError && rows.length === 0 && composing === null && (
           <div className="mongo-empty">No documents found</div>
         )}
+        {!loading && !queryError && capped.hidden > 0 && (
+          <div className="mongo-render-cap-notice">
+            性能保护: 仅渲染前 {capped.rows.length} / {rows.length} 条 (本页). 用 Filter 缩小范围或翻页 (每页 50).
+          </div>
+        )}
         {!loading && !queryError && (rows.length > 0 || composing !== null) && (
           view === 'table'
-            ? <MongoTableView columns={columns} rows={rows} onRowClick={(row) => { setView('list'); handleEnterEdit(row); }} onCellEdit={onUpdateField} />
+            ? <MongoTableView columns={columns} rows={capped.rows} onRowClick={(row) => { setView('list'); handleEnterEdit(row); }} onCellEdit={onUpdateField} />
             : <MongoDocumentList
-                rows={rows}
+                rows={capped.rows}
                 view={view}
                 fieldNames={fieldNames}
                 editingId={editingId}
