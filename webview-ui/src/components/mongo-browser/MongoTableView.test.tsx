@@ -95,6 +95,18 @@ describe('MongoTableView', () => {
       expect(onCellEdit).toHaveBeenCalledWith(editId, 'name', 'Bob');
     });
 
+    it('Enter 提交后再 blur 不重复提交 (review round2 #2)', () => {
+      const onCellEdit = vi.fn();
+      render(<MongoTableView columns={editCols} rows={editRows} onRowClick={vi.fn()} onCellEdit={onCellEdit} />);
+      fireEvent.doubleClick(screen.getByText('Alice'));
+      const input = document.querySelector('.mongo-cell-input') as HTMLInputElement;
+      fireEvent.change(input, { target: { value: 'Bob' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      // 模拟 Enter 提交后 input 仍触发的 blur (真实浏览器 unmount focused 元素会触发)
+      fireEvent.blur(input);
+      expect(onCellEdit).toHaveBeenCalledTimes(1);
+    });
+
     it('Esc 取消编辑, 不提交', () => {
       const onCellEdit = vi.fn();
       render(<MongoTableView columns={editCols} rows={editRows} onRowClick={vi.fn()} onCellEdit={onCellEdit} />);

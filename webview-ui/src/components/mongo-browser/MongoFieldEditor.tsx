@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { coerceToType, convertTags, documentToFields } from './mongo-field-editor';
 
 interface MongoFieldEditorProps {
@@ -6,6 +6,7 @@ interface MongoFieldEditorProps {
   readonly onSave: (doc: Record<string, unknown>) => void;
   readonly onCancel: () => void;
   readonly onDirtyChange?: (dirty: boolean) => void;
+  readonly onSaveError?: () => void;
   readonly saveSignal?: number;
 }
 
@@ -28,7 +29,7 @@ function readonlyDisplay(value: unknown): string {
   return typeof value === 'object' ? JSON.stringify(value) : String(value);
 }
 
-export function MongoFieldEditor({ document: doc, onSave, onCancel, onDirtyChange, saveSignal }: MongoFieldEditorProps) {
+export function MongoFieldEditor({ document: doc, onSave, onCancel, onDirtyChange, onSaveError, saveSignal }: MongoFieldEditorProps) {
   const initial = useMemo<FieldRow[]>(
     () => documentToFields(doc).map((f) => ({
       id: nextRowId(),
@@ -42,7 +43,11 @@ export function MongoFieldEditor({ document: doc, onSave, onCancel, onDirtyChang
     [doc],
   );
   const [rows, setRows] = useState<FieldRow[]>(initial);
-  useEffect(() => { setRows(initial); }, [initial]);
+  // 仅当切换到不同 _id 的文档时重置; 同 _id 的后台 refetch (新对象引用) 不清空在编辑的草稿 (review round2 #6)
+  const docIdRef = useRef(doc._id);
+  useEffect(() => {
+    if (docIdRef.current !== doc._id) { docIdRef.current = doc._id; setRows(initial); }
+  }, [doc._id, initial]);
 
   const isModified = (r: FieldRow): boolean =>
     r.isNew || r.deleted || (r.editable && r.draft !== String(r.original));
@@ -69,7 +74,7 @@ export function MongoFieldEditor({ document: doc, onSave, onCancel, onDirtyChang
     try {
       // 新增字段填了值却没填 key -> 阻止保存而非静默丢弃 (review L2)
       const orphan = rows.find((r) => !r.deleted && r.key.trim() === '' && r.isNew && r.draft.trim() !== '');
-      if (orphan) { setError('新增字段缺少字段名 (key)'); return; }
+      if (orphan) { setError('新增字段缺少字段名 (key)'); onSaveError?.(); return; }
 
       const out: Record<string, unknown> = {};
       for (const r of rows) {
@@ -82,6 +87,7 @@ export function MongoFieldEditor({ document: doc, onSave, onCancel, onDirtyChang
       onSave(out);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to build document');
+      onSaveError?.();
     }
   };
 

@@ -183,8 +183,11 @@ export class MongoDriver implements IDatabaseDriver {
     pipeline: unknown[]
   ): Promise<{ rows: Record<string, unknown>[]; columns: ColumnInfo[] }> {
     this.assertConnected();
+    // 还原 pipeline 内的 EJSON 标记 ($oid/$date/$numberLong 等) 为 BSON, 否则按 ObjectId/Long
+    // 过滤的 $match 会被当字面子文档匹配而恒不命中 (review round2 #4; 与 explainFind 对齐).
+    const bsonPipeline = convertEjsonToBson(pipeline) as unknown[];
     const docs = await this.client!.db(database).collection(collection)
-      .aggregate(pipeline).toArray();
+      .aggregate(bsonPipeline).toArray();
     return { rows: docs.map(deepFormatDocument), columns: inferSchema(docs) };
   }
 

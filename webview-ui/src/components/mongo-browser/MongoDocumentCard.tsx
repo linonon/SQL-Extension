@@ -17,6 +17,7 @@ interface MongoDocumentCardProps {
   readonly onSave?: (id: string | null, doc: Record<string, unknown>) => void;
   readonly onCancelEdit?: () => void;
   readonly onDirtyChange?: (dirty: boolean) => void;
+  readonly onSaveError?: () => void;
   readonly saveSignal?: number;
 }
 
@@ -31,6 +32,7 @@ export function MongoDocumentCard({
   onSave,
   onCancelEdit,
   onDirtyChange,
+  onSaveError,
   saveSignal,
 }: MongoDocumentCardProps) {
   const id = idToShell(doc._id);
@@ -60,6 +62,7 @@ export function MongoDocumentCard({
             onSave={(ejson) => onSave(idToShell(doc._id), ejson)}
             onCancel={() => onCancelEdit?.()}
             onDirtyChange={onDirtyChange}
+            onSaveError={onSaveError}
             saveSignal={saveSignal}
           />
         ) : (
@@ -71,6 +74,7 @@ export function MongoDocumentCard({
             onSave={onSave}
             onDelete={onDelete}
             onDirtyChange={onDirtyChange}
+            onSaveError={onSaveError}
             saveSignal={saveSignal}
           />
         )}

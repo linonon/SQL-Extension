@@ -93,6 +93,13 @@ describe('parseMongoQuery', () => {
       expect(cmd.method).toBe('deleteOne');
       expect(cmd.args).toEqual([{ _id: 'x' }]);
     });
+
+    it('参数里含 .word( 的字符串值不破坏 collection/method 切分 (review round2 #1)', () => {
+      const cmd = parseMongoQuery('db.coll.find({"url": "a.b(c)"})');
+      expect(cmd.collection).toBe('coll');
+      expect(cmd.method).toBe('find');
+      expect(cmd.args).toEqual([{ url: 'a.b(c)' }]);
+    });
   });
 
   describe('异常', () => {

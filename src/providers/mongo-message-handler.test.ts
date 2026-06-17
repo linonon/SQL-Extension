@@ -391,6 +391,8 @@ describe('handleMongoMessage', () => {
       expect(query).toContain('updateOne');
       expect(query).toContain('{"_id":{"$oid":"507f1f77bcf86cd799439011"}}');
       expect(query).toContain('{"$set":{"bind.aid":"w-9"}}');
+      // CRUD filter 已显式带类型, 须跳过 24-hex autoConvert (review GAP2)
+      expect((driver.executeCancellable as any).mock.calls[0][3]).toEqual({ autoConvertIds: false });
       expect(postMessage).toHaveBeenCalledWith({
         type: 'mongoOperationResult',
         success: true,
@@ -455,6 +457,7 @@ describe('handleMongoMessage', () => {
       const query = (driver.executeCancellable as any).mock.calls[0][0] as string;
       expect(query).toContain('deleteOne');
       expect(query).toContain('{"_id":{"$oid":"507f1f77bcf86cd799439011"}}');
+      expect((driver.executeCancellable as any).mock.calls[0][3]).toEqual({ autoConvertIds: false });
       expect(postMessage).toHaveBeenCalledWith({
         type: 'mongoOperationResult',
         success: true,

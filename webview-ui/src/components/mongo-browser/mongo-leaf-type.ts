@@ -6,10 +6,10 @@ export type LeafType =
 // 数字捕获用 -?\d+ (支持负数), 否则会把"可编辑性/类型"判错而还原失败 -> 数据损坏.
 const TAG_PATTERNS: ReadonlyArray<{ re: RegExp; type: LeafType }> = [
   { re: /^ObjectId\("[0-9a-fA-F]{24}"\)$/, type: 'ObjectId' },
-  { re: /^ISODate\(".*"\)$/, type: 'Date' },
+  { re: /^ISODate\(".+"\)$/, type: 'Date' },
   { re: /^NumberLong\("-?\d+"\)$/, type: 'Long' },
   { re: /^NumberInt\(-?\d+\)$/, type: 'Int' },
-  { re: /^NumberDecimal\(".*"\)$/, type: 'Decimal128' },
+  { re: /^NumberDecimal\(".+"\)$/, type: 'Decimal128' },
   { re: /^MinKey\(\)$/, type: 'MinKey' },
   { re: /^MaxKey\(\)$/, type: 'MaxKey' },
 ];

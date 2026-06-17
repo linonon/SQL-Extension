@@ -23,6 +23,8 @@ export function coerceToType(original: unknown, text: string): unknown {
     const t = text.trim();
     // 空 / 非纯数字 (0x / 1e / abc) 回退原值; "0" 等合法值正常解析
     if (t === '' || !/^-?\d+(\.\d+)?$/.test(t)) { return original; }
+    // 超安全整数用 {$numberLong} 不丢精度 (与 coerceValue 一致)
+    if (/^-?\d+$/.test(t) && !Number.isSafeInteger(Number(t))) { return { $numberLong: t }; }
     const n = Number(t);
     return Number.isFinite(n) ? n : original;
   }

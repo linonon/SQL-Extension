@@ -16,6 +16,7 @@ interface MongoDocumentDetailProps {
   readonly onSave: (id: string | null, doc: Record<string, unknown>) => void;
   readonly onDelete: (id: string) => void;
   readonly onDirtyChange?: (dirty: boolean) => void;
+  readonly onSaveError?: () => void;
   readonly saveSignal?: number;
 }
 
@@ -24,7 +25,7 @@ function stripId(doc: Record<string, unknown>): Record<string, unknown> {
   return rest;
 }
 
-export function MongoDocumentDetail({ document, mode, fieldNames, onClose, onSave, onDelete, onDirtyChange, saveSignal }: MongoDocumentDetailProps) {
+export function MongoDocumentDetail({ document, mode, fieldNames, onClose, onSave, onDelete, onDirtyChange, onSaveError, saveSignal }: MongoDocumentDetailProps) {
   const displayId = document ? String(document._id ?? '') : '';
   // docId 携带 _id 的 shell 形式 (保留类型), 供 update/delete filter 在 backend 还原
   const docId = document ? idToShell(document._id) : '';
@@ -124,8 +125,9 @@ export function MongoDocumentDetail({ document, mode, fieldNames, onClose, onSav
       onSave(mode === 'edit' ? docId : null, parsed);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Invalid JSON');
+      onSaveError?.();
     }
-  }, [text, mode, docId, onSave]);
+  }, [text, mode, docId, onSave, onSaveError]);
 
   useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
 

@@ -63,6 +63,15 @@ describe('MongoFieldEditor', () => {
     expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ name: 'Bob' }));
   });
 
+  it('round2 #6: 同 _id refetch (新对象引用) 不清空在编辑的草稿', () => {
+    const d1 = { _id: 'ObjectId("507f1f77bcf86cd799439011")', name: 'Alice' };
+    const { rerender } = render(<MongoFieldEditor document={d1} onSave={vi.fn()} onCancel={vi.fn()} />);
+    fireEvent.change(screen.getByDisplayValue('Alice'), { target: { value: 'Bob' } });
+    // 模拟后台 refetch: 相同 _id, 新对象引用
+    rerender(<MongoFieldEditor document={{ _id: 'ObjectId("507f1f77bcf86cd799439011")', name: 'Alice' }} onSave={vi.fn()} onCancel={vi.fn()} />);
+    expect(screen.getByDisplayValue('Bob')).toBeInTheDocument();
+  });
+
   it('H7: 新增字段 key 输入连续编辑不失焦 (稳定 React key)', () => {
     render(<MongoFieldEditor document={doc} onSave={vi.fn()} onCancel={vi.fn()} />);
     fireEvent.click(screen.getByRole('button', { name: /添加字段/ }));

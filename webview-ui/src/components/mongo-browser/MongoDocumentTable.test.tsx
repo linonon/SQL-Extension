@@ -93,6 +93,44 @@ describe('MongoDocumentTable - 脏数据守卫 (H6)', () => {
     expect(onApply).toHaveBeenCalled();
   });
 
+  it('GAP1: 对话框 Save 内容有效 -> 先保存 (onUpdateDocument) 再执行挂起的 Apply', () => {
+    const onApply = vi.fn();
+    const onUpdateDocument = vi.fn();
+    renderTable({ onApply, onUpdateDocument });
+    fireEvent.click(screen.getByRole('button', { name: /^edit$/i }));
+    const textarea = document.querySelector('.highlight-editor-textarea') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: '{"name":"ok"}' } });
+
+    fireEvent.click(screen.getByRole('button', { name: /^apply$/i }));
+    const dialog = document.querySelector('.mongo-nav-dialog') as HTMLElement;
+    fireEvent.click(within(dialog).getByText('Save'));
+
+    expect(onUpdateDocument).toHaveBeenCalled();
+    expect(onApply).toHaveBeenCalled();
+  });
+
+  it('round2 #3: 对话框 Save 但内容非法保存失败 -> 挂起的 Apply 取消, 后续手动保存不触发它', () => {
+    const onApply = vi.fn();
+    const onUpdateDocument = vi.fn();
+    renderTable({ onApply, onUpdateDocument });
+    fireEvent.click(screen.getByRole('button', { name: /^edit$/i }));
+    const textarea = document.querySelector('.highlight-editor-textarea') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: '{invalid json' } });
+
+    fireEvent.click(screen.getByRole('button', { name: /^apply$/i }));
+    const dialog = document.querySelector('.mongo-nav-dialog') as HTMLElement;
+    fireEvent.click(within(dialog).getByText('Save'));
+    // 保存失败 (非法 JSON): 既没更新, Apply 也没触发
+    expect(onUpdateDocument).not.toHaveBeenCalled();
+    expect(onApply).not.toHaveBeenCalled();
+
+    // 修好内容 + 手动 Save (编辑器自身按钮) -> 更新成功, 但被取消的 Apply 不应被触发
+    fireEvent.change(textarea, { target: { value: '{"name":"ok"}' } });
+    fireEvent.click(screen.getByText('Save'));
+    expect(onUpdateDocument).toHaveBeenCalled();
+    expect(onApply).not.toHaveBeenCalled();
+  });
+
   it('编辑器脏时翻页弹对话框, Cancel 不翻页', () => {
     const onPageChange = vi.fn();
     renderTable({ onPageChange, total: 200, page: 0 });

@@ -35,6 +35,9 @@ describe('coerceToType', () => {
   it('"0" 仍可正常写入 0', () => {
     expect(coerceToType(42, '0')).toBe(0);
   });
+  it('超安全整数 -> {$numberLong} 不丢精度 (与 coerceValue 一致) — round2 #5', () => {
+    expect(coerceToType(42, '9007199254740993')).toEqual({ $numberLong: '9007199254740993' });
+  });
   it('布尔只接受 true/false, 其它回退原值 (不静默写 false) — H4', () => {
     expect(coerceToType(true, 'True')).toBe(true);
     expect(coerceToType(true, '1')).toBe(true);

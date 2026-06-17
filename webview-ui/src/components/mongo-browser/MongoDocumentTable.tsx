@@ -138,6 +138,12 @@ export function MongoDocumentTable({
   // Apply / 翻页) 都先弹对话框, 由用户选择 Save / Discard / Cancel (review H6).
   const [pendingAction, setPendingAction] = useState<{ confirm: () => void; cancel: () => void } | null>(null);
 
+  // 编辑器保存失败 (非法 JSON / 缺 key) 时, 取消挂起的 Save-then-action, 避免之后手动保存误触发它
+  const handleSaveError = useCallback(() => {
+    setSwitchAfterSave(false);
+    setPendingAction(null);
+  }, []);
+
   const guardedAction = useCallback((confirm: () => void, cancel: () => void = () => {}) => {
     if (editorActive && isDirty) {
       setPendingAction({ confirm, cancel });
@@ -427,6 +433,7 @@ export function MongoDocumentTable({
                 onSave={handleSave}
                 onCancelEdit={clearEditor}
                 onDirtyChange={setIsDirty}
+                onSaveError={handleSaveError}
                 saveSignal={saveTrigger}
               />
         )}

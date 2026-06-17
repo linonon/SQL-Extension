@@ -17,6 +17,7 @@ interface MongoDocumentListProps {
   readonly onSave?: (id: string | null, doc: Record<string, unknown>) => void;
   readonly onCancelEdit?: () => void;
   readonly onDirtyChange?: (dirty: boolean) => void;
+  readonly onSaveError?: () => void;
   readonly saveSignal?: number;
 }
 
@@ -32,6 +33,7 @@ export function MongoDocumentList({
   onSave,
   onCancelEdit,
   onDirtyChange,
+  onSaveError,
   saveSignal,
 }: MongoDocumentListProps) {
   const hasSeed = composing != null && Object.keys(composing).length > 0;
@@ -52,6 +54,7 @@ export function MongoDocumentList({
             onSave={onSave}
             onDelete={() => {}}
             onDirtyChange={onDirtyChange}
+            onSaveError={onSaveError}
             saveSignal={saveSignal}
           />
         </div>
@@ -72,6 +75,7 @@ export function MongoDocumentList({
             onSave={onSave}
             onCancelEdit={onCancelEdit}
             onDirtyChange={onDirtyChange}
+            onSaveError={onSaveError}
             saveSignal={saveSignal}
           />
         );

@@ -17,6 +17,8 @@ describe('detectLeafType', () => {
   it('形似 tag 但内容非法的字符串归为 string (避免误转/崩溃)', () => {
     expect(detectLeafType('ObjectId("xyz")')).toBe('string'); // 非 24-hex
     expect(detectLeafType('NumberInt(abc)')).toBe('string');
+    expect(detectLeafType('ISODate("")')).toBe('string'); // 空参 (convertShellToJson 无法还原) - round2 LOW
+    expect(detectLeafType('NumberDecimal("")')).toBe('string');
   });
 
   it('普通字符串/数字/布尔/null 归类', () => {

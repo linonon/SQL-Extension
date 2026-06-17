@@ -805,6 +805,22 @@ describe('MongoDriver', () => {
       expect(res.rows[0]._id).toBe(`ObjectId("${'b'.repeat(24)}")`);
       expect(res.columns.some((c) => c.name === '_id')).toBe(true);
     });
+
+    it('pipeline 内 EJSON ($oid/$numberLong) 被还原为 BSON (browser 按 ObjectId 过滤可命中) — review round2 #4', async () => {
+      mockDb.command.mockResolvedValue({ ok: 1 });
+      await driver.connect({
+        id: 't', name: 't', driverType: 'mongodb',
+        host: 'localhost', port: 27017, username: '', password: '', database: '',
+      });
+      mockCollection.aggregate.mockReturnValue({ toArray: vi.fn().mockResolvedValue([]) });
+
+      await driver.findDocumentsForBrowser('db', 'coll', [
+        { $match: { _id: { $oid: '507f1f77bcf86cd799439011' } } },
+      ]);
+
+      const pipelineArg = mockCollection.aggregate.mock.calls[0][0];
+      expect(pipelineArg[0].$match._id).toBeInstanceOf(ObjectId);
+    });
   });
 });
 
