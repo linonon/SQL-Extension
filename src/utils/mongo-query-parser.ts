@@ -11,6 +11,7 @@ const SUPPORTED_METHODS = new Set([
   'insertMany',
   'updateOne',
   'updateMany',
+  'replaceOne',
   'deleteOne',
   'deleteMany',
   'aggregate',

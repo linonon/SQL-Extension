@@ -4,6 +4,7 @@ import { convertShellToJson, stripShellTypes, jsonToShell } from '../../utils/mo
 import { findMatches } from '../../utils/text-search';
 import { AutocompletePopup } from '../sql-editor/AutocompletePopup';
 import { HighlightEditor } from './HighlightEditor';
+import { idToShell } from './mongo-id';
 
 type DetailMode = 'edit' | 'insert';
 
@@ -23,16 +24,10 @@ function stripId(doc: Record<string, unknown>): Record<string, unknown> {
   return rest;
 }
 
-// 从 shell 语法中提取原始 ID, 用于 update/delete 查询
-// ObjectId("abc...") -> "abc...", 其他原样返回
-export function extractRawId(idValue: string): string {
-  const m = idValue.match(/^ObjectId\("([0-9a-fA-F]{24})"\)$/);
-  return m ? m[1] : idValue;
-}
-
 export function MongoDocumentDetail({ document, mode, fieldNames, onClose, onSave, onDelete, onDirtyChange, saveSignal }: MongoDocumentDetailProps) {
   const displayId = document ? String(document._id ?? '') : '';
-  const docId = extractRawId(displayId);
+  // docId 携带 _id 的 shell 形式 (保留类型), 供 update/delete filter 在 backend 还原
+  const docId = document ? idToShell(document._id) : '';
   const initialText = useMemo(
     () => document ? jsonToShell(JSON.stringify(stripId(document), null, 2)) : '{}',
     [document]

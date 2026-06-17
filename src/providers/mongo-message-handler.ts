@@ -91,9 +91,16 @@ export async function handleMongoMessage(
     case 'mongoUpdateDocument': {
       const { database, collection, id, document } = message;
       try {
-        const query = `db.${collection}.updateOne({"_id":"${id}"},{"$set":${JSON.stringify(document)}})`;
-        await driver.executeCancellable(query, undefined, database).promise;
-        post({ type: 'mongoOperationResult', success: true });
+        // replaceOne 整文档替换: 编辑器删掉的字段会真实移除 (updateOne+$set 做不到).
+        // _id filter 经 idToShell -> convertShellToJson 还原 BSON 类型, 避免数值/ObjectId 被当字符串匹配不上.
+        const filterJson = buildIdFilter(id);
+        const query = `db.${collection}.replaceOne(${filterJson},${JSON.stringify(document)})`;
+        const result = await driver.executeCancellable(query, undefined, database).promise;
+        if (result.affectedRows === 0) {
+          post({ type: 'mongoOperationResult', success: false, error: `未匹配到 _id 为 ${id} 的文档, 未更新 (请检查 _id 类型)` });
+        } else {
+          post({ type: 'mongoOperationResult', success: true, affectedRows: result.affectedRows });
+        }
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         post({ type: 'mongoOperationResult', success: false, error: errorMsg });
@@ -104,9 +111,14 @@ export async function handleMongoMessage(
     case 'mongoDeleteDocument': {
       const { database, collection, id } = message;
       try {
-        const query = `db.${collection}.deleteOne({"_id":"${id}"})`;
-        await driver.executeCancellable(query, undefined, database).promise;
-        post({ type: 'mongoOperationResult', success: true });
+        const filterJson = buildIdFilter(id);
+        const query = `db.${collection}.deleteOne(${filterJson})`;
+        const result = await driver.executeCancellable(query, undefined, database).promise;
+        if (result.affectedRows === 0) {
+          post({ type: 'mongoOperationResult', success: false, error: `未匹配到 _id 为 ${id} 的文档, 未删除 (请检查 _id 类型)` });
+        } else {
+          post({ type: 'mongoOperationResult', success: true, affectedRows: result.affectedRows });
+        }
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         post({ type: 'mongoOperationResult', success: false, error: errorMsg });
@@ -182,6 +194,12 @@ async function postRefreshedCollections(
     }
   }
   post({ type: 'mongoAllCollectionList', collections: all });
+}
+
+// 把 _id 的 shell 形式 (ObjectId("..") / 1102025811 / "str") 包成 filter 并还原为 EJSON.
+// 单一 source: 与查询编辑器共用 convertShellToJson, _id 类型不在 handler 里二次猜测.
+function buildIdFilter(idShell: string): string {
+  return convertShellToJson(`{"_id":${idShell}}`);
 }
 
 export function buildExportPipeline(

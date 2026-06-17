@@ -1,7 +1,7 @@
 import { MongoJsonTree } from './MongoJsonTree';
 import { jsonToShell } from '../../utils/mongo-shell-to-json';
 import type { MongoView } from './ViewToggle';
-import { extractRawId } from './MongoDocumentDetail';
+import { idToShell } from './mongo-id';
 
 interface MongoDocumentCardProps {
   readonly doc: Record<string, unknown>;
@@ -12,7 +12,7 @@ interface MongoDocumentCardProps {
 }
 
 export function MongoDocumentCard({ doc, view, onEdit, onClone, onDelete }: MongoDocumentCardProps) {
-  const id = extractRawId(String(doc._id ?? ''));
+  const id = idToShell(doc._id);
   const shellText = jsonToShell(JSON.stringify(doc, null, 2));
 
   return (

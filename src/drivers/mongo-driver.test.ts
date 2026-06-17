@@ -10,6 +10,7 @@ const mockCollection = {
   insertMany: vi.fn(),
   updateOne: vi.fn(),
   updateMany: vi.fn(),
+  replaceOne: vi.fn(),
   deleteOne: vi.fn(),
   deleteMany: vi.fn(),
   aggregate: vi.fn(),
@@ -276,6 +277,32 @@ describe('MongoDriver', () => {
 
       const result = await driver.execute('db.users.deleteOne({"_id": "x"})');
       expect(result.affectedRows).toBe(1);
+    });
+
+    it('replaceOne 整文档替换, affectedRows 取 matchedCount', async () => {
+      mockCollection.replaceOne.mockResolvedValue({ matchedCount: 1, modifiedCount: 1 });
+
+      const result = await driver.execute('db.users.replaceOne({"_id": "x"}, {"name": "Replaced"})');
+      expect(result.affectedRows).toBe(1);
+      // 替换文档是整文档 (无 $set operator)
+      expect(mockCollection.replaceOne.mock.calls[0][1]).toEqual({ name: 'Replaced' });
+    });
+
+    it('replaceOne 用 EJSON _id filter 还原 ObjectId 类型', async () => {
+      mockCollection.replaceOne.mockResolvedValue({ matchedCount: 1, modifiedCount: 1 });
+
+      await driver.execute('db.users.replaceOne({"_id": {"$oid": "507f1f77bcf86cd799439011"}}, {"name": "X"})');
+
+      const filterArg = mockCollection.replaceOne.mock.calls[0][0];
+      expect(filterArg._id).toBeInstanceOf(ObjectId);
+      expect(String(filterArg._id)).toBe('507f1f77bcf86cd799439011');
+    });
+
+    it('replaceOne 未匹配时 affectedRows=0 (matchedCount=0)', async () => {
+      mockCollection.replaceOne.mockResolvedValue({ matchedCount: 0, modifiedCount: 0 });
+
+      const result = await driver.execute('db.users.replaceOne({"_id": 999}, {"name": "X"})');
+      expect(result.affectedRows).toBe(0);
     });
 
     it('deleteMany 返回 deletedCount', async () => {

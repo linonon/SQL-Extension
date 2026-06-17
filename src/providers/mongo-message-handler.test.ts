@@ -256,22 +256,89 @@ describe('handleMongoMessage', () => {
   });
 
   describe('mongoUpdateDocument', () => {
-    it('正常路径: 调用 executeCancellable 返回 success', async () => {
+    // id 字段携带 _id 的 shell 形式 (idToShell 产出), 经 convertShellToJson 还原类型
+
+    function mockAffected(n: number) {
+      (driver.executeCancellable as any).mockReturnValue({
+        promise: Promise.resolve({ columns: [], rows: [], affectedRows: n, executionTime: 0 }),
+        cancel: vi.fn(),
+      });
+    }
+
+    it('用 replaceOne 整文档替换 (删字段生效), 命中返回 success + affectedRows', async () => {
+      mockAffected(1);
       const msg = {
         type: 'mongoUpdateDocument',
         database: 'mydb',
         collection: 'users',
-        id: 'abc123',
+        id: '"abc123"',
         document: { name: 'Updated' },
       } as WebviewMessage;
 
       const handled = await handleMongoMessage(msg, driver, postMessage);
 
       expect(handled).toBe(true);
+      expect(driver.executeCancellable).toHaveBeenCalledWith(
+        expect.stringContaining('replaceOne'),
+        undefined,
+        'mydb',
+      );
       expect(postMessage).toHaveBeenCalledWith({
         type: 'mongoOperationResult',
         success: true,
+        affectedRows: 1,
       });
+    });
+
+    it('ObjectId shell _id 还原为 EJSON $oid (保留类型)', async () => {
+      mockAffected(1);
+      const msg = {
+        type: 'mongoUpdateDocument',
+        database: 'mydb',
+        collection: 'users',
+        id: 'ObjectId("507f1f77bcf86cd799439011")',
+        document: { name: 'X' },
+      } as WebviewMessage;
+
+      await handleMongoMessage(msg, driver, postMessage);
+
+      const query = (driver.executeCancellable as any).mock.calls[0][0] as string;
+      expect(query).toContain('{"_id":{"$oid":"507f1f77bcf86cd799439011"}}');
+    });
+
+    it('数字 _id 不被当字符串 (保留数值类型)', async () => {
+      mockAffected(1);
+      const msg = {
+        type: 'mongoUpdateDocument',
+        database: 'mydb',
+        collection: 'users',
+        id: '1102025811',
+        document: { name: 'X' },
+      } as WebviewMessage;
+
+      await handleMongoMessage(msg, driver, postMessage);
+
+      const query = (driver.executeCancellable as any).mock.calls[0][0] as string;
+      expect(query).toContain('{"_id":1102025811}');
+      expect(query).not.toContain('{"_id":"1102025811"}');
+    });
+
+    it('未匹配 (affectedRows=0) -> success:false + 提示, 不静默成功', async () => {
+      mockAffected(0);
+      const msg = {
+        type: 'mongoUpdateDocument',
+        database: 'mydb',
+        collection: 'users',
+        id: '999',
+        document: { name: 'X' },
+      } as WebviewMessage;
+
+      await handleMongoMessage(msg, driver, postMessage);
+
+      const posted = postMessage.mock.calls[0][0];
+      expect(posted.type).toBe('mongoOperationResult');
+      expect(posted.success).toBe(false);
+      expect(posted.error).toMatch(/_id/);
     });
 
     it('driver 抛错时返回 error', async () => {
@@ -284,7 +351,7 @@ describe('handleMongoMessage', () => {
         type: 'mongoUpdateDocument',
         database: 'mydb',
         collection: 'users',
-        id: 'abc123',
+        id: '"abc123"',
         document: { name: 'Bad' },
       } as WebviewMessage;
 
@@ -299,21 +366,49 @@ describe('handleMongoMessage', () => {
   });
 
   describe('mongoDeleteDocument', () => {
-    it('正常路径: 调用 executeCancellable 返回 success', async () => {
+    function mockAffected(n: number) {
+      (driver.executeCancellable as any).mockReturnValue({
+        promise: Promise.resolve({ columns: [], rows: [], affectedRows: n, executionTime: 0 }),
+        cancel: vi.fn(),
+      });
+    }
+
+    it('用 deleteOne, 命中返回 success', async () => {
+      mockAffected(1);
       const msg = {
         type: 'mongoDeleteDocument',
         database: 'mydb',
         collection: 'users',
-        id: 'abc123',
+        id: 'ObjectId("507f1f77bcf86cd799439011")',
       } as WebviewMessage;
 
       const handled = await handleMongoMessage(msg, driver, postMessage);
 
       expect(handled).toBe(true);
+      const query = (driver.executeCancellable as any).mock.calls[0][0] as string;
+      expect(query).toContain('deleteOne');
+      expect(query).toContain('{"_id":{"$oid":"507f1f77bcf86cd799439011"}}');
       expect(postMessage).toHaveBeenCalledWith({
         type: 'mongoOperationResult',
         success: true,
+        affectedRows: 1,
       });
+    });
+
+    it('未匹配 (affectedRows=0) -> success:false', async () => {
+      mockAffected(0);
+      const msg = {
+        type: 'mongoDeleteDocument',
+        database: 'mydb',
+        collection: 'users',
+        id: '999',
+      } as WebviewMessage;
+
+      await handleMongoMessage(msg, driver, postMessage);
+
+      const posted = postMessage.mock.calls[0][0];
+      expect(posted.success).toBe(false);
+      expect(posted.error).toMatch(/_id/);
     });
 
     it('driver 抛错时返回 error', async () => {
@@ -326,7 +421,7 @@ describe('handleMongoMessage', () => {
         type: 'mongoDeleteDocument',
         database: 'mydb',
         collection: 'users',
-        id: 'abc123',
+        id: '"abc123"',
       } as WebviewMessage;
 
       await handleMongoMessage(msg, driver, postMessage);

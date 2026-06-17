@@ -41,6 +41,12 @@ describe('parseMongoQuery', () => {
       expect(cmd.args).toEqual([{ _id: 'x' }]);
     });
 
+    it('解析 replaceOne 多参数', () => {
+      const cmd = parseMongoQuery('db.users.replaceOne({"_id": "x"}, {"name": "New"})');
+      expect(cmd.method).toBe('replaceOne');
+      expect(cmd.args).toEqual([{ _id: 'x' }, { name: 'New' }]);
+    });
+
     it('解析 deleteMany', () => {
       const cmd = parseMongoQuery('db.logs.deleteMany({"level": "debug"})');
       expect(cmd.method).toBe('deleteMany');

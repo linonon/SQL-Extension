@@ -237,6 +237,14 @@ export class MongoDriver implements IDatabaseDriver {
         const result = await coll.updateMany(filter, update);
         return { affectedRows: result.modifiedCount };
       }
+      case 'replaceOne': {
+        // 整文档替换: 替换文档不含 _id, _id 由 filter 保持; 不在 replacement 内的字段被移除.
+        // affectedRows 取 matchedCount (是否命中), 而非 modifiedCount, 以便无改动的保存仍判定为成功.
+        const filter = autoConvertIds(convertEjsonToBson(args[0] ?? {}) as Record<string, unknown>);
+        const replacement = convertEjsonToBson(args[1] ?? {}) as Record<string, unknown>;
+        const result = await coll.replaceOne(filter, replacement);
+        return { affectedRows: result.matchedCount };
+      }
       case 'deleteOne': {
         const filter = autoConvertIds(convertEjsonToBson(args[0] ?? {}) as Record<string, unknown>);
         const result = await coll.deleteOne(filter);

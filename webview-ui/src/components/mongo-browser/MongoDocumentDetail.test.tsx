@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { MongoDocumentDetail, extractRawId } from './MongoDocumentDetail';
+import { MongoDocumentDetail } from './MongoDocumentDetail';
 import { convertShellToJson, jsonToShell } from '../../utils/mongo-shell-to-json';
 import type { ChangeEvent, KeyboardEvent, RefObject } from 'react';
 
@@ -48,7 +48,7 @@ describe('MongoDocumentDetail - save 流程', () => {
     expect(saveBtn).not.toBeDisabled();
     fireEvent.click(saveBtn);
 
-    expect(onSave).toHaveBeenCalledWith('507f1f77bcf86cd799439011', { name: 'updated' });
+    expect(onSave).toHaveBeenCalledWith('ObjectId("507f1f77bcf86cd799439011")', { name: 'updated' });
   });
 
   it('J3: insert 模式 -> Save -> onSave(null, parsed)', () => {
@@ -93,7 +93,7 @@ describe('MongoDocumentDetail - save 流程', () => {
     fireEvent.click(screen.getByText('Save'));
 
     expect(onSave).toHaveBeenCalledWith(
-      '507f1f77bcf86cd799439011',
+      'ObjectId("507f1f77bcf86cd799439011")',
       { name: 'test', ref: { '$oid': 'aabbccddeeff00112233aabb' } }
     );
   });
@@ -107,7 +107,7 @@ describe('MongoDocumentDetail - save 流程', () => {
     fireEvent.change(textarea, { target: { value: '{"date": ISODate("2024-01-15T00:00:00.000Z")}' } });
     fireEvent.click(screen.getByText('Save'));
 
-    expect(onSave).toHaveBeenCalledWith('myid', { date: { '$date': '2024-01-15T00:00:00.000Z' } });
+    expect(onSave).toHaveBeenCalledWith('"myid"', { date: { '$date': '2024-01-15T00:00:00.000Z' } });
   });
 
   it('J7: round-trip NumberLong', () => {
@@ -119,7 +119,7 @@ describe('MongoDocumentDetail - save 流程', () => {
     fireEvent.change(textarea, { target: { value: '{"big": NumberLong("9999999999")}' } });
     fireEvent.click(screen.getByText('Save'));
 
-    expect(onSave).toHaveBeenCalledWith('myid', { big: { '$numberLong': '9999999999' } });
+    expect(onSave).toHaveBeenCalledWith('"myid"', { big: { '$numberLong': '9999999999' } });
   });
 
   it('J8: round-trip 混合类型文档', () => {
@@ -132,7 +132,7 @@ describe('MongoDocumentDetail - save 流程', () => {
     fireEvent.change(textarea, { target: { value: mixedDoc } });
     fireEvent.click(screen.getByText('Save'));
 
-    expect(onSave).toHaveBeenCalledWith('507f1f77bcf86cd799439011', {
+    expect(onSave).toHaveBeenCalledWith('ObjectId("507f1f77bcf86cd799439011")', {
       name: 'test',
       ref: { '$oid': 'aabbccddeeff00112233aabb' },
       date: { '$date': '2024-01-15T00:00:00.000Z' },

@@ -66,7 +66,7 @@ export type ExtensionMessage =
   | { type: 'mongoCollectionList'; collections: readonly { readonly name: string; readonly count: number }[] }
   | { type: 'mongoDocumentList'; columns: readonly ColumnInfo[]; rows: readonly Record<string, unknown>[]; total: number; error?: string }
   | { type: 'mongoAllCollectionList'; collections: readonly { readonly database: string; readonly name: string; readonly count: number }[] }
-  | { type: 'mongoOperationResult'; success: boolean; error?: string }
+  | { type: 'mongoOperationResult'; success: boolean; error?: string; affectedRows?: number }
   | { type: 'mongoExportResult'; success: boolean; count?: number; error?: string }
   | { type: 'mongoImportResult'; success: boolean; inserted?: number; error?: string }
   | { type: 'mongoCollectionCreated'; success: boolean; error?: string }

@@ -22,10 +22,10 @@ describe('MongoDocumentCard', () => {
     expect(onEdit).toHaveBeenCalledWith(doc);
   });
 
-  it('Delete 传去 ObjectId 内的裸 id 而非 shell-tag', () => {
+  it('Delete 传去 _id 的 shell 形式 (保留类型, backend 还原)', () => {
     const onDelete = vi.fn();
     render(<MongoDocumentCard doc={{ _id: 'ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa")', aid: 'w' }} view="list" onEdit={vi.fn()} onClone={vi.fn()} onDelete={onDelete} />);
     fireEvent.click(screen.getByRole('button', { name: /delete/i }));
-    expect(onDelete).toHaveBeenCalledWith('aaaaaaaaaaaaaaaaaaaaaaaa');
+    expect(onDelete).toHaveBeenCalledWith('ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa")');
   });
 });
