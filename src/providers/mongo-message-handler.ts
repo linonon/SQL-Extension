@@ -108,6 +108,27 @@ export async function handleMongoMessage(
       return true;
     }
 
+    case 'mongoUpdateField': {
+      // 单元格原地编辑: 局部 $set 单个字段 (Compass List/Table 视图的 findOneAndUpdate 语义).
+      // 仅标量值, path 支持 dotted (嵌套字段); _id filter 经 buildIdFilter 保留类型.
+      const { database, collection, id, path, value } = message;
+      try {
+        const filterJson = buildIdFilter(id);
+        const setJson = JSON.stringify({ [path]: value });
+        const query = `db.${collection}.updateOne(${filterJson},{"$set":${setJson}})`;
+        const result = await driver.executeCancellable(query, undefined, database).promise;
+        if (result.affectedRows === 0) {
+          post({ type: 'mongoOperationResult', success: false, error: `未匹配到 _id 为 ${id} 的文档, 未更新 (请检查 _id 类型)` });
+        } else {
+          post({ type: 'mongoOperationResult', success: true, affectedRows: result.affectedRows });
+        }
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        post({ type: 'mongoOperationResult', success: false, error: errorMsg });
+      }
+      return true;
+    }
+
     case 'mongoDeleteDocument': {
       const { database, collection, id } = message;
       try {

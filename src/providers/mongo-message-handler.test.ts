@@ -365,6 +365,72 @@ describe('handleMongoMessage', () => {
     });
   });
 
+  describe('mongoUpdateField (单元格原地编辑, 局部 $set)', () => {
+    function mockAffected(n: number) {
+      (driver.executeCancellable as any).mockReturnValue({
+        promise: Promise.resolve({ columns: [], rows: [], affectedRows: n, executionTime: 0 }),
+        cancel: vi.fn(),
+      });
+    }
+
+    it('构建 updateOne + $set dotted path, _id 走 EJSON 保留类型', async () => {
+      mockAffected(1);
+      const msg = {
+        type: 'mongoUpdateField',
+        database: 'mydb',
+        collection: 'users',
+        id: 'ObjectId("507f1f77bcf86cd799439011")',
+        path: 'bind.aid',
+        value: 'w-9',
+      } as WebviewMessage;
+
+      await handleMongoMessage(msg, driver, postMessage);
+
+      const query = (driver.executeCancellable as any).mock.calls[0][0] as string;
+      expect(query).toContain('updateOne');
+      expect(query).toContain('{"_id":{"$oid":"507f1f77bcf86cd799439011"}}');
+      expect(query).toContain('{"$set":{"bind.aid":"w-9"}}');
+      expect(postMessage).toHaveBeenCalledWith({
+        type: 'mongoOperationResult',
+        success: true,
+        affectedRows: 1,
+      });
+    });
+
+    it('数字值不加引号 (保留类型)', async () => {
+      mockAffected(1);
+      const msg = {
+        type: 'mongoUpdateField',
+        database: 'd',
+        collection: 'c',
+        id: '1',
+        path: 'age',
+        value: 30,
+      } as WebviewMessage;
+
+      await handleMongoMessage(msg, driver, postMessage);
+
+      const query = (driver.executeCancellable as any).mock.calls[0][0] as string;
+      expect(query).toContain('{"$set":{"age":30}}');
+    });
+
+    it('未匹配 (affectedRows=0) -> success:false', async () => {
+      mockAffected(0);
+      const msg = {
+        type: 'mongoUpdateField',
+        database: 'd',
+        collection: 'c',
+        id: '"abc"',
+        path: 'name',
+        value: 'x',
+      } as WebviewMessage;
+
+      await handleMongoMessage(msg, driver, postMessage);
+      const posted = postMessage.mock.calls[0][0];
+      expect(posted.success).toBe(false);
+    });
+  });
+
   describe('mongoDeleteDocument', () => {
     function mockAffected(n: number) {
       (driver.executeCancellable as any).mockReturnValue({

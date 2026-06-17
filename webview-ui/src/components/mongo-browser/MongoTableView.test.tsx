@@ -37,4 +37,53 @@ describe('MongoTableView', () => {
     expect(screen.queryByText('bind.aid')).toBeNull();
     expect(screen.getByText(/"aid":"w-1"/)).toBeInTheDocument();
   });
+
+  describe('单元格原地编辑', () => {
+    const editCols = [
+      { name: '_id', dataType: 'ObjectId', nullable: false, isPrimaryKey: true, defaultValue: null, extra: '' },
+      { name: 'name', dataType: 'string', nullable: true, isPrimaryKey: false, defaultValue: null, extra: '' },
+      { name: 'age', dataType: 'number', nullable: true, isPrimaryKey: false, defaultValue: null, extra: '' },
+    ];
+    const editRows = [{ _id: 'ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa")', name: 'Alice', age: 30 }];
+    const editId = 'ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa")';
+
+    it('双击字符串单元格 -> Enter 提交 onCellEdit(idShell, path, string)', () => {
+      const onCellEdit = vi.fn();
+      render(<MongoTableView columns={editCols} rows={editRows} onRowClick={vi.fn()} onCellEdit={onCellEdit} />);
+      fireEvent.doubleClick(screen.getByText('Alice'));
+      const input = document.querySelector('.mongo-cell-input') as HTMLInputElement;
+      expect(input).not.toBeNull();
+      fireEvent.change(input, { target: { value: 'Bob' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      expect(onCellEdit).toHaveBeenCalledWith(editId, 'name', 'Bob');
+    });
+
+    it('数字单元格编辑 -> 提交 number 类型 (保留类型)', () => {
+      const onCellEdit = vi.fn();
+      render(<MongoTableView columns={editCols} rows={editRows} onRowClick={vi.fn()} onCellEdit={onCellEdit} />);
+      fireEvent.doubleClick(screen.getByText('30'));
+      const input = document.querySelector('.mongo-cell-input') as HTMLInputElement;
+      fireEvent.change(input, { target: { value: '45' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      expect(onCellEdit).toHaveBeenCalledWith(editId, 'age', 45);
+    });
+
+    it('_id 单元格不可原地编辑', () => {
+      const onCellEdit = vi.fn();
+      render(<MongoTableView columns={editCols} rows={editRows} onRowClick={vi.fn()} onCellEdit={onCellEdit} />);
+      fireEvent.doubleClick(screen.getByText(/ObjectId\("a+"\)/));
+      expect(document.querySelector('.mongo-cell-input')).toBeNull();
+    });
+
+    it('Esc 取消编辑, 不提交', () => {
+      const onCellEdit = vi.fn();
+      render(<MongoTableView columns={editCols} rows={editRows} onRowClick={vi.fn()} onCellEdit={onCellEdit} />);
+      fireEvent.doubleClick(screen.getByText('Alice'));
+      const input = document.querySelector('.mongo-cell-input') as HTMLInputElement;
+      fireEvent.change(input, { target: { value: 'Bob' } });
+      fireEvent.keyDown(input, { key: 'Escape' });
+      expect(onCellEdit).not.toHaveBeenCalled();
+      expect(document.querySelector('.mongo-cell-input')).toBeNull();
+    });
+  });
 });

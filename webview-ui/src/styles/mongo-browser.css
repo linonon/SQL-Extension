@@ -252,6 +252,19 @@
 }
 .mongo-th-toggle:hover { color: var(--vscode-textLink-activeForeground, #4daafc); }
 
+.mongo-cell-editable { cursor: text; }
+.mongo-cell-editable:hover { outline: 1px dashed var(--vscode-focusBorder, #007fd4); outline-offset: -1px; }
+.mongo-cell-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 1px 3px;
+  border: 1px solid var(--vscode-focusBorder, #007fd4);
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: var(--vscode-editor-font-size, 13px);
+}
+
 .mongo-table td {
   padding: 4px 8px;
   border-bottom: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.12));

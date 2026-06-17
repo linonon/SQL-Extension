@@ -264,6 +264,18 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
     });
   }, [selected, postMessage]);
 
+  const handleUpdateField = useCallback((id: string, path: string, value: unknown) => {
+    if (!selected) { return; }
+    postMessage({
+      type: 'mongoUpdateField',
+      database: selected.database,
+      collection: selected.name,
+      id,
+      path,
+      value,
+    });
+  }, [selected, postMessage]);
+
   const handleExport = useCallback(() => {
     if (!selected) { return; }
     postMessage({
@@ -357,6 +369,7 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
               onPageChange={handlePageChange}
               onInsertDocument={handleInsertDocument}
               onUpdateDocument={handleUpdateDocument}
+              onUpdateField={handleUpdateField}
               onDeleteDocument={handleDeleteDocument}
               queryError={queryError}
               onExport={handleExport}

@@ -136,6 +136,7 @@ export type WebviewMessage =
   | { type: 'mongoListAllCollections' }
   | { type: 'mongoInsertDocument'; database: string; collection: string; document: Record<string, unknown> }
   | { type: 'mongoUpdateDocument'; database: string; collection: string; id: string; document: Record<string, unknown> }
+  | { type: 'mongoUpdateField'; database: string; collection: string; id: string; path: string; value: unknown }
   | { type: 'mongoDeleteDocument'; database: string; collection: string; id: string }
   | { type: 'mongoExportCollection'; database: string; collection: string; filter: string; sort: string; projection?: string }
   | { type: 'mongoImportCollection'; database: string; collection: string }

@@ -29,6 +29,7 @@ interface MongoDocumentTableProps {
   readonly onPageChange: (page: number) => void;
   readonly onInsertDocument: (doc: Record<string, unknown>) => void;
   readonly onUpdateDocument: (id: string, doc: Record<string, unknown>) => void;
+  readonly onUpdateField?: (id: string, path: string, value: unknown) => void;
   readonly onDeleteDocument: (id: string) => void;
   readonly queryError: string | null;
   readonly onExport?: () => void;
@@ -60,6 +61,7 @@ export function MongoDocumentTable({
   onPageChange,
   onInsertDocument,
   onUpdateDocument,
+  onUpdateField,
   onDeleteDocument,
   queryError,
   onExport,
@@ -280,7 +282,7 @@ export function MongoDocumentTable({
         )}
         {!loading && !queryError && (rows.length > 0 || composing !== null) && (
           view === 'table'
-            ? <MongoTableView columns={columns} rows={rows} onRowClick={(row) => { setView('list'); handleEnterEdit(row); }} />
+            ? <MongoTableView columns={columns} rows={rows} onRowClick={(row) => { setView('list'); handleEnterEdit(row); }} onCellEdit={onUpdateField} />
             : <MongoDocumentList
                 rows={rows}
                 view={view}
