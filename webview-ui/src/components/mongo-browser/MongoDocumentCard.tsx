@@ -60,6 +60,7 @@ export function MongoDocumentCard({
             onSave={(ejson) => onSave(idToShell(doc._id), ejson)}
             onCancel={() => onCancelEdit?.()}
             onDirtyChange={onDirtyChange}
+            saveSignal={saveSignal}
           />
         ) : (
           <MongoDocumentDetail
@@ -78,14 +79,17 @@ export function MongoDocumentCard({
   }
 
   const shellText = jsonToShell(JSON.stringify(doc, null, 2));
+  // 投影排除 _id 时无法定位文档, 增删改禁用 (Copy 仍可用); review M7
+  const hasId = doc._id != null;
+  const noIdTitle = hasId ? undefined : 'projection 排除了 _id, 无法定位该文档进行增删改';
 
   return (
     <div className="mongo-doc-card">
       <div className="mongo-doc-card-actions">
-        <button className="btn-small" title="Edit" onClick={() => onEdit(doc)}>Edit</button>
+        <button className="btn-small" title={noIdTitle ?? 'Edit'} disabled={!hasId} onClick={() => onEdit(doc)}>Edit</button>
         <button className="btn-small" title="Copy" onClick={() => navigator.clipboard.writeText(shellText)}>Copy</button>
-        <button className="btn-small" title="Clone (复制为新建, _id 可改)" onClick={() => onClone(doc)}>Clone</button>
-        <button className="btn-small btn-danger" title="Delete" onClick={() => onDelete(id)}>Delete</button>
+        <button className="btn-small" title={noIdTitle ?? 'Clone (复制为新建, _id 可改)'} disabled={!hasId} onClick={() => onClone(doc)}>Clone</button>
+        <button className="btn-small btn-danger" title={noIdTitle ?? 'Delete'} disabled={!hasId} onClick={() => onDelete(id)}>Delete</button>
       </div>
       {view === 'list'
         ? <MongoJsonTree value={doc} />

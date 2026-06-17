@@ -256,10 +256,11 @@ export class MongoDriver implements IDatabaseDriver {
         return { affectedRows: result.insertedCount };
       }
       case 'updateOne': {
+        // affectedRows 取 matchedCount (是否命中): 无改动的局部更新不应误判为"未匹配" (review M2).
         const filter = toFilter(args[0]);
         const update = convertEjsonToBson(args[1] as Record<string, unknown>) as Record<string, unknown>;
         const result = await coll.updateOne(filter, update);
-        return { affectedRows: result.modifiedCount };
+        return { affectedRows: result.matchedCount };
       }
       case 'updateMany': {
         const filter = toFilter(args[0]);

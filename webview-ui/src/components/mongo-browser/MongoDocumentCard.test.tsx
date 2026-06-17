@@ -79,6 +79,13 @@ describe('MongoDocumentCard', () => {
     expect(document.querySelector('.highlight-editor-textarea')).toBeNull();
   });
 
+  it('M7: 投影排除 _id 时 Edit/Clone/Delete 禁用 (无法定位文档)', () => {
+    render(<MongoDocumentCard doc={{ aid: 'w-1' }} view="list" onEdit={vi.fn()} onClone={vi.fn()} onDelete={vi.fn()} />);
+    expect(screen.getByRole('button', { name: /edit/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /clone/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /delete/i })).toBeDisabled();
+  });
+
   it('editing 默认 JSON 模式; 切到 Fields 模式渲染结构化字段编辑器', () => {
     render(
       <MongoDocumentCard

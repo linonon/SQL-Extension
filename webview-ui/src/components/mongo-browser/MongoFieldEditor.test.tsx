@@ -55,6 +55,25 @@ describe('MongoFieldEditor', () => {
     expect(screen.getByDisplayValue('Alice')).toBeInTheDocument();
   });
 
+  it('H5: saveSignal 变化触发 save (切换时保存不丢改动)', () => {
+    const onSave = vi.fn();
+    const { rerender } = render(<MongoFieldEditor document={doc} onSave={onSave} onCancel={vi.fn()} saveSignal={0} />);
+    fireEvent.change(screen.getByDisplayValue('Alice'), { target: { value: 'Bob' } });
+    rerender(<MongoFieldEditor document={doc} onSave={onSave} onCancel={vi.fn()} saveSignal={1} />);
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ name: 'Bob' }));
+  });
+
+  it('H7: 新增字段 key 输入连续编辑不失焦 (稳定 React key)', () => {
+    render(<MongoFieldEditor document={doc} onSave={vi.fn()} onCancel={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: /添加字段/ }));
+    const keyInputs = document.querySelectorAll('.mongo-fe-key-input');
+    const keyInput = keyInputs[keyInputs.length - 1] as HTMLInputElement;
+    keyInput.focus();
+    expect(document.activeElement).toBe(keyInput);
+    fireEvent.change(keyInput, { target: { value: 'c' } });
+    expect(document.activeElement).toBe(keyInput);
+  });
+
   it('C1: 只读负数 Int 字段保存时类型/值不损坏', () => {
     const onSave = vi.fn();
     const d = { _id: 'ObjectId("507f1f77bcf86cd799439011")', name: 'Alice', n: 'NumberInt(-5)' };

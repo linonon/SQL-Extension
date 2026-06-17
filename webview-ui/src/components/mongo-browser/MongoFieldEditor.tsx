@@ -6,9 +6,15 @@ interface MongoFieldEditorProps {
   readonly onSave: (doc: Record<string, unknown>) => void;
   readonly onCancel: () => void;
   readonly onDirtyChange?: (dirty: boolean) => void;
+  readonly saveSignal?: number;
 }
 
+// 合成稳定 id, 作 React key (不可用可变的 r.key, 否则编辑 key 时整行 remount 失焦 — review H7)
+let rowIdSeq = 0;
+const nextRowId = (): string => `fe-${rowIdSeq++}`;
+
 interface FieldRow {
+  readonly id: string;
   key: string;
   draft: string;          // 可编辑字段的文本草稿
   readonly original: unknown;
@@ -22,9 +28,10 @@ function readonlyDisplay(value: unknown): string {
   return typeof value === 'object' ? JSON.stringify(value) : String(value);
 }
 
-export function MongoFieldEditor({ document: doc, onSave, onCancel, onDirtyChange }: MongoFieldEditorProps) {
+export function MongoFieldEditor({ document: doc, onSave, onCancel, onDirtyChange, saveSignal }: MongoFieldEditorProps) {
   const initial = useMemo<FieldRow[]>(
     () => documentToFields(doc).map((f) => ({
+      id: nextRowId(),
       key: f.key,
       draft: f.editable ? String(f.value) : '',
       original: f.value,
@@ -54,7 +61,7 @@ export function MongoFieldEditor({ document: doc, onSave, onCancel, onDirtyChang
     }));
 
   const addField = () =>
-    setRows((prev) => [...prev, { key: '', draft: '', original: '', editable: true, isNew: true, deleted: false }]);
+    setRows((prev) => [...prev, { id: nextRowId(), key: '', draft: '', original: '', editable: true, isNew: true, deleted: false }]);
 
   const [error, setError] = useState('');
 
@@ -74,12 +81,16 @@ export function MongoFieldEditor({ document: doc, onSave, onCancel, onDirtyChang
     }
   };
 
+  // 父级"未保存切换/Apply"对话框点 Save 时通过 saveSignal 触发本编辑器保存 (review H5)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { if (saveSignal) { save(); } }, [saveSignal]);
+
   return (
     <div className="mongo-fe">
       <div className="mongo-fe-rows">
         {rows.map((r, i) => (
           <div
-            key={`${r.key}-${i}`}
+            key={r.id}
             className={`mongo-fe-row${isModified(r) && !r.deleted ? ' is-modified' : ''}${r.deleted ? ' is-deleted' : ''}`}
           >
             {r.isNew ? (

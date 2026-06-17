@@ -266,6 +266,7 @@
 }
 
 /* 查询历史 */
+.mongo-query-dropdowns { display: contents; }
 .mongo-history-group { position: relative; display: inline-block; }
 .mongo-filter-history-dropdown {
   position: absolute;

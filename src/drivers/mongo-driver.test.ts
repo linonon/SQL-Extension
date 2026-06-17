@@ -265,10 +265,15 @@ describe('MongoDriver', () => {
       expect(result.rows).toEqual([]);
     });
 
-    it('updateOne 返回 modifiedCount', async () => {
-      mockCollection.updateOne.mockResolvedValue({ modifiedCount: 1 });
+    it('updateOne 返回 matchedCount (命中即成功, 无改动也不算失败) — M2', () => {
+      mockCollection.updateOne.mockResolvedValue({ matchedCount: 1, modifiedCount: 1 });
+      return driver.execute('db.users.updateOne({"_id": "x"}, {"$set": {"name": "Updated"}})')
+        .then((result) => expect(result.affectedRows).toBe(1));
+    });
 
-      const result = await driver.execute('db.users.updateOne({"_id": "x"}, {"$set": {"name": "Updated"}})');
+    it('updateOne 命中但值未变 (modified=0) 仍 affectedRows=1 — M2', async () => {
+      mockCollection.updateOne.mockResolvedValue({ matchedCount: 1, modifiedCount: 0 });
+      const result = await driver.execute('db.users.updateOne({"_id": "x"}, {"$set": {"name": "Same"}})');
       expect(result.affectedRows).toBe(1);
     });
 

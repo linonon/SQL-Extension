@@ -118,7 +118,7 @@ export function MongoTableView({ columns, rows, onRowClick, onCellEdit }: MongoT
                           if (e.key === 'Enter') { e.preventDefault(); commitEdit(); }
                           else if (e.key === 'Escape') { e.preventDefault(); cancelEdit(); }
                         }}
-                        onBlur={cancelEdit}
+                        onBlur={commitEdit}
                       />
                     </td>
                   );

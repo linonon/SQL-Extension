@@ -85,6 +85,16 @@ describe('MongoTableView', () => {
       expect(document.querySelector('.mongo-cell-input')).toBeNull();
     });
 
+    it('M6: 单元格失焦 (blur) 提交改动而非丢弃', () => {
+      const onCellEdit = vi.fn();
+      render(<MongoTableView columns={editCols} rows={editRows} onRowClick={vi.fn()} onCellEdit={onCellEdit} />);
+      fireEvent.doubleClick(screen.getByText('Alice'));
+      const input = document.querySelector('.mongo-cell-input') as HTMLInputElement;
+      fireEvent.change(input, { target: { value: 'Bob' } });
+      fireEvent.blur(input);
+      expect(onCellEdit).toHaveBeenCalledWith(editId, 'name', 'Bob');
+    });
+
     it('Esc 取消编辑, 不提交', () => {
       const onCellEdit = vi.fn();
       render(<MongoTableView columns={editCols} rows={editRows} onRowClick={vi.fn()} onCellEdit={onCellEdit} />);

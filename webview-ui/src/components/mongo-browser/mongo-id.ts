@@ -6,6 +6,8 @@ import { detectLeafType } from './mongo-leaf-type';
 // 标量走 JSON.stringify 保留字面量与类型 (数字裸输出, 字符串加引号并转义).
 // 单一 source of truth: 类型判定不在 backend 二次猜测.
 export function idToShell(id: unknown): string {
+  // 投影排除 _id 时 id 为 undefined; 返回空串而非 JSON.stringify 的 undefined (review M7)
+  if (id === undefined) { return ''; }
   if (typeof id === 'string' && detectLeafType(id) !== 'string') {
     return id;
   }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ColumnInfo } from '../../types/database';
 import { extractFieldPaths } from './mongo-autocomplete';
 import { MongoFilterInput } from './MongoFilterInput';
@@ -134,24 +134,56 @@ export function MongoDocumentTable({
     setComposing({ ...doc });
   }, []);
 
+  // 统一的"未保存改动"守卫: 当有脏编辑器时, 任何会替换/丢弃当前编辑的动作 (切 collection /
+  // Apply / 翻页) 都先弹对话框, 由用户选择 Save / Discard / Cancel (review H6).
+  const [pendingAction, setPendingAction] = useState<{ confirm: () => void; cancel: () => void } | null>(null);
+
+  const guardedAction = useCallback((confirm: () => void, cancel: () => void = () => {}) => {
+    if (editorActive && isDirty) {
+      setPendingAction({ confirm, cancel });
+      setShowSwitchDialog(true);
+    } else {
+      clearEditor();
+      confirm();
+    }
+  }, [editorActive, isDirty, clearEditor]);
+
+  // 切 collection 由父级 pendingSwitchSignal 触发, 走同一守卫
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!pendingSwitchSignal) { return; }
-    if (!editorActive) { onSwitchConfirmed?.(); return; }
-    if (!isDirty) { clearEditor(); onSwitchConfirmed?.(); return; }
+    if (!editorActive || !isDirty) { clearEditor(); onSwitchConfirmed?.(); return; }
+    setPendingAction({ confirm: () => onSwitchConfirmed?.(), cancel: () => onSwitchCancelled?.() });
     setShowSwitchDialog(true);
   }, [pendingSwitchSignal]);
 
+  // 对话框点 Save: 等编辑器保存完 (editorActive 变 false) 再执行 pending 动作
   useEffect(() => {
     if (switchAfterSave && !editorActive) {
       setSwitchAfterSave(false);
-      onSwitchConfirmed?.();
+      const a = pendingAction;
+      setPendingAction(null);
+      a?.confirm();
     }
-  }, [editorActive, switchAfterSave, onSwitchConfirmed]);
+  }, [editorActive, switchAfterSave, pendingAction]);
 
   const { entries: filterHistory, addEntry: addFilterHistory } = useMongoFilterHistory();
   const [showHistory, setShowHistory] = useState(false);
   const [showBuilder, setShowBuilder] = useState(false);
+  const dropdownGroupRef = useRef<HTMLDivElement>(null);
+
+  // 点击 Builder/History 下拉之外的区域关闭 (镜像 detail copy menu)
+  useEffect(() => {
+    if (!showHistory && !showBuilder) { return; }
+    const onDown = (e: MouseEvent) => {
+      if (dropdownGroupRef.current && !dropdownGroupRef.current.contains(e.target as Node)) {
+        setShowHistory(false);
+        setShowBuilder(false);
+      }
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [showHistory, showBuilder]);
 
   // 可视化构建器生成的 filter 回填到 Filter 框 (用户再点 Apply)
   const handleBuilderGenerate = useCallback((json: string) => {
@@ -159,11 +191,17 @@ export function MongoDocumentTable({
     setShowBuilder(false);
   }, [onFilterChange]);
 
-  // Apply 时记录查询历史 (在真实 filter/sort/projection 上)
+  // Apply 时记录查询历史 (在真实 filter/sort/projection 上); 经脏数据守卫
   const applyAndRecord = useCallback(() => {
-    addFilterHistory(filter, sort, projection);
-    onApply();
-  }, [addFilterHistory, filter, sort, projection, onApply]);
+    guardedAction(() => {
+      addFilterHistory(filter, sort, projection);
+      onApply();
+    });
+  }, [guardedAction, addFilterHistory, filter, sort, projection, onApply]);
+
+  const handlePageChange = useCallback((p: number) => {
+    guardedAction(() => onPageChange(p));
+  }, [guardedAction, onPageChange]);
 
   // 从历史恢复: 回填三个字段, 用户再点 Apply (避免与受控状态更新竞态)
   const handleRestoreQuery = useCallback((e: FilterHistoryEntry) => {
@@ -205,11 +243,15 @@ export function MongoDocumentTable({
               <button className="btn-small" onClick={() => {
                 clearEditor();
                 setShowSwitchDialog(false);
-                onSwitchConfirmed?.();
+                const a = pendingAction;
+                setPendingAction(null);
+                a?.confirm();
               }}>Discard</button>
               <button className="btn-small" onClick={() => {
                 setShowSwitchDialog(false);
-                onSwitchCancelled?.();
+                const a = pendingAction;
+                setPendingAction(null);
+                a?.cancel();
               }}>Cancel</button>
             </div>
           </div>
@@ -285,10 +327,11 @@ export function MongoDocumentTable({
             <button className="btn-small btn-primary" onClick={applyAndRecord} disabled={loading}>
               Apply
             </button>
+            <div className="mongo-query-dropdowns" ref={dropdownGroupRef}>
             <div className="mongo-history-group">
               <button
                 className="btn-small"
-                onClick={() => setShowBuilder((v) => !v)}
+                onClick={() => { setShowBuilder((v) => !v); setShowHistory(false); }}
                 title="可视化构建查询条件"
                 aria-label="Filter builder"
               >
@@ -307,7 +350,7 @@ export function MongoDocumentTable({
             <div className="mongo-history-group">
               <button
                 className="btn-small"
-                onClick={() => setShowHistory((v) => !v)}
+                onClick={() => { setShowHistory((v) => !v); setShowBuilder(false); }}
                 title="Recent queries"
                 aria-label="Query history"
               >
@@ -318,6 +361,7 @@ export function MongoDocumentTable({
                   <MongoFilterHistory entries={filterHistory} onSelect={handleRestoreQuery} />
                 </div>
               )}
+            </div>
             </div>
             <div className="mongo-data-ops">
               {onExplain && (
@@ -392,7 +436,7 @@ export function MongoDocumentTable({
           <button
             className="btn-small"
             disabled={page === 0}
-            onClick={() => onPageChange(page - 1)}
+            onClick={() => handlePageChange(page - 1)}
           >
             Prev
           </button>
@@ -402,7 +446,7 @@ export function MongoDocumentTable({
           <button
             className="btn-small"
             disabled={page >= totalPages - 1}
-            onClick={() => onPageChange(page + 1)}
+            onClick={() => handlePageChange(page + 1)}
           >
             Next
           </button>

@@ -32,4 +32,8 @@ describe('idToShell', () => {
     expect(idToShell(true)).toBe('true');
     expect(idToShell(null)).toBe('null');
   });
+
+  it('undefined (投影排除 _id) -> 空串, 不返回 undefined — M7', () => {
+    expect(idToShell(undefined)).toBe('');
+  });
 });
