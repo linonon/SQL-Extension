@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import type { ColumnInfo } from '../../types/database';
 import { buildDisplayColumns, getByPath } from './mongo-table-columns';
-import { detectLeafType } from './mongo-leaf-type';
+import { coerceToType, isEditableLeaf } from './mongo-field-editor';
 import { idToShell } from './mongo-id';
 
 interface MongoTableViewProps {
@@ -19,22 +19,9 @@ function cellText(value: unknown, max: number): string {
   return s.length > max ? s.slice(0, max) + '...' : s;
 }
 
-// 仅标量叶子可原地编辑: number / boolean / 非 shell-tag 字符串, 且非 _id (改 _id 用 Clone)
-function isEditable(path: string, value: unknown): boolean {
-  if (path === '_id') { return false; }
-  if (typeof value === 'number' || typeof value === 'boolean') { return true; }
-  if (typeof value === 'string') { return detectLeafType(value) === 'string'; }
-  return false;
-}
-
-// 把输入框文本转回原值的类型 (保留 number/boolean, 否则字符串)
-function coerce(original: unknown, text: string): unknown {
-  if (typeof original === 'number') {
-    const n = Number(text);
-    return Number.isFinite(n) ? n : original;
-  }
-  if (typeof original === 'boolean') { return text === 'true'; }
-  return text;
+// 仅标量叶子可原地编辑, 且非 _id (改 _id 用 Clone). 可编辑性与类型转换复用 mongo-field-editor 的单一实现.
+function isEditableCell(path: string, value: unknown): boolean {
+  return path !== '_id' && isEditableLeaf(value);
 }
 
 export function MongoTableView({ columns, rows, onRowClick, onCellEdit }: MongoTableViewProps) {
@@ -75,7 +62,7 @@ export function MongoTableView({ columns, rows, onRowClick, onCellEdit }: MongoT
   const cancelEdit = () => setEditing(null);
   const commitEdit = () => {
     if (editing && onCellEdit) {
-      onCellEdit(editing.rowId, editing.path, coerce(editing.original, draft));
+      onCellEdit(editing.rowId, editing.path, coerceToType(editing.original, draft));
     }
     setEditing(null);
   };
@@ -136,7 +123,7 @@ export function MongoTableView({ columns, rows, onRowClick, onCellEdit }: MongoT
                     </td>
                   );
                 }
-                const editable = onCellEdit != null && isEditable(col.path, v);
+                const editable = onCellEdit != null && isEditableCell(col.path, v);
                 const full = typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v ?? '');
                 return (
                   <td

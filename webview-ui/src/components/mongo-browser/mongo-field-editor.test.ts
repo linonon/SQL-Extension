@@ -24,6 +24,22 @@ describe('coerceToType', () => {
   it('数字非法文本回退原值', () => {
     expect(coerceToType(5, 'abc')).toBe(5);
   });
+  it('数字字段清空 (空串/空白) 回退原值, 不写 0 — H4', () => {
+    expect(coerceToType(42, '')).toBe(42);
+    expect(coerceToType(42, '   ')).toBe(42);
+  });
+  it('数字字段 0x / 1e 等非纯数字回退原值, 不误解析 — H4', () => {
+    expect(coerceToType(42, '0x10')).toBe(42);
+    expect(coerceToType(42, '1e3')).toBe(42);
+  });
+  it('"0" 仍可正常写入 0', () => {
+    expect(coerceToType(42, '0')).toBe(0);
+  });
+  it('布尔只接受 true/false, 其它回退原值 (不静默写 false) — H4', () => {
+    expect(coerceToType(true, 'True')).toBe(true);
+    expect(coerceToType(true, '1')).toBe(true);
+    expect(coerceToType(false, 'true')).toBe(true);
+  });
 });
 
 describe('documentToFields', () => {

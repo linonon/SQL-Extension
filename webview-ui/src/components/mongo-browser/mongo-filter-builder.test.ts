@@ -18,6 +18,18 @@ describe('coerceValue', () => {
     expect(coerceValue('Alice')).toBe('Alice');
     expect(coerceValue('')).toBe('');
   });
+  it('前导零 / 0x / 1e 保字符串 (不丢前导零/不误解析) — M4', () => {
+    expect(coerceValue('007')).toBe('007');
+    expect(coerceValue('0x10')).toBe('0x10');
+    expect(coerceValue('1e3')).toBe('1e3');
+  });
+  it('超安全整数 -> {$numberLong} 不丢精度 — M4', () => {
+    expect(coerceValue('9007199254740993')).toEqual({ $numberLong: '9007199254740993' });
+  });
+  it('普通整数/小数仍转数字', () => {
+    expect(coerceValue('42')).toBe(42);
+    expect(coerceValue('-1.5')).toBe(-1.5);
+  });
 });
 
 describe('buildFilterFromConditions', () => {

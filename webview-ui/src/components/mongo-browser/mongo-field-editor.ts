@@ -17,13 +17,20 @@ export function isEditableLeaf(value: unknown): boolean {
   return false;
 }
 
-// 把输入文本转回原字段类型 (number/boolean 保留, 否则字符串)
+// 把输入文本转回原字段类型. 严格校验, 失败回退原值 (不静默写 0 / false), 避免数据损坏.
 export function coerceToType(original: unknown, text: string): unknown {
   if (typeof original === 'number') {
-    const n = Number(text);
+    const t = text.trim();
+    // 空 / 非纯数字 (0x / 1e / abc) 回退原值; "0" 等合法值正常解析
+    if (t === '' || !/^-?\d+(\.\d+)?$/.test(t)) { return original; }
+    const n = Number(t);
     return Number.isFinite(n) ? n : original;
   }
-  if (typeof original === 'boolean') { return text === 'true'; }
+  if (typeof original === 'boolean') {
+    if (text === 'true') { return true; }
+    if (text === 'false') { return false; }
+    return original; // 非法布尔输入不静默写 false
+  }
   return text;
 }
 

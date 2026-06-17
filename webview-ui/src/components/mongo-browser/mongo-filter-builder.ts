@@ -23,11 +23,20 @@ export const FILTER_OPS: readonly { readonly op: FilterOp; readonly label: strin
   { op: '$exists', label: 'exists' },
 ];
 
-// 文本按字面量类型推断: 布尔 / 数字 / 否则字符串
+// 文本按字面量类型推断: 布尔 / 数字 / 否则字符串.
+// 收紧数字判定 (M4): 前导零 / 0x / 1e / 非纯数字保字符串 (避免邮编/订单号被转数字而匹配不上);
+// 超安全整数用 {$numberLong} 不丢精度.
 export function coerceValue(text: string): unknown {
   if (text === 'true') { return true; }
   if (text === 'false') { return false; }
-  if (text.trim() !== '' && Number.isFinite(Number(text))) { return Number(text); }
+  const t = text.trim();
+  if (/^-?\d+$/.test(t) && !/^-?0\d/.test(t)) {
+    const n = Number(t);
+    return Number.isSafeInteger(n) ? n : { $numberLong: t };
+  }
+  if (/^-?\d+\.\d+$/.test(t)) {
+    return Number(t);
+  }
   return text;
 }
 

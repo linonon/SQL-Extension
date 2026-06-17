@@ -68,6 +68,16 @@ describe('MongoTableView', () => {
       expect(onCellEdit).toHaveBeenCalledWith(editId, 'age', 45);
     });
 
+    it('清空数字单元格不静默写 0 (回退原值) — H4', () => {
+      const onCellEdit = vi.fn();
+      render(<MongoTableView columns={editCols} rows={editRows} onRowClick={vi.fn()} onCellEdit={onCellEdit} />);
+      fireEvent.doubleClick(screen.getByText('30'));
+      const input = document.querySelector('.mongo-cell-input') as HTMLInputElement;
+      fireEvent.change(input, { target: { value: '' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      expect(onCellEdit).toHaveBeenCalledWith(editId, 'age', 30);
+    });
+
     it('_id 单元格不可原地编辑', () => {
       const onCellEdit = vi.fn();
       render(<MongoTableView columns={editCols} rows={editRows} onRowClick={vi.fn()} onCellEdit={onCellEdit} />);
