@@ -7,6 +7,7 @@ import { MongoDocumentList } from './MongoDocumentList';
 import { MongoTableView } from './MongoTableView';
 import { idToShell } from './mongo-id';
 import { useMongoFilterHistory, MongoFilterHistory, type FilterHistoryEntry } from './MongoFilterHistory';
+import { MongoFilterBuilder } from './MongoFilterBuilder';
 
 interface MongoDocumentTableProps {
   readonly collection: string;
@@ -140,6 +141,13 @@ export function MongoDocumentTable({
 
   const { entries: filterHistory, addEntry: addFilterHistory } = useMongoFilterHistory();
   const [showHistory, setShowHistory] = useState(false);
+  const [showBuilder, setShowBuilder] = useState(false);
+
+  // 可视化构建器生成的 filter 回填到 Filter 框 (用户再点 Apply)
+  const handleBuilderGenerate = useCallback((json: string) => {
+    onFilterChange(json);
+    setShowBuilder(false);
+  }, [onFilterChange]);
 
   // Apply 时记录查询历史 (在真实 filter/sort/projection 上)
   const applyAndRecord = useCallback(() => {
@@ -267,6 +275,25 @@ export function MongoDocumentTable({
             <button className="btn-small btn-primary" onClick={applyAndRecord} disabled={loading}>
               Apply
             </button>
+            <div className="mongo-history-group">
+              <button
+                className="btn-small"
+                onClick={() => setShowBuilder((v) => !v)}
+                title="可视化构建查询条件"
+                aria-label="Filter builder"
+              >
+                Builder ▾
+              </button>
+              {showBuilder && (
+                <div className="mongo-filter-builder-dropdown">
+                  <MongoFilterBuilder
+                    fieldNames={fieldNames}
+                    onGenerate={handleBuilderGenerate}
+                    onClose={() => setShowBuilder(false)}
+                  />
+                </div>
+              )}
+            </div>
             <div className="mongo-history-group">
               <button
                 className="btn-small"

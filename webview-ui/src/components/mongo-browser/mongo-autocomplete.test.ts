@@ -171,6 +171,14 @@ describe('getMongoCompletionItems', () => {
     expect(items.every((op) => op.startsWith('$'))).toBe(true);
   });
 
+  it('补全集合含常用查询操作符 ($mod/$expr/$text/$options)', () => {
+    const ctx: MongoAutocompleteContext = { triggerType: 'operator', prefix: '$' };
+    const items = getMongoCompletionItems(ctx, fields);
+    for (const op of ['$mod', '$expr', '$text', '$options', '$elemMatch', '$regex']) {
+      expect(items).toContain(op);
+    }
+  });
+
   it('null triggerType 应返回空数组', () => {
     const ctx: MongoAutocompleteContext = { triggerType: null, prefix: '' };
     const items = getMongoCompletionItems(ctx, fields);

@@ -6,9 +6,13 @@ export interface MongoAutocompleteContext {
 }
 
 const MONGO_OPERATORS: readonly string[] = [
-  '$eq', '$gt', '$gte', '$lt', '$lte', '$ne',
-  '$in', '$nin', '$regex', '$exists', '$type',
+  // 比较
+  '$eq', '$gt', '$gte', '$lt', '$lte', '$ne', '$in', '$nin',
+  // 元素 / 求值
+  '$exists', '$type', '$regex', '$options', '$mod', '$expr', '$text', '$search',
+  // 逻辑
   '$and', '$or', '$not', '$nor',
+  // 数组
   '$elemMatch', '$size', '$all',
 ];
 

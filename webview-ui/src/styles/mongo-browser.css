@@ -306,6 +306,44 @@
 }
 .mongo-filter-history-meta { flex-shrink: 0; font-size: 10.5px; color: var(--vscode-descriptionForeground); }
 
+/* 可视化 filter 构建器 */
+.mongo-filter-builder-dropdown {
+  position: absolute;
+  top: calc(100% + 2px);
+  right: 0;
+  z-index: 30;
+  min-width: 360px;
+  background: var(--vscode-menu-background, var(--vscode-editor-background));
+  border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border, rgba(128, 128, 128, 0.35)));
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  padding: 8px;
+}
+.mongo-fb-rows { display: flex; flex-direction: column; gap: 6px; }
+.mongo-fb-row { display: flex; gap: 6px; align-items: center; }
+.mongo-fb-field, .mongo-fb-value {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 6px;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, rgba(128, 128, 128, 0.4)));
+  border-radius: 3px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 12px;
+}
+.mongo-fb-op {
+  flex-shrink: 0;
+  padding: 2px 4px;
+  background: var(--vscode-dropdown-background, var(--vscode-input-background));
+  color: var(--vscode-dropdown-foreground, var(--vscode-input-foreground));
+  border: 1px solid var(--vscode-dropdown-border, var(--vscode-widget-border, rgba(128, 128, 128, 0.4)));
+  border-radius: 3px;
+  font-size: 12px;
+}
+.mongo-fb-remove { flex-shrink: 0; }
+.mongo-fb-actions { display: flex; justify-content: space-between; gap: 6px; margin-top: 8px; }
+
 .mongo-table td {
   padding: 4px 8px;
   border-bottom: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.12));
