@@ -1,16 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ColumnInfo } from '../../types/database';
 import { extractFieldPaths } from './mongo-autocomplete';
-import { MongoDocumentDetail } from './MongoDocumentDetail';
 import { MongoFilterInput } from './MongoFilterInput';
 import { ViewToggle, type MongoView } from './ViewToggle';
 import { MongoDocumentList } from './MongoDocumentList';
 import { MongoTableView } from './MongoTableView';
-
-type DetailState =
-  | { readonly mode: 'edit'; readonly doc: Record<string, unknown> }
-  | { readonly mode: 'insert' }
-  | null;
+import { idToShell } from './mongo-id';
 
 interface MongoDocumentTableProps {
   readonly collection: string;
@@ -73,7 +68,9 @@ export function MongoDocumentTable({
   onSwitchConfirmed,
   onSwitchCancelled,
 }: MongoDocumentTableProps) {
-  const [detail, setDetail] = useState<DetailState>(null);
+  // in-card 编辑态: editingId (现存文档 _id 的 shell 形式) 与 composing (顶部新建/克隆卡片) 互斥
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [composing, setComposing] = useState<Record<string, unknown> | null>(null);
   const [isDirty, setIsDirty] = useState(false);
   const [view, setView] = useState<MongoView>('list');
   const [showSwitchDialog, setShowSwitchDialog] = useState(false);
@@ -81,9 +78,17 @@ export function MongoDocumentTable({
   const [switchAfterSave, setSwitchAfterSave] = useState(false);
   const fieldNames = useMemo(() => extractFieldPaths(rows), [rows]);
 
+  const editorActive = editingId !== null || composing !== null;
+
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const startRow = page * pageSize + 1;
   const endRow = Math.min((page + 1) * pageSize, total);
+
+  const clearEditor = useCallback(() => {
+    setEditingId(null);
+    setComposing(null);
+    setIsDirty(false);
+  }, []);
 
   const handleSave = useCallback((id: string | null, doc: Record<string, unknown>) => {
     if (id) {
@@ -91,28 +96,38 @@ export function MongoDocumentTable({
     } else {
       onInsertDocument(doc);
     }
-    setDetail(null);
-  }, [onUpdateDocument, onInsertDocument]);
+    clearEditor();
+  }, [onUpdateDocument, onInsertDocument, clearEditor]);
 
   const handleDelete = useCallback((id: string) => {
     onDeleteDocument(id);
-    setDetail(null);
-  }, [onDeleteDocument]);
+    clearEditor();
+  }, [onDeleteDocument, clearEditor]);
+
+  const handleEnterEdit = useCallback((doc: Record<string, unknown>) => {
+    setComposing(null);
+    setEditingId(idToShell(doc._id));
+  }, []);
+
+  const handleNewDocument = useCallback(() => {
+    setEditingId(null);
+    setComposing({});
+  }, []);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!pendingSwitchSignal) { return; }
-    if (!detail) { onSwitchConfirmed?.(); return; }
-    if (!isDirty) { setDetail(null); onSwitchConfirmed?.(); return; }
+    if (!editorActive) { onSwitchConfirmed?.(); return; }
+    if (!isDirty) { clearEditor(); onSwitchConfirmed?.(); return; }
     setShowSwitchDialog(true);
   }, [pendingSwitchSignal]);
 
   useEffect(() => {
-    if (switchAfterSave && !detail) {
+    if (switchAfterSave && !editorActive) {
       setSwitchAfterSave(false);
       onSwitchConfirmed?.();
     }
-  }, [detail, switchAfterSave, onSwitchConfirmed]);
+  }, [editorActive, switchAfterSave, onSwitchConfirmed]);
 
   const handleCopyQuery = useCallback(() => {
     const f = filter.trim() || '{}';
@@ -131,55 +146,38 @@ export function MongoDocumentTable({
     navigator.clipboard.writeText(query);
   }, [collection, filter, sort, projection, customLimit, customSkip]);
 
-  if (detail) {
-    return (
-      <div style={{ position: 'relative', height: '100%' }}>
-        <MongoDocumentDetail
-          document={detail.mode === 'edit' ? detail.doc : null}
-          mode={detail.mode}
-          fieldNames={fieldNames}
-          onClose={() => setDetail(null)}
-          onSave={handleSave}
-          onDelete={handleDelete}
-          onDirtyChange={setIsDirty}
-          saveSignal={saveTrigger}
-        />
-        {showSwitchDialog && (
-          <div className="mongo-nav-dialog-overlay">
-            <div className="mongo-nav-dialog">
-              <p className="mongo-nav-dialog-msg">当前文档有未保存的修改.</p>
-              <div className="mongo-nav-dialog-actions">
-                <button className="btn-small btn-primary" onClick={() => {
-                  setSwitchAfterSave(true);
-                  setSaveTrigger(t => t + 1);
-                  setShowSwitchDialog(false);
-                }}>Save</button>
-                <button className="btn-small" onClick={() => {
-                  setDetail(null);
-                  setShowSwitchDialog(false);
-                  onSwitchConfirmed?.();
-                }}>Discard</button>
-                <button className="btn-small" onClick={() => {
-                  setShowSwitchDialog(false);
-                  onSwitchCancelled?.();
-                }}>Cancel</button>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-    );
-  }
-
   return (
     <div className="mongo-document-panel">
+      {showSwitchDialog && (
+        <div className="mongo-nav-dialog-overlay">
+          <div className="mongo-nav-dialog">
+            <p className="mongo-nav-dialog-msg">当前文档有未保存的修改.</p>
+            <div className="mongo-nav-dialog-actions">
+              <button className="btn-small btn-primary" onClick={() => {
+                setSwitchAfterSave(true);
+                setSaveTrigger(t => t + 1);
+                setShowSwitchDialog(false);
+              }}>Save</button>
+              <button className="btn-small" onClick={() => {
+                clearEditor();
+                setShowSwitchDialog(false);
+                onSwitchConfirmed?.();
+              }}>Discard</button>
+              <button className="btn-small" onClick={() => {
+                setShowSwitchDialog(false);
+                onSwitchCancelled?.();
+              }}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="mongo-document-header">
         <div className="mongo-header-row">
           <h3>{collection}</h3>
           <ViewToggle value={view} onChange={setView} />
           <button
             className="btn-small btn-primary"
-            onClick={() => setDetail({ mode: 'insert' })}
+            onClick={handleNewDocument}
           >
             + New Document
           </button>
@@ -271,18 +269,25 @@ export function MongoDocumentTable({
         {!loading && queryError && (
           <div className="mongo-error">Query failed: {queryError}</div>
         )}
-        {!loading && !queryError && rows.length === 0 && (
+        {!loading && !queryError && rows.length === 0 && composing === null && (
           <div className="mongo-empty">No documents found</div>
         )}
-        {!loading && !queryError && rows.length > 0 && (
+        {!loading && !queryError && (rows.length > 0 || composing !== null) && (
           view === 'table'
-            ? <MongoTableView columns={columns} rows={rows} onRowClick={(row) => setDetail({ mode: 'edit', doc: row })} />
+            ? <MongoTableView columns={columns} rows={rows} onRowClick={(row) => { setView('list'); handleEnterEdit(row); }} />
             : <MongoDocumentList
                 rows={rows}
                 view={view}
-                onEdit={(doc) => setDetail({ mode: 'edit', doc })}
-                onClone={(doc) => setDetail({ mode: 'edit', doc })}
+                fieldNames={fieldNames}
+                editingId={editingId}
+                composing={composing}
+                onEdit={handleEnterEdit}
+                onClone={handleEnterEdit}
                 onDelete={(id) => onDeleteDocument(id)}
+                onSave={handleSave}
+                onCancelEdit={clearEditor}
+                onDirtyChange={setIsDirty}
+                saveSignal={saveTrigger}
               />
         )}
       </div>

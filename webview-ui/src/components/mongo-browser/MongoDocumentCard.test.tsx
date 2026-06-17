@@ -1,6 +1,20 @@
 import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
+import type { ChangeEvent, KeyboardEvent, RefObject } from 'react';
 import { MongoDocumentCard } from './MongoDocumentCard';
+
+// 内联编辑器复用 MongoDocumentDetail, 需 mock autocomplete hook 避免 DOM 测量
+vi.mock('../../hooks/useMongoAutocomplete', () => ({
+  useMongoAutocomplete: ({ onChange }: { onChange: (v: string) => void }) => ({
+    textareaRef: { current: null } as RefObject<HTMLTextAreaElement>,
+    completionItems: [] as readonly string[],
+    selectedIndex: 0,
+    popupPos: { top: 0, left: 0 },
+    handleChange: (e: ChangeEvent<HTMLTextAreaElement>) => onChange(e.target.value),
+    handleKeyDown: (_e: KeyboardEvent<HTMLTextAreaElement>) => {},
+    applyCompletion: (_item: string) => {},
+  }),
+}));
 
 const doc = { _id: 'ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa")', aid: 'w-1' };
 
@@ -27,5 +41,32 @@ describe('MongoDocumentCard', () => {
     render(<MongoDocumentCard doc={{ _id: 'ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa")', aid: 'w' }} view="list" onEdit={vi.fn()} onClone={vi.fn()} onDelete={onDelete} />);
     fireEvent.click(screen.getByRole('button', { name: /delete/i }));
     expect(onDelete).toHaveBeenCalledWith('ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa")');
+  });
+
+  it('editing 模式渲染内联编辑器 (列表不动), Save 调 onSave(idShell, doc)', () => {
+    const onSave = vi.fn();
+    render(
+      <MongoDocumentCard
+        doc={doc}
+        view="list"
+        editing
+        fieldNames={[]}
+        onEdit={vi.fn()}
+        onClone={vi.fn()}
+        onDelete={vi.fn()}
+        onSave={onSave}
+        onCancelEdit={vi.fn()}
+      />,
+    );
+    const textarea = document.querySelector('.highlight-editor-textarea') as HTMLTextAreaElement;
+    expect(textarea).not.toBeNull();
+    fireEvent.change(textarea, { target: { value: '{"aid": "w-2"}' } });
+    fireEvent.click(screen.getByText('Save'));
+    expect(onSave).toHaveBeenCalledWith('ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa")', { aid: 'w-2' });
+  });
+
+  it('非 editing 模式不渲染编辑器, 渲染树', () => {
+    render(<MongoDocumentCard doc={doc} view="list" onEdit={vi.fn()} onClone={vi.fn()} onDelete={vi.fn()} />);
+    expect(document.querySelector('.highlight-editor-textarea')).toBeNull();
   });
 });
