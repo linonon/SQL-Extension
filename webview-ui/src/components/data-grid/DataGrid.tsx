@@ -14,6 +14,7 @@ import { DataGridToolbar } from './DataGridToolbar';
 import { DataGridPagination } from './DataGridPagination';
 import type { ColumnInfo, PageInfo } from '../../types/database';
 import type { ExtensionMessage } from '../../types/messages';
+import { buildInsertRow } from '../../utils/insert-row';
 import '../../styles/data-grid.css';
 
 const PAGE_SIZE = 100;
@@ -188,11 +189,9 @@ export function DataGrid({ database, table }: DataGridProps) {
   }, [editingCell, rows, columns, database, table, postMessage, fetchData, page.offset]);
 
   const handleInsert = useCallback(() => {
-    const emptyRow: Record<string, unknown> = {};
-    for (const col of columns) {
-      emptyRow[col.name] = col.defaultValue;
-    }
-    postMessage({ type: 'insertRow', database, table, row: emptyRow });
+    // 自增/序列/表达式默认值列省略, 交给 DB 应用默认; 不把 defaultValue 文本当字面值写库
+    const newRow = buildInsertRow(columns);
+    postMessage({ type: 'insertRow', database, table, row: newRow });
     // 刷新当前页
     setTimeout(() => fetchData(page.offset), 200);
   }, [columns, database, table, postMessage, fetchData, page.offset]);

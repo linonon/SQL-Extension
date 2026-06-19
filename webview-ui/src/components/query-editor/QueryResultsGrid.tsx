@@ -12,6 +12,7 @@ import { ContextMenu } from '../common/ContextMenu';
 import type { ContextMenuItem } from '../common/ContextMenu';
 import { CloneRowModal } from '../common/CloneRowModal';
 import { generateCsv } from '../../utils/csv';
+import { buildInsertRow } from '../../utils/insert-row';
 import type { ColumnInfo } from '../../types/database';
 import type { SortState } from '../../utils/sql-builder';
 
@@ -139,13 +140,8 @@ export function QueryResultsGrid({
     setContextMenu(null);
   }, []);
 
-  const emptyRow = useMemo(() => {
-    const r: Record<string, unknown> = {};
-    for (const col of columns) {
-      r[col.name] = col.defaultValue;
-    }
-    return r;
-  }, [columns]);
+  // 自增/序列/表达式默认值列不预填, 交给 DB 应用默认 (CloneRowModal 仍展示全部列供编辑)
+  const emptyRow = useMemo(() => buildInsertRow(columns), [columns]);
 
   const contextMenuItems: ContextMenuItem[] = useMemo(() => {
     const rowIndex = contextMenu?.rowIndex ?? null;

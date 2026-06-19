@@ -97,9 +97,10 @@ describe('sql-builder', () => {
       expect(result.sql).toContain('`user``name`');
     });
 
-    it('空对象应该 fail-fast 抛错而非生成非法 SQL', () => {
-      // 边界 invariant 落在 builder: 无列的 INSERT 在 PG 直接语法错, 应在边界拒绝
-      expect(() => buildInsert('mysql', 'users', {})).toThrow(/no columns/i);
+    it('空 row 生成插入全默认值的合法 SQL (所有列由 DB 填充)', () => {
+      // MySQL: () VALUES (); PG: DEFAULT VALUES. 不拼非法 SQL 也不误抛
+      expect(buildInsert('mysql', 'users', {}).sql).toBe('INSERT INTO `users` () VALUES ()');
+      expect(buildInsert('postgresql', 'users', {}).sql).toBe('INSERT INTO "users" DEFAULT VALUES');
     });
 
     it('应该处理特殊值: null, undefined, 空字符串', () => {

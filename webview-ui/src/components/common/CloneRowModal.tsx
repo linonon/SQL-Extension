@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ColumnInfo } from '../../types/database';
+import { isAutoFilledColumn } from '../../utils/insert-row';
 
 interface CloneRowModalProps {
   readonly row: Record<string, unknown>;
@@ -9,10 +10,11 @@ interface CloneRowModalProps {
 }
 
 export function CloneRowModal({ row, columns, onSubmit, onClose }: CloneRowModalProps) {
+  // 自动填充列 (MySQL auto_increment / PG serial-nextval / identity) 克隆时清空, 让 DB 自增
   const autoIncrementCols = useMemo(() => {
     const set = new Set<string>();
     for (const col of columns) {
-      if (col.extra?.toLowerCase().includes('auto_increment')) {
+      if (isAutoFilledColumn(col)) {
         set.add(col.name);
       }
     }
@@ -75,9 +77,13 @@ export function CloneRowModal({ row, columns, onSubmit, onClose }: CloneRowModal
       }
       if (nullFlags[col.name]) {
         result[col.name] = null;
-      } else {
-        result[col.name] = values[col.name];
+        continue;
       }
+      // 非空列留空 -> 省略该 key, 让 DB 应用默认值, 而非写入 '' (MySQL 非严格模式静默存 0/无效日期, PG 报类型错)
+      if (values[col.name] === '' && !col.nullable) {
+        continue;
+      }
+      result[col.name] = values[col.name];
     }
     onSubmit(result);
   }, [columns, autoIncrementCols, values, nullFlags, onSubmit]);
