@@ -46,7 +46,8 @@ function conditionToObject(cond: Condition): Record<string, unknown> {
     case '$eq':
       return { [field]: coerceValue(value) };
     case '$in':
-      return { [field]: { $in: value.split(',').map((s) => coerceValue(s.trim())) } };
+      // 丢弃空白段: 末尾逗号 / 连续逗号不应产出 "" 元素 (会误匹配空字符串)
+      return { [field]: { $in: value.split(',').map((s) => s.trim()).filter((s) => s !== '').map(coerceValue) } };
     case '$regex':
       return { [field]: { $regex: value, $options: 'i' } };
     case '$exists':

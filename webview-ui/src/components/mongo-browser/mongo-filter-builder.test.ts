@@ -55,6 +55,13 @@ describe('buildFilterFromConditions', () => {
       .toBe('{"status":{"$in":["a","b",3]}}');
   });
 
+  it('$in 丢弃空白段 (避免 {$in:[""]} 误匹配) — M4', () => {
+    expect(buildFilterFromConditions([c('status', '$in', 'a,,b,')]))
+      .toBe('{"status":{"$in":["a","b"]}}');
+    expect(buildFilterFromConditions([c('status', '$in', ' , ')]))
+      .toBe('{"status":{"$in":[]}}');
+  });
+
   it('$regex -> 带 $options:i (contains 语义)', () => {
     expect(buildFilterFromConditions([c('name', '$regex', '^A')]))
       .toBe('{"name":{"$regex":"^A","$options":"i"}}');

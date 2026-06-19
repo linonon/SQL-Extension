@@ -43,6 +43,12 @@ describe('coerceToType', () => {
     expect(coerceToType(true, '1')).toBe(true);
     expect(coerceToType(false, 'true')).toBe(true);
   });
+  it('布尔大小写 / 前后空白归一, 不再静默回退 — L7', () => {
+    expect(coerceToType(false, 'TRUE')).toBe(true);
+    expect(coerceToType(false, ' true ')).toBe(true);
+    expect(coerceToType(true, 'False')).toBe(false);
+    expect(coerceToType(false, 'yes')).toBe(false); // 真非法输入仍回退原值, 不写反值
+  });
 });
 
 describe('documentToFields', () => {

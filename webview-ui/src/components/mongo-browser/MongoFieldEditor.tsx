@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { coerceToType, convertTags, documentToFields } from './mongo-field-editor';
+import { validateEjsonValues } from './mongo-editor-syntax';
 
 interface MongoFieldEditorProps {
   readonly document: Record<string, unknown>;
@@ -83,6 +84,9 @@ export function MongoFieldEditor({ document: doc, onSave, onCancel, onDirtyChang
         // 只读值来自 deepFormatValue, 才把其中真 shell-tag 还原为 EJSON.
         out[r.key] = r.editable ? coerceToType(r.original, r.draft) : convertTags(r.original);
       }
+      // 与 JSON 模式一致的值合法性闸: 拦越界整数 / 非法日期等, 不依赖后端 round-trip 才报错
+      const problem = validateEjsonValues(out);
+      if (problem) { setError(problem.message); onSaveError?.(); return; }
       setError('');
       onSave(out);
     } catch (e) {

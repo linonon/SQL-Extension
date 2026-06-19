@@ -136,13 +136,16 @@ export function MongoDocumentDetail({ document, mode, fieldNames, onClose, onSav
   }, [openSearch, autocompleteHandleKeyDown]);
 
   const handleSave = useCallback(() => {
+    // saveSignal 触发的保存绕过了禁用的 Save 按钮, 须在此复用同一校验闸 (JSON 语法 + EJSON 值合法性),
+    // 否则非法值 (如越界整数 / 非法日期) 可经外部保存信号静默写库.
+    if (!validation.ok) { onSaveError?.(); return; }
     try {
       const parsed = JSON.parse(convertShellToJson(text)) as Record<string, unknown>;
       onSave(mode === 'edit' ? docId : null, parsed);
     } catch {
       onSaveError?.();
     }
-  }, [text, mode, docId, onSave, onSaveError]);
+  }, [text, mode, docId, onSave, onSaveError, validation.ok]);
 
   useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
 

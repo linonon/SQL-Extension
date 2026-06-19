@@ -29,9 +29,11 @@ export function coerceToType(original: unknown, text: string): unknown {
     return Number.isFinite(n) ? n : original;
   }
   if (typeof original === 'boolean') {
-    if (text === 'true') { return true; }
-    if (text === 'false') { return false; }
-    return original; // 非法布尔输入不静默写 false
+    // 归一大小写与前后空白: "TRUE" / " true " 视为合法; 真非法输入仍回退原值, 不静默写反值
+    const t = text.trim().toLowerCase();
+    if (t === 'true') { return true; }
+    if (t === 'false') { return false; }
+    return original;
   }
   return text;
 }

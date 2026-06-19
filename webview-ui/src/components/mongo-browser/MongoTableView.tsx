@@ -123,7 +123,8 @@ export function MongoTableView({ columns, rows, onRowClick, onCellEdit }: MongoT
                     </td>
                   );
                 }
-                const editable = onCellEdit != null && isEditableCell(col.path, v);
+                // rowId 为空 = _id 被投影排除, 无法定位文档 -> 不可原地编辑 (否则发 id='' 必然失败)
+                const editable = onCellEdit != null && rowId !== '' && isEditableCell(col.path, v);
                 const full = typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v ?? '');
                 return (
                   <td

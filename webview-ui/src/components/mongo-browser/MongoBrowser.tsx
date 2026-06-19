@@ -108,6 +108,8 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
         break;
       case 'error':
         setLoading(false);
+        // 集合列表加载若失败 (mongoListAllCollections 抛错), 后端回笼统 error: 同步清掉 spinner 避免左栏永久转
+        setCollectionsLoading(false);
         setQueryError(msg.message);
         break;
       case 'mongoOperationResult':
