@@ -715,6 +715,21 @@
   flex-shrink: 0;
 }
 
+.detail-dirty-dot {
+  font-size: 11px;
+  color: var(--vscode-editorWarning-foreground, #cca700);
+  white-space: nowrap;
+  margin-right: 4px;
+}
+
+/* 破坏性操作隔离到底部, 远离 Save */
+.detail-footer {
+  display: flex;
+  padding: 6px 12px;
+  border-top: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.35));
+  flex-shrink: 0;
+}
+
 /* Detail editor textarea */
 .detail-editor {
   width: 100%;
@@ -952,46 +967,82 @@
   justify-content: flex-end;
 }
 
-/* === Search highlight editor === */
-/* 自适应内容高度: backdrop 在普通流中决定容器高度 (随内容增长), textarea 绝对覆盖其上.
-   不用 height:100% 百分比链 (在 auto 高度祖先下会塌成默认 ~2 行). */
-.highlight-editor-container {
-  position: relative;
-  width: 100%;
-}
-
-.highlight-editor-backdrop {
-  position: relative;
-  overflow: hidden;
-  pointer-events: none;
-  z-index: 0;
-  background: var(--vscode-editor-background);
-}
-
+/* === 语法高亮代码编辑器 (三层对齐叠放) === */
+/* 自适应内容高度: syntax 层在普通流撑高容器; search/textarea 绝对覆盖.
+   三层同字体/行高/换行宽度 (覆盖层 padding-left = --hl-gutter) 故逐行对齐.
+   配色用固定中间调, VS Code light/dark 双主题均可读. */
+.highlight-editor-container,
+.highlight-editor-container textarea,
+.highlight-editor-syntax,
 .highlight-editor-backdrop-inner {
-  white-space: pre-wrap;
-  word-break: break-word;
-  padding: 8px;
   font-family: var(--vscode-editor-font-family, monospace);
   font-size: var(--vscode-editor-font-size, 13px);
   line-height: 1.5;
+}
+
+.highlight-editor-container {
+  position: relative;
+  width: 100%;
+  background: var(--vscode-editor-background);
+}
+
+/* syntax 层: 普通流, 决定容器高度; 每逻辑行一行 [行号 | 着色代码] */
+.highlight-editor-syntax {
+  position: relative;
+  z-index: 0;
+  padding: 8px 0;
+}
+.hl-row { display: flex; align-items: flex-start; }
+.hl-ln {
+  flex: 0 0 var(--hl-gutter, 3ch);
+  box-sizing: border-box;
+  text-align: right;
+  padding-right: 8px;
+  color: var(--vscode-editorLineNumber-foreground, rgba(128, 128, 128, 0.6));
+  border-right: 1px solid var(--vscode-editorIndentGuide-background, rgba(128, 128, 128, 0.15));
+  user-select: none;
+}
+.hl-row-error .hl-ln {
+  color: var(--vscode-editorError-foreground, #f48771);
+  background: var(--vscode-inputValidation-errorBackground, rgba(244, 135, 113, 0.12));
+}
+.hl-code { flex: 1 1 0; min-width: 0; white-space: pre-wrap; word-break: break-word; padding: 0 8px 0 8px; box-sizing: border-box; color: var(--vscode-editor-foreground); }
+
+.hl-tok-key { color: #378ADD; }
+.hl-tok-string { color: #D85A30; }
+.hl-tok-number { color: #BA7517; }
+.hl-tok-keyword { color: #1D9E75; }
+.hl-tok-bson { color: #7F77DD; }
+.hl-tok-punct { color: var(--vscode-descriptionForeground, rgba(128, 128, 128, 0.8)); }
+
+/* search 层: 绝对覆盖, 透明文本 + 命中底色 */
+.highlight-editor-backdrop {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 1;
+}
+.highlight-editor-backdrop-inner {
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 8px 8px 8px var(--hl-gutter, 3ch);
   color: transparent;
 }
 
 .highlight-editor-textarea {
   position: absolute;
   inset: 0;
-  z-index: 1;
+  z-index: 2;
   box-sizing: border-box;
   resize: none;
   border: none;
   outline: none;
   overflow: hidden;
-  padding: 8px;
-  font-family: var(--vscode-editor-font-family, monospace);
-  font-size: var(--vscode-editor-font-size, 13px);
-  line-height: 1.5;
-  color: var(--vscode-editor-foreground);
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 8px 8px 8px var(--hl-gutter, 3ch);
+  color: transparent;
   background: transparent;
   caret-color: var(--vscode-editorCursor-foreground, var(--vscode-editor-foreground));
 }

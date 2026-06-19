@@ -57,6 +57,33 @@ describe('HighlightEditor', () => {
     expect(marks).toHaveLength(0);
   });
 
+  it('renders a line-number gutter (one number per logical line)', () => {
+    const { container } = render(
+      <HighlightEditor value={'{\n  "a": 1\n}'} onChange={() => {}} searchQuery="" activeMatchIndex={-1} />
+    );
+    const gutters = container.querySelectorAll('.hl-ln');
+    expect(gutters).toHaveLength(3);
+    expect(gutters[0].textContent).toBe('1');
+    expect(gutters[2].textContent).toBe('3');
+  });
+
+  it('colorizes tokens (key / number)', () => {
+    const { container } = render(
+      <HighlightEditor value={'{ "a": 1 }'} onChange={() => {}} searchQuery="" activeMatchIndex={-1} />
+    );
+    expect(container.querySelector('.hl-tok-key')?.textContent).toBe('"a"');
+    expect(container.querySelector('.hl-tok-number')?.textContent).toBe('1');
+  });
+
+  it('marks the error line in the gutter', () => {
+    const { container } = render(
+      <HighlightEditor value={'{\n  bad\n}'} onChange={() => {}} searchQuery="" activeMatchIndex={-1} errorLine={2} />
+    );
+    const errorRows = container.querySelectorAll('.hl-row-error');
+    expect(errorRows).toHaveLength(1);
+    expect(errorRows[0].querySelector('.hl-ln')?.textContent).toBe('2');
+  });
+
   it('applies active class to the active match', () => {
     const { container } = render(
       <HighlightEditor

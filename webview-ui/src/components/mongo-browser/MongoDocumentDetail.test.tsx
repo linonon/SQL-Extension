@@ -62,14 +62,16 @@ describe('MongoDocumentDetail - save 流程', () => {
     expect(onSave).toHaveBeenCalledWith(null, { name: 'new' });
   });
 
-  it('J4: 无效 JSON -> 显示 error, 不调用 onSave', () => {
+  it('J4: 无效 JSON -> 显示 error, Save 禁用, 不调用 onSave', () => {
     const onSave = vi.fn();
     render(<MongoDocumentDetail {...defaultProps} document={null} mode="insert" onSave={onSave} />);
 
     const textarea = document.querySelector('.highlight-editor-textarea') as HTMLTextAreaElement;
     fireEvent.change(textarea, { target: { value: '{invalid json' } });
-    fireEvent.click(screen.getByText('Save'));
 
+    const saveBtn = screen.getByText('Save');
+    expect(saveBtn).toBeDisabled();
+    fireEvent.click(saveBtn);
     expect(onSave).not.toHaveBeenCalled();
     expect(document.querySelector('.detail-error')).not.toBeNull();
   });

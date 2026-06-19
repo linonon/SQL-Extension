@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import { useMongoAutocomplete } from '../../hooks/useMongoAutocomplete';
 import { convertShellToJson, stripShellTypes, jsonToShell } from '../../utils/mongo-shell-to-json';
+import { jsonErrorLine } from './mongo-editor-syntax';
 import { findMatches } from '../../utils/text-search';
 import { AutocompletePopup } from '../sql-editor/AutocompletePopup';
 import { HighlightEditor } from './HighlightEditor';
@@ -36,11 +37,21 @@ export function MongoDocumentDetail({ document, mode, fieldNames, onClose, onSav
   );
 
   const [text, setText] = useState(initialText);
-  const [error, setError] = useState('');
   const [toast, setToast] = useState('');
   const [showCopyMenu, setShowCopyMenu] = useState(false);
   const copyMenuRef = useRef<HTMLDivElement>(null);
   const dirty = text !== initialText;
+
+  // 实时校验: 驱动 Save 可用性 + 错误条 + gutter 标红行
+  const validation = useMemo(() => {
+    try {
+      JSON.parse(convertShellToJson(text));
+      return { ok: true, error: '', line: null as number | null };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Invalid JSON';
+      return { ok: false, error: msg, line: jsonErrorLine(text, msg) };
+    }
+  }, [text]);
 
   // search state
   const [showSearch, setShowSearch] = useState(false);
@@ -119,12 +130,9 @@ export function MongoDocumentDetail({ document, mode, fieldNames, onClose, onSav
 
   const handleSave = useCallback(() => {
     try {
-      const jsonText = convertShellToJson(text);
-      const parsed = JSON.parse(jsonText) as Record<string, unknown>;
-      setError('');
+      const parsed = JSON.parse(convertShellToJson(text)) as Record<string, unknown>;
       onSave(mode === 'edit' ? docId : null, parsed);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Invalid JSON');
+    } catch {
       onSaveError?.();
     }
   }, [text, mode, docId, onSave, onSaveError]);
@@ -196,21 +204,19 @@ export function MongoDocumentDetail({ document, mode, fieldNames, onClose, onSav
             </div>
             <button className="btn-small" onClick={openSearch} title="Search (Ctrl+F)">Find</button>
           </div>
-          {/* spacer 把破坏性的 Delete 推离主操作 */}
           <span className="detail-action-spacer" style={{ flex: 1 }} />
-          {mode === 'edit' && (
-            <button className="btn-small btn-danger detail-delete-btn" onClick={handleDelete}>Delete</button>
-          )}
-          {/* 主操作组: Save/Cancel 成一组, 远离 Delete */}
+          {dirty && <span className="detail-dirty-dot" title="未保存的修改">● Unsaved</span>}
+          {/* 主操作组: Save/Cancel 成一组 (Delete 在底部隔离) */}
           <div className="detail-primary-group">
+            <button className="btn-small" onClick={onClose}>Cancel</button>
             <button
               className="btn-small btn-primary"
               onClick={handleSave}
-              disabled={!dirty && mode === 'edit'}
+              disabled={(!dirty && mode === 'edit') || !validation.ok}
+              title={!validation.ok ? 'JSON 无效, 无法保存' : undefined}
             >
               Save
             </button>
-            <button className="btn-small" onClick={onClose}>Cancel</button>
           </div>
         </div>
       </div>
@@ -228,8 +234,11 @@ export function MongoDocumentDetail({ document, mode, fieldNames, onClose, onSav
           </button>
         </div>
       )}
-      {dirty && <div className="detail-dirty-hint">● unsaved changes</div>}
-      {error && <div className="detail-error">{error}</div>}
+      {!validation.ok && (
+        <div className="detail-error">
+          ✕ Invalid JSON{validation.line != null ? ` — line ${validation.line}` : ''}: {validation.error}
+        </div>
+      )}
       {showSearch && (
         <div className="detail-search-bar">
           <input
@@ -256,6 +265,7 @@ export function MongoDocumentDetail({ document, mode, fieldNames, onClose, onSav
           searchQuery={showSearch ? searchQuery : ''}
           activeMatchIndex={activeMatchIndex}
           textareaRef={textareaRef}
+          errorLine={validation.ok ? null : validation.line}
         />
         <AutocompletePopup
           items={completionItems}
@@ -265,6 +275,11 @@ export function MongoDocumentDetail({ document, mode, fieldNames, onClose, onSav
           onSelect={applyCompletion}
         />
       </div>
+      {mode === 'edit' && (
+        <div className="detail-footer">
+          <button className="btn-small btn-danger detail-delete-btn" onClick={handleDelete}>Delete document</button>
+        </div>
+      )}
     </div>
   );
 }
