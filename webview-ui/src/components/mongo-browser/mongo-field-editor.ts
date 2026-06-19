@@ -47,7 +47,7 @@ export function documentToFields(doc: Record<string, unknown>): FieldDescriptor[
 
 // 按叶子转换: 只把"真正的 shell-tag 字符串" (detectLeafType 判为非 string, 来自 deepFormatValue)
 // 还原为 EJSON; 普通字符串/标量原样保留. 递归处理 object/array.
-// 不对整篇文档跑正则 (那会把用户字面字符串如 'ObjectId("xyz")' 误转或让 JSON.parse 崩溃 — C2).
+// 不对整篇文档跑正则 (那会把用户字面字符串如 'ObjectId("xyz")' 误转或让 JSON.parse 崩溃).
 export function convertTags(value: unknown): unknown {
   if (typeof value === 'string') {
     if (detectLeafType(value) !== 'string') {

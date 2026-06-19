@@ -20,7 +20,7 @@ const SUPPORTED_METHODS = new Set([
 
 // 匹配 db.<collection>.<method>(...)
 // collection 用合法 Mongo 集合名字符集 [\w$.-] (支持 my-app.events 这类含 . 和 - 的名字),
-// 而非贪婪 .+ — 后者会回溯进 args (如值里含 "a.b(c)") 而错误切分 method (review round2 #1).
+// 而非贪婪 .+ — 后者会回溯进 args (如值里含 "a.b(c)") 而错误切分 method.
 // 允许末尾分号和空白.
 const QUERY_PATTERN = /^\s*db\.([A-Za-z_$][\w$.-]*)\.(\w+)\s*\(([\s\S]*)\)\s*;?\s*$/;
 

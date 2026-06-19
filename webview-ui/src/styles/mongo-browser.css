@@ -1111,7 +1111,7 @@
 .mongo-doc-card:hover .mongo-doc-card-actions { opacity: 1; }
 .mongo-doc-card-json { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: var(--vscode-editor-font-family, monospace); font-size: 12.5px; line-height: 1.6; }
 
-/* in-card 编辑: 卡片内嵌编辑器, 高度自适应内容并设上限滚动 (不再依赖整面板高度) */
+/* in-card 编辑: 卡片内嵌编辑器, 高度自适应内容并设上限滚动 */
 .mongo-doc-card-editing { padding: 0; border-color: var(--vscode-focusBorder, #007fd4); }
 .mongo-doc-card-editing .mongo-document-detail { height: auto; }
 /* 编辑器默认高度 = 文档内容高度 (backdrop 在普通流撑高); 超大文档封顶 60vh 后内部滚动. */

@@ -242,7 +242,7 @@ export class MongoDriver implements IDatabaseDriver {
     const coll = this.client!.db(database).collection(collection);
     // 把 filter 还原成 BSON. autoConvertIds (24-hex 字符串 -> ObjectId) 是查询编辑器手敲裸字符串的
     // 便利; CRUD 路径 (filter 经 buildIdFilter 已显式带类型) 传 autoConvertIds:false 跳过它,
-    // 否则真字符串 _id (恰好 24-hex) 会被误转成 ObjectId 而匹配不上 (review H1/H3).
+    // 否则真字符串 _id (恰好 24-hex) 会被误转成 ObjectId 而匹配不上.
     const ac = options?.autoConvertIds !== false;
     const toFilter = (a: unknown): Record<string, unknown> => {
       const f = convertEjsonToBson(a ?? {}) as Record<string, unknown>;
@@ -272,7 +272,7 @@ export class MongoDriver implements IDatabaseDriver {
         return { affectedRows: result.insertedCount };
       }
       case 'updateOne': {
-        // affectedRows 取 matchedCount (是否命中): 无改动的局部更新不应误判为"未匹配" (review M2).
+        // affectedRows 取 matchedCount (是否命中): 无改动的局部更新不应误判为"未匹配".
         const filter = toFilter(args[0]);
         const update = convertEjsonToBson(args[1] as Record<string, unknown>) as Record<string, unknown>;
         const result = await coll.updateOne(filter, update);
@@ -280,7 +280,7 @@ export class MongoDriver implements IDatabaseDriver {
       }
       case 'updateMany': {
         const filter = toFilter(args[0]);
-        // 与 updateOne 一致还原 EJSON 类型 ($oid/$date/$numberLong 等), 否则写入畸形子文档 (review M1)
+        // 与 updateOne 一致还原 EJSON 类型 ($oid/$date/$numberLong 等), 否则写入畸形子文档
         const update = convertEjsonToBson(args[1] as Record<string, unknown>) as Record<string, unknown>;
         const result = await coll.updateMany(filter, update);
         return { affectedRows: result.modifiedCount };
@@ -384,7 +384,7 @@ function convertIdValue(value: unknown): unknown {
 }
 
 // 裸字符串 _id 自动转 ObjectId 的便利 (查询/浏览/count/explain 共用单一策略).
-// 递归进 $and/$or/$nor 分支与 _id 的 $in/$nin 数组, 否则这些上下文里的 24-hex 串会静默不命中 (H6).
+// 递归进 $and/$or/$nor 分支与 _id 的 $in/$nin 数组, 否则这些上下文里的 24-hex 串会静默不命中.
 function autoConvertIds(filter: Record<string, unknown>): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(filter)) {

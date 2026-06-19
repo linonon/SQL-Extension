@@ -135,7 +135,7 @@ export function MongoDocumentTable({
   }, []);
 
   // 统一的"未保存改动"守卫: 当有脏编辑器时, 任何会替换/丢弃当前编辑的动作 (切 collection /
-  // Apply / 翻页) 都先弹对话框, 由用户选择 Save / Discard / Cancel (review H6).
+  // Apply / 翻页) 都先弹对话框, 由用户选择 Save / Discard / Cancel.
   const [pendingAction, setPendingAction] = useState<{ confirm: () => void; cancel: () => void } | null>(null);
 
   // 编辑器保存失败 (非法 JSON / 缺 key) 时, 取消挂起的 Save-then-action, 避免之后手动保存误触发它

@@ -83,7 +83,7 @@ export function MongoDocumentCard({
   }
 
   const shellText = jsonToShell(JSON.stringify(doc, null, 2));
-  // 投影排除 _id 时无法定位文档, 增删改禁用 (Copy 仍可用); review M7
+  // 投影排除 _id 时无法定位文档, 增删改禁用 (Copy 仍可用)
   const hasId = doc._id != null;
   const noIdTitle = hasId ? undefined : 'projection 排除了 _id, 无法定位该文档进行增删改';
 

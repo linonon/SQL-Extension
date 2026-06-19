@@ -27,7 +27,7 @@ function collectPlan(plan: PlanNode | undefined): { stages: string[]; indexName?
     if (typeof node.indexName === 'string' && indexName === undefined) { indexName = node.indexName; }
     if (node.inputStage) { walk(node.inputStage); }
     if (Array.isArray(node.inputStages)) { node.inputStages.forEach(walk); }
-    // 分片 explain: winningPlan.shards[].winningPlan 才有真正的 IXSCAN/COLLSCAN (review M9)
+    // 分片 explain: winningPlan.shards[].winningPlan 才有真正的 IXSCAN/COLLSCAN
     if (Array.isArray(node.shards)) { node.shards.forEach((s) => walk(s.winningPlan ?? s)); }
   };
   walk(plan);

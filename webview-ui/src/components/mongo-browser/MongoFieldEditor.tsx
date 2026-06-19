@@ -11,7 +11,7 @@ interface MongoFieldEditorProps {
   readonly saveSignal?: number;
 }
 
-// 合成稳定 id, 作 React key (不可用可变的 r.key, 否则编辑 key 时整行 remount 失焦 — review H7)
+// 合成稳定 id, 作 React key (不可用可变的 r.key, 否则编辑 key 时整行 remount 失焦)
 let rowIdSeq = 0;
 const nextRowId = (): string => `fe-${rowIdSeq++}`;
 
@@ -44,7 +44,7 @@ export function MongoFieldEditor({ document: doc, onSave, onCancel, onDirtyChang
     [doc],
   );
   const [rows, setRows] = useState<FieldRow[]>(initial);
-  // 仅当切换到不同 _id 的文档时重置; 同 _id 的后台 refetch (新对象引用) 不清空在编辑的草稿 (review round2 #6)
+  // 仅当切换到不同 _id 的文档时重置; 同 _id 的后台 refetch (新对象引用) 不清空在编辑的草稿
   const docIdRef = useRef(doc._id);
   useEffect(() => {
     if (docIdRef.current !== doc._id) { docIdRef.current = doc._id; setRows(initial); }
@@ -73,7 +73,7 @@ export function MongoFieldEditor({ document: doc, onSave, onCancel, onDirtyChang
 
   const save = () => {
     try {
-      // 新增字段填了值却没填 key -> 阻止保存而非静默丢弃 (review L2)
+      // 新增字段填了值却没填 key -> 阻止保存而非静默丢弃
       const orphan = rows.find((r) => !r.deleted && r.key.trim() === '' && r.isNew && r.draft.trim() !== '');
       if (orphan) { setError('新增字段缺少字段名 (key)'); onSaveError?.(); return; }
 
@@ -95,7 +95,7 @@ export function MongoFieldEditor({ document: doc, onSave, onCancel, onDirtyChang
     }
   };
 
-  // 父级"未保存切换/Apply"对话框点 Save 时通过 saveSignal 触发本编辑器保存 (review H5)
+  // 父级"未保存切换/Apply"对话框点 Save 时通过 saveSignal 触发本编辑器保存
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { if (saveSignal) { save(); } }, [saveSignal]);
 
