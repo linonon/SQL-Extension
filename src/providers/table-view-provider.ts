@@ -14,9 +14,8 @@ import { handleKafkaMessage } from './kafka-message-handler.js';
 import { handleRabbitMQMessage } from './rabbitmq-message-handler.js';
 import { handleMongoMessage, buildExportPipeline } from './mongo-message-handler.js';
 import { getWebviewContent, getWebviewOptions } from './webview-helper.js';
-import { buildDefaultSelectSql, buildBatchDelete } from '../utils/sql-builder.js';
-import { buildAlterTableStatements } from '../utils/alter-table-builder.js';
-import { isWholeTableWrite } from '../utils/destructive-sql.js';
+import { buildDefaultSelectSql } from '../utils/sql-builder.js';
+import { handleSqlMessage, type SqlMessageContext } from './sql-message-handler.js';
 
 function buildSSHConfig(msg: ConnectionFormSSH): SSHTunnelConfig | undefined {
   if (!msg.sshEnabled) { return undefined; }
@@ -277,149 +276,20 @@ export class TableViewProvider implements vscode.Disposable {
   ): Promise<void> {
     const connectionId = context.connectionId as string | undefined;
 
+    // SQL (MySQL/PostgreSQL) CRUD + db-browser 导航 + dump/import 由 sql-message-handler 处理
+    const sqlCtx: SqlMessageContext = {
+      getDriver: () => this.connectionManager.getDriver(connectionId!),
+      queryService: this.queryService,
+      post: (msg) => panel.webview.postMessage(msg),
+      panel,
+      pendingCancels: this.pendingCancels,
+      database: context.database as string | undefined,
+      getSchema: (database, forceRefresh) => this.getCachedSchema(connectionId!, database, forceRefresh),
+    };
+    if (await handleSqlMessage(message, sqlCtx)) { return; }
+
     try {
       switch (message.type) {
-        case 'fetchRows': {
-          const driver = this.connectionManager.getDriver(connectionId!);
-          const result = await this.queryService.fetchRows(
-            driver,
-            message.database,
-            message.table,
-            message.offset,
-            message.limit
-          );
-          panel.webview.postMessage({
-            type: 'tableData',
-            columns: result.columns,
-            rows: result.rows,
-            total: result.total,
-            offset: result.page.offset,
-            limit: result.page.limit,
-          });
-          break;
-        }
-
-        case 'insertRow': {
-          try {
-            const driver = this.connectionManager.getDriver(connectionId!);
-            await this.queryService.insertRow(driver, message.database, message.table, message.row);
-            panel.webview.postMessage({ type: 'insertRowResult', success: true });
-          } catch (err) {
-            panel.webview.postMessage({
-              type: 'insertRowResult',
-              success: false,
-              error: err instanceof Error ? err.message : String(err),
-            });
-          }
-          break;
-        }
-
-        case 'updateRow': {
-          try {
-            const driver = this.connectionManager.getDriver(connectionId!);
-            await this.queryService.updateRow(
-              driver,
-              message.database,
-              message.table,
-              message.primaryKeys,
-              message.changes
-            );
-            panel.webview.postMessage({ type: 'updateRowResult', success: true });
-          } catch (err) {
-            panel.webview.postMessage({
-              type: 'updateRowResult',
-              success: false,
-              error: err instanceof Error ? err.message : String(err),
-            });
-          }
-          break;
-        }
-
-        case 'deleteRows': {
-          const count = message.primaryKeys.length;
-          const confirmDelete = await vscode.window.showWarningMessage(
-            `Delete ${count} row(s)?`, { modal: true }, 'Delete'
-          );
-          if (confirmDelete !== 'Delete') {
-            // 用户取消: 回执 cancelled, 让前端停止等待而不刷新/不报错
-            panel.webview.postMessage({ type: 'deleteRowsResult', success: false, cancelled: true });
-            break;
-          }
-          try {
-            const driver = this.connectionManager.getDriver(connectionId!);
-            const batchQuery = buildBatchDelete(driver.driverType, message.table, message.primaryKeys, message.database);
-            if (batchQuery.sql) {
-              await driver.execute(batchQuery.sql, batchQuery.params);
-            }
-            panel.webview.postMessage({ type: 'deleteRowsResult', success: true });
-          } catch (err) {
-            panel.webview.postMessage({
-              type: 'deleteRowsResult',
-              success: false,
-              error: err instanceof Error ? err.message : String(err),
-            });
-          }
-          break;
-        }
-
-        case 'listColumns': {
-          const driver = this.connectionManager.getDriver(connectionId!);
-          const cols = await driver.listColumns(message.database, message.table);
-          panel.webview.postMessage({ type: 'columnsResult', columns: cols });
-          break;
-        }
-
-        case 'batchUpdate': {
-          const driver = this.connectionManager.getDriver(connectionId!);
-          // 整批在单个事务内执行, 任一行失败全部回滚 (失败由外层 catch 回 batchUpdateResult)
-          await this.queryService.batchUpdate(
-            driver,
-            message.database,
-            message.table,
-            message.updates
-          );
-          panel.webview.postMessage({ type: 'batchUpdateResult', success: true });
-          break;
-        }
-
-        case 'executeQuery': {
-          // 破坏性操作确认网: DROP/TRUNCATE 及无 WHERE 的整表 DELETE/UPDATE
-          if (isWholeTableWrite(message.sql)) {
-            const confirm = await vscode.window.showWarningMessage(
-              'This query contains a destructive operation (DROP/TRUNCATE, or DELETE/UPDATE without WHERE). Continue?',
-              { modal: true },
-              'Execute'
-            );
-            if (confirm !== 'Execute') {
-              panel.webview.postMessage({ type: 'queryResult', columns: [], rows: [], rowCount: 0, truncated: false });
-              break;
-            }
-          }
-          const driver = this.connectionManager.getDriver(connectionId!);
-          const db = (context.database as string) ?? message.database;
-          const { promise, cancel } = driver.executeCancellable(message.sql, undefined, db);
-          this.pendingCancels.set(panel, cancel);
-          try {
-            const result = await promise;
-            panel.webview.postMessage({
-              type: 'queryResult',
-              columns: result.columns,
-              rows: result.rows,
-              affectedRows: result.affectedRows,
-              executionTime: result.executionTime,
-            });
-          } finally {
-            this.pendingCancels.delete(panel);
-          }
-          break;
-        }
-
-        case 'cancelQuery': {
-          const cancel = this.pendingCancels.get(panel);
-          if (cancel) { cancel(); }
-          break;
-        }
-
         case 'testConnection': {
           await this.testConnection(panel, message.config);
           break;
@@ -435,180 +305,10 @@ export class TableViewProvider implements vscode.Disposable {
           break;
         }
 
-        case 'fetchTableDetails': {
-          const driver = this.connectionManager.getDriver(connectionId!);
-          const columns = await driver.getDetailedColumns(message.database, message.table);
-          panel.webview.postMessage({ type: 'tableDetails', columns, tableName: message.table });
-          break;
-        }
-
-        case 'previewAlterTable': {
-          const driver = this.connectionManager.getDriver(connectionId!);
-          const stmts = buildAlterTableStatements(driver.driverType, message.table, message.changes);
-          panel.webview.postMessage({
-            type: 'alterTableResult',
-            success: true,
-            ddlPreview: stmts.join('\n'),
-          });
-          break;
-        }
-
-        case 'alterTable': {
-          const driver = this.connectionManager.getDriver(connectionId!);
-          const stmts = buildAlterTableStatements(driver.driverType, message.table, message.changes);
-          let executed = 0;
-          try {
-            for (const stmt of stmts) {
-              const { promise } = driver.executeCancellable(stmt, undefined, message.database);
-              await promise;
-              executed++;
-            }
-            panel.webview.postMessage({ type: 'alterTableResult', success: true });
-          } catch (err) {
-            const base = err instanceof Error ? err.message : String(err);
-            // 多条 DDL 非原子 (MySQL DDL 隐式提交无法回滚): 明确回报已执行/未执行边界,
-            // 防用户基于陈旧结构重试重复已落库的改动
-            const detail = stmts.length > 1
-              ? `${base} (已执行 ${executed}/${stmts.length} 条, 表结构可能部分变更)`
-              : base;
-            panel.webview.postMessage({ type: 'alterTableResult', success: false, error: detail });
-          }
-          // 无论成败都刷新列信息, 让 UI 基线与 DB 实际状态一致 (rename 后用新表名)
-          const refreshTable = message.changes.renamedTable ?? message.table;
-          try {
-            const freshColumns = await driver.getDetailedColumns(message.database, refreshTable);
-            panel.webview.postMessage({ type: 'tableDetails', columns: freshColumns, tableName: refreshTable });
-          } catch { /* 刷新失败忽略: 主操作结果已回报 */ }
-          break;
-        }
-
-        case 'exportCsv': {
-          const uri = await vscode.window.showSaveDialog({
-            filters: { 'CSV Files': ['csv'] },
-            defaultUri: vscode.Uri.file(message.defaultFileName),
-          });
-          if (uri) {
-            await vscode.workspace.fs.writeFile(uri, Buffer.from(message.content, 'utf-8'));
-            vscode.window.showInformationMessage(`Exported to ${uri.fsPath}`);
-          }
-          break;
-        }
-
-        case 'requestSchema': {
-          const cacheKey = `${connectionId}:${message.database}`;
-          const cached = this.schemaCache.get(cacheKey);
-          if (cached && Date.now() - cached.ts < this.SCHEMA_CACHE_TTL) {
-            panel.webview.postMessage({ type: 'schemaInfo', schema: cached.schema });
-            break;
-          }
-          const schema = await this.fetchSchema(connectionId!, message.database);
-          this.schemaCache.set(cacheKey, { schema, ts: Date.now() });
-          panel.webview.postMessage({ type: 'schemaInfo', schema });
-          break;
-        }
-
-        case 'refreshSchema': {
-          const refreshKey = `${connectionId}:${message.database}`;
-          this.schemaCache.delete(refreshKey);
-          const freshSchema = await this.fetchSchema(connectionId!, message.database);
-          this.schemaCache.set(refreshKey, { schema: freshSchema, ts: Date.now() });
-          panel.webview.postMessage({ type: 'schemaInfo', schema: freshSchema });
-          break;
-        }
-
         default: {
-          // db-browser messages
-          if (message.type === 'listDatabasesAndTables' || message.type === 'refreshDatabases') {
-            const driver = this.connectionManager.getDriver(connectionId!);
-            try {
-              const dbNames = await driver.listDatabases();
-              const databases = await Promise.all(
-                dbNames.map(async (name) => {
-                  const tables = await driver.listTables(name);
-                  return {
-                    name,
-                    tables: tables.map((t) => ({ name: t.name, rowCount: t.rowCount })),
-                  };
-                })
-              );
-              panel.webview.postMessage({ type: 'databaseTableList', databases });
-            } catch (err) {
-              panel.webview.postMessage({
-                type: 'databaseTableList',
-                databases: [],
-                error: err instanceof Error ? err.message : String(err),
-              });
-            }
-            return;
-          }
-
           if (message.type === 'showTableDDL') {
             const { database, table } = message as { database: string; table: string };
             this.showTableDDL(connectionId!, database, table);
-            return;
-          }
-
-          if (message.type === 'dumpTable') {
-            const { database, table, includeData } = message as { database: string; table: string; includeData: boolean };
-            const driver = this.connectionManager.getDriver(connectionId!);
-            const baseDir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? require('os').homedir();
-            const ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
-            const uri = await vscode.window.showSaveDialog({
-              filters: { 'SQL Files': ['sql'] },
-              defaultUri: vscode.Uri.file(`${baseDir}/${table}_${ts}.sql`),
-            });
-            if (!uri) { return; }
-            if (includeData) {
-              const { DumpService } = await import('../services/dump-service.js');
-              const dumpService = new DumpService();
-              await vscode.window.withProgress(
-                { location: vscode.ProgressLocation.Notification, title: `Dumping ${table}...`, cancellable: true },
-                async (progress, token) => {
-                  const content = await dumpService.dumpStructAndData(
-                    driver, database, table,
-                    (current, total) => { progress.report({ increment: 0, message: `${current}/${total} rows` }); },
-                    token
-                  );
-                  await vscode.workspace.fs.writeFile(uri, Buffer.from(content, 'utf-8'));
-                  vscode.window.showInformationMessage(`Data dumped to ${uri.fsPath}`);
-                }
-              );
-            } else {
-              const { DumpService } = await import('../services/dump-service.js');
-              const dumpService = new DumpService();
-              const content = await dumpService.dumpStruct(driver, database, table);
-              await vscode.workspace.fs.writeFile(uri, Buffer.from(content, 'utf-8'));
-              vscode.window.showInformationMessage(`Struct dumped to ${uri.fsPath}`);
-            }
-            return;
-          }
-
-          if (message.type === 'importSql') {
-            const { database } = message as { database: string; table?: string };
-            const uris = await vscode.window.showOpenDialog({
-              filters: { 'SQL Files': ['sql'] },
-              canSelectMany: false,
-            });
-            if (!uris || uris.length === 0) { return; }
-            const fileContent = await vscode.workspace.fs.readFile(uris[0]);
-            const sql = Buffer.from(fileContent).toString('utf-8');
-            const driver = this.connectionManager.getDriver(connectionId!);
-            try {
-              const { promise } = driver.executeCancellable(sql, undefined, database);
-              const result = await promise;
-              vscode.window.showInformationMessage(`SQL imported. Affected rows: ${result.affectedRows}`);
-              // 刷新左侧列表
-              const dbNames = await driver.listDatabases();
-              const databases = await Promise.all(
-                dbNames.map(async (name) => {
-                  const tables = await driver.listTables(name);
-                  return { name, tables: tables.map((t) => ({ name: t.name, rowCount: t.rowCount })) };
-                })
-              );
-              panel.webview.postMessage({ type: 'databaseTableList', databases });
-            } catch (err) {
-              vscode.window.showErrorMessage(`Import failed: ${err instanceof Error ? err.message : String(err)}`);
-            }
             return;
           }
 
@@ -913,25 +613,31 @@ export class TableViewProvider implements vscode.Disposable {
       }
     } catch (err) {
       // 脱敏处理: 过滤可能包含凭证的 URL 格式错误消息
+      // (SQL 路径的特定回执 queryResult/batchUpdateResult 已在 sql-message-handler 内自管)
       const safeMessage = (err instanceof Error)
         ? err.message.replace(/([a-z][a-z0-9+\-.]*:\/\/)[^@\s]*@/gi, '$1***@')
         : String(err);
-
-      if (message.type === 'executeQuery') {
-        panel.webview.postMessage({
-          type: 'queryResult',
-          columns: [],
-          rows: [],
-          affectedRows: 0,
-          executionTime: 0,
-          error: safeMessage,
-        });
-      } else if (message.type === 'batchUpdate') {
-        panel.webview.postMessage({ type: 'batchUpdateResult', success: false, error: safeMessage });
-      } else {
-        panel.webview.postMessage({ type: 'error', message: safeMessage });
-      }
+      panel.webview.postMessage({ type: 'error', message: safeMessage });
     }
+  }
+
+  // schema 读取 + 缓存 (供 sql-message-handler 的 requestSchema/refreshSchema 调用)
+  private async getCachedSchema(
+    connectionId: string,
+    database: string,
+    forceRefresh: boolean
+  ): Promise<Record<string, string[]>> {
+    const key = `${connectionId}:${database}`;
+    if (forceRefresh) {
+      this.schemaCache.delete(key);
+    }
+    const cached = this.schemaCache.get(key);
+    if (cached && Date.now() - cached.ts < this.SCHEMA_CACHE_TTL) {
+      return cached.schema;
+    }
+    const schema = await this.fetchSchema(connectionId, database);
+    this.schemaCache.set(key, { schema, ts: Date.now() });
+    return schema;
   }
 
   private async fetchSchema(connectionId: string, database: string): Promise<Record<string, string[]>> {
