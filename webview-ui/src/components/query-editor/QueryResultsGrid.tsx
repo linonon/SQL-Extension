@@ -64,7 +64,8 @@ export function QueryResultsGrid({
   const { addChange, isCellChanged, getCellValue, buildUpdates, clearChanges, pendingCount } =
     useBatchEdits();
 
-  // rows 引用变化(save 成功后 re-query) -> 清空 pending + selection
+  // rows 引用变化 (save/insert 成功后 re-query, 或用户重跑查询) -> 清空 pending + selection.
+  // 排序触发的重跑已在 handleSortGuarded 拦截 (有未保存编辑时不放行), 避免此处静默丢弃草稿.
   useEffect(() => {
     clearChanges();
     setRowSelection({});
@@ -136,6 +137,19 @@ export function QueryResultsGrid({
     onInsertRow?.(row);
     setCloneRow(null);
   }, [onInsertRow]);
+
+  // 排序会重跑查询并刷新 rows, 进而清空未保存的 pending 编辑; 有未保存改动时先拦, 避免静默丢失
+  const handleSortGuarded = useCallback(
+    (columnId: string) => {
+      if (pendingCount > 0) {
+        setCellError(`有 ${pendingCount} 处未保存编辑, 请先保存 (Cmd+S) 或撤销后再排序`);
+        return;
+      }
+      setCellError(null);
+      onSort?.(columnId);
+    },
+    [pendingCount, onSort]
+  );
 
   const handleExportCsv = useCallback(() => {
     if (selectedIndices.length === 0 || !onExportCsv) return;
@@ -232,7 +246,7 @@ export function QueryResultsGrid({
           onCellDoubleClick={handleCellDoubleClick}
           commitEdit={commitEdit}
           sortState={sortState}
-          onSort={onSort}
+          onSort={onSort ? handleSortGuarded : undefined}
           rowSelection={rowSelection}
           onRowSelectionChange={setRowSelection}
           scrollContainerRef={scrollContainerRef}

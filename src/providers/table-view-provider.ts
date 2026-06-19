@@ -16,6 +16,7 @@ import { handleMongoMessage, buildExportPipeline } from './mongo-message-handler
 import { getWebviewContent, getWebviewOptions } from './webview-helper.js';
 import { buildDefaultSelectSql, buildBatchDelete } from '../utils/sql-builder.js';
 import { buildAlterTableStatements } from '../utils/alter-table-builder.js';
+import { isWholeTableWrite } from '../utils/destructive-sql.js';
 
 function buildSSHConfig(msg: ConnectionFormSSH): SSHTunnelConfig | undefined {
   if (!msg.sshEnabled) { return undefined; }
@@ -382,11 +383,10 @@ export class TableViewProvider implements vscode.Disposable {
         }
 
         case 'executeQuery': {
-          // 检查是否包含破坏性操作
-          const DANGEROUS_PATTERN = /^\s*(DROP|TRUNCATE|DELETE\s+FROM\s+\w[\w.]*\s*(?:;|$))/im;
-          if (DANGEROUS_PATTERN.test(message.sql)) {
+          // 破坏性操作确认网: DROP/TRUNCATE 及无 WHERE 的整表 DELETE/UPDATE
+          if (isWholeTableWrite(message.sql)) {
             const confirm = await vscode.window.showWarningMessage(
-              'This query contains a destructive operation (DROP/TRUNCATE/DELETE). Continue?',
+              'This query contains a destructive operation (DROP/TRUNCATE, or DELETE/UPDATE without WHERE). Continue?',
               { modal: true },
               'Execute'
             );
