@@ -1006,7 +1006,9 @@
   color: var(--vscode-editorError-foreground, #f48771);
   background: var(--vscode-inputValidation-errorBackground, rgba(244, 135, 113, 0.12));
 }
-.hl-code { flex: 1 1 0; min-width: 0; white-space: pre-wrap; word-break: break-word; padding: 0 8px 0 8px; box-sizing: border-box; color: var(--vscode-editor-foreground); }
+/* padding-left 必须为 0: 代码文本起点 = 槽宽 var(--hl-gutter), 与 textarea/search 的
+   padding-left:var(--hl-gutter) 严格对齐. 任何 left padding 都会让彩色文本相对光标偏移 (错位 bug). */
+.hl-code { flex: 1 1 0; min-width: 0; white-space: pre-wrap; word-break: break-word; padding: 0 8px 0 0; box-sizing: border-box; color: var(--vscode-editor-foreground); }
 
 .hl-tok-key { color: #378ADD; }
 .hl-tok-string { color: #D85A30; }
