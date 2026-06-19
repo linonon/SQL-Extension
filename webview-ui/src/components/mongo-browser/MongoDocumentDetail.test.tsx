@@ -76,6 +76,18 @@ describe('MongoDocumentDetail - save 流程', () => {
     expect(document.querySelector('.detail-error')).not.toBeNull();
   });
 
+  it('J4b: 非法 ISODate 值 -> Save 禁用 + 错误 (防静默写 epoch 0)', () => {
+    const onSave = vi.fn();
+    const doc = { _id: 'ObjectId("507f1f77bcf86cd799439011")', name: 'x' };
+    render(<MongoDocumentDetail {...defaultProps} document={doc} mode="edit" onSave={onSave} />);
+    const textarea = document.querySelector('.highlight-editor-textarea') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: '{ "d": ISODate("2026-04-07sdT02:56:51.053Z") }' } });
+    expect(screen.getByText('Save')).toBeDisabled();
+    expect(document.querySelector('.detail-error')?.textContent ?? '').toMatch(/日期|date/i);
+    fireEvent.click(screen.getByText('Save'));
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
   it('J5: P0 round-trip ObjectId - shell 展示 -> save 时类型标记保留', () => {
     const onSave = vi.fn();
     // 模拟后端返回的 document (value 是 shell 语法字符串, 存储在 JS object 中)

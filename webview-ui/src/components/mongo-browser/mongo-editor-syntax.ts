@@ -78,17 +78,54 @@ export function tokenizeMongoJson(text: string): Token[] {
   return tokens;
 }
 
+// text[idx] 所在行号 (1-based)
+export function lineOfIndex(text: string, idx: number): number {
+  const end = Math.min(idx, text.length);
+  let line = 1;
+  for (let i = 0; i < end; i++) { if (text[i] === '\n') { line++; } }
+  return line;
+}
+
 // 从 JSON.parse 错误信息映射到行号 (1-based); 无定位信息返回 null.
 export function jsonErrorLine(text: string, message: string): number | null {
   if (!message) { return null; }
   const lineM = /line (\d+)/i.exec(message);
   if (lineM) { return Number(lineM[1]); }
   const posM = /position (\d+)/i.exec(message);
-  if (posM) {
-    const pos = Math.min(Number(posM[1]), text.length);
-    let line = 1;
-    for (let i = 0; i < pos; i++) { if (text[i] === '\n') { line++; } }
-    return line;
-  }
+  if (posM) { return lineOfIndex(text, Number(posM[1])); }
   return null;
+}
+
+export interface EjsonProblem { readonly marker: string; readonly value: string; readonly message: string; }
+
+// 校验 EJSON 标记的"值"合法性 (JSON 语法合法但 BSON 值非法的情况, 如 ISODate 里写错日期).
+// 返回首个问题, 否则 null. 防止非法值静默写库 (如非法日期变 epoch 0).
+export function validateEjsonValues(obj: unknown): EjsonProblem | null {
+  const walk = (v: unknown): EjsonProblem | null => {
+    if (Array.isArray(v)) {
+      for (const x of v) { const p = walk(x); if (p) { return p; } }
+      return null;
+    }
+    if (v === null || typeof v !== 'object') { return null; }
+    const rec = v as Record<string, unknown>;
+    const keys = Object.keys(rec);
+    if (keys.length === 1) {
+      const k = keys[0];
+      const val = rec[k];
+      const s = String(val);
+      if (k === '$date') {
+        const d = typeof val === 'number' ? new Date(val) : new Date(s);
+        if (Number.isNaN(d.getTime())) { return { marker: k, value: s, message: `无效日期: "${s}"` }; }
+      } else if (k === '$oid') {
+        if (!/^[0-9a-fA-F]{24}$/.test(s)) { return { marker: k, value: s, message: `无效 ObjectId (需 24 位 hex): "${s}"` }; }
+      } else if (k === '$numberLong' || k === '$numberInt') {
+        if (!/^-?\d+$/.test(s)) { return { marker: k, value: s, message: `无效整数: "${s}"` }; }
+      } else if (k === '$numberDecimal') {
+        if (s.trim() === '' || Number.isNaN(Number(s))) { return { marker: k, value: s, message: `无效数字: "${s}"` }; }
+      }
+    }
+    for (const key of keys) { const p = walk(rec[key]); if (p) { return p; } }
+    return null;
+  };
+  return walk(obj);
 }

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import { useMongoAutocomplete } from '../../hooks/useMongoAutocomplete';
 import { convertShellToJson, stripShellTypes, jsonToShell } from '../../utils/mongo-shell-to-json';
-import { jsonErrorLine } from './mongo-editor-syntax';
+import { jsonErrorLine, validateEjsonValues, lineOfIndex } from './mongo-editor-syntax';
 import { findMatches } from '../../utils/text-search';
 import { AutocompletePopup } from '../sql-editor/AutocompletePopup';
 import { HighlightEditor } from './HighlightEditor';
@@ -42,15 +42,22 @@ export function MongoDocumentDetail({ document, mode, fieldNames, onClose, onSav
   const copyMenuRef = useRef<HTMLDivElement>(null);
   const dirty = text !== initialText;
 
-  // 实时校验: 驱动 Save 可用性 + 错误条 + gutter 标红行
+  // 实时校验: JSON 语法 + EJSON 值合法性 (如 ISODate 里的日期是否真有效).
+  // 驱动 Save 可用性 + 错误条 + gutter 标红行. 防止非法值静默写库 (非法日期会变 epoch 0).
   const validation = useMemo(() => {
+    let parsed: unknown;
     try {
-      JSON.parse(convertShellToJson(text));
-      return { ok: true, error: '', line: null as number | null };
+      parsed = JSON.parse(convertShellToJson(text));
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Invalid JSON';
       return { ok: false, error: msg, line: jsonErrorLine(text, msg) };
     }
+    const problem = validateEjsonValues(parsed);
+    if (problem) {
+      const idx = text.indexOf(problem.value);
+      return { ok: false, error: problem.message, line: idx >= 0 ? lineOfIndex(text, idx) : null as number | null };
+    }
+    return { ok: true, error: '', line: null as number | null };
   }, [text]);
 
   // search state

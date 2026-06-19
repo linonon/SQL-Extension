@@ -82,15 +82,41 @@ export function convertShellToJson(input: string): string {
 
 // --- Extended JSON 标记转 BSON 实例 ---
 
+// 防御: 非法值显式抛错, 避免静默落库 (如非法日期 new Date(NaN) 被存成 epoch 0).
 const EJSON_CONVERTERS: ReadonlyArray<{
   readonly key: string;
   readonly convert: (value: unknown) => unknown;
 }> = [
   { key: '$oid', convert: (v) => new ObjectId(v as string) },
-  { key: '$date', convert: (v) => new Date(v as string) },
-  { key: '$numberLong', convert: (v) => Long.fromString(String(v)) },
-  { key: '$numberInt', convert: (v) => new Int32(Number(v)) },
-  { key: '$numberDecimal', convert: (v) => new Decimal128(String(v)) },
+  {
+    key: '$date',
+    convert: (v) => {
+      const d = typeof v === 'number' ? new Date(v) : new Date(String(v));
+      if (Number.isNaN(d.getTime())) { throw new Error(`Invalid $date value: ${String(v)}`); }
+      return d;
+    },
+  },
+  {
+    key: '$numberLong',
+    convert: (v) => {
+      if (!/^-?\d+$/.test(String(v))) { throw new Error(`Invalid $numberLong value: ${String(v)}`); }
+      return Long.fromString(String(v));
+    },
+  },
+  {
+    key: '$numberInt',
+    convert: (v) => {
+      if (!/^-?\d+$/.test(String(v))) { throw new Error(`Invalid $numberInt value: ${String(v)}`); }
+      return new Int32(Number(v));
+    },
+  },
+  {
+    key: '$numberDecimal',
+    convert: (v) => {
+      if (String(v).trim() === '' || Number.isNaN(Number(v))) { throw new Error(`Invalid $numberDecimal value: ${String(v)}`); }
+      return new Decimal128(String(v));
+    },
+  },
   { key: '$minKey', convert: () => new MinKey() },
   { key: '$maxKey', convert: () => new MaxKey() },
 ];

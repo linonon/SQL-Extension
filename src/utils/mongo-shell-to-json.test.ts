@@ -171,6 +171,15 @@ describe('convertEjsonToBson', () => {
     expect((result as Date).toISOString()).toBe('2024-01-15T00:00:00.000Z');
   });
 
+  it('拒绝非法 $date, 不静默变 epoch 0 (防御)', () => {
+    expect(() => convertEjsonToBson({ $date: '2026-04-07sdT02:56:51.053Z' })).toThrow(/date/i);
+  });
+
+  it('拒绝非法 $numberInt / $numberLong (防御)', () => {
+    expect(() => convertEjsonToBson({ $numberInt: 'abc' })).toThrow();
+    expect(() => convertEjsonToBson({ $numberLong: 'xyz' })).toThrow();
+  });
+
   it('{"$numberLong":"123"} 转为 Long 实例', () => {
     const result = convertEjsonToBson({ $numberLong: '123' });
     expect(result).toBeInstanceOf(Long);

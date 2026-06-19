@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { tokenizeMongoJson, jsonErrorLine } from './mongo-editor-syntax';
+import { tokenizeMongoJson, jsonErrorLine, validateEjsonValues, lineOfIndex } from './mongo-editor-syntax';
 
 describe('tokenizeMongoJson', () => {
   it('字符保真: 拼接所有 token === 原文', () => {
@@ -36,6 +36,37 @@ describe('tokenizeMongoJson', () => {
   it('裸减号 (非数字) 不误判为 number', () => {
     const toks = tokenizeMongoJson('- 1');
     expect(toks[0].type).not.toBe('number');
+  });
+});
+
+describe('validateEjsonValues', () => {
+  it('合法 EJSON 值 -> null', () => {
+    expect(validateEjsonValues({
+      a: { $date: '2026-04-07T02:56:51.053Z' },
+      b: { $oid: '507f1f77bcf86cd799439011' },
+      c: { $numberLong: '-42' },
+    })).toBeNull();
+  });
+  it('非法日期 -> 报告 (含原值)', () => {
+    const p = validateEjsonValues({ updatedAt: { $date: '2026-04-07sdT02:56:51.053Z' } });
+    expect(p).not.toBeNull();
+    expect(p!.value).toBe('2026-04-07sdT02:56:51.053Z');
+    expect(p!.message).toMatch(/日期|date/i);
+  });
+  it('非法 ObjectId / 整数 / decimal', () => {
+    expect(validateEjsonValues({ x: { $oid: 'xyz' } })).not.toBeNull();
+    expect(validateEjsonValues({ x: { $numberLong: 'abc' } })).not.toBeNull();
+    expect(validateEjsonValues({ x: { $numberDecimal: 'nope' } })).not.toBeNull();
+  });
+  it('嵌套 / 数组内也检查', () => {
+    expect(validateEjsonValues({ arr: [{ $date: 'nope' }] })).not.toBeNull();
+  });
+});
+
+describe('lineOfIndex', () => {
+  it('按 \\n 计数返回 1-based 行号', () => {
+    expect(lineOfIndex('a\nbX\nc', 3)).toBe(2);
+    expect(lineOfIndex('abc', 0)).toBe(1);
   });
 });
 
