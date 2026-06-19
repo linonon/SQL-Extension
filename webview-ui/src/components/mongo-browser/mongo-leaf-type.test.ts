@@ -14,6 +14,12 @@ describe('detectLeafType', () => {
     expect(detectLeafType('NumberInt(-5)')).toBe('Int');
   });
 
+  it('识别 UUID / BinData / Timestamp shell-tag — H3', () => {
+    expect(detectLeafType('UUID("b26ddf70-e8e9-4e7d-9fe9-f05eb8ec872a")')).toBe('UUID');
+    expect(detectLeafType('BinData(0,"AQIDBA==")')).toBe('Binary');
+    expect(detectLeafType('Timestamp(1700000000,5)')).toBe('Timestamp');
+  });
+
   it('形似 tag 但内容非法的字符串归为 string (避免误转/崩溃)', () => {
     expect(detectLeafType('ObjectId("xyz")')).toBe('string'); // 非 24-hex
     expect(detectLeafType('NumberInt(abc)')).toBe('string');

@@ -10,6 +10,7 @@ interface TreeNodeProps {
 const LEAF_CLASS: Record<LeafType, string> = {
   ObjectId: 'leaf-id', Date: 'leaf-date', Long: 'leaf-num', Int: 'leaf-num',
   Decimal128: 'leaf-num', MinKey: 'leaf-key', MaxKey: 'leaf-key',
+  UUID: 'leaf-id', Binary: 'leaf-id', Timestamp: 'leaf-date',
   string: 'leaf-str', number: 'leaf-num', boolean: 'leaf-bool', null: 'leaf-null',
 };
 

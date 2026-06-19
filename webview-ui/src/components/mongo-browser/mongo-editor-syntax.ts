@@ -8,7 +8,7 @@ export interface Token {
 
 const BSON_CTORS = new Set([
   'ObjectId', 'ISODate', 'Date', 'NumberLong', 'Long', 'NumberInt', 'Int32',
-  'NumberDecimal', 'Decimal128', 'MinKey', 'MaxKey', 'new',
+  'NumberDecimal', 'Decimal128', 'UUID', 'BinData', 'Timestamp', 'MinKey', 'MaxKey', 'new',
 ]);
 
 // 把 mongo shell-JSON 文本切成带类型的 token. 不变量: 拼接所有 token.text === 原文 (保证与 textarea 对齐).
@@ -98,8 +98,23 @@ export function jsonErrorLine(text: string, message: string): number | null {
 
 export interface EjsonProblem { readonly marker: string; readonly value: string; readonly message: string; }
 
-// 校验 EJSON 标记的"值"合法性 (JSON 语法合法但 BSON 值非法的情况, 如 ISODate 里写错日期).
-// 返回首个问题, 否则 null. 防止非法值静默写库 (如非法日期变 epoch 0).
+// 必须与后端 EJSON_CONVERTERS (src/utils/mongo-shell-to-json.ts) 的接受值集一致, 否则前端放行 / 后端抛错.
+const EJSON_MARKERS = new Set([
+  '$oid', '$date', '$numberLong', '$numberInt', '$numberDecimal',
+  '$uuid', '$binary', '$timestamp', '$minKey', '$maxKey',
+]);
+const INT32_MIN = -2147483648n;
+const INT32_MAX = 2147483647n;
+const INT64_MIN = -(2n ** 63n);
+const INT64_MAX = 2n ** 63n - 1n;
+const DECIMAL_RE = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
+
+function outOfRange(s: string, min: bigint, max: bigint): boolean {
+  try { const b = BigInt(s); return b < min || b > max; } catch { return true; }
+}
+
+// 校验 EJSON 标记的"值"合法性 (JSON 语法合法但 BSON 值非法的情况, 如 ISODate 写错日期 / 整数越界).
+// 返回首个问题, 否则 null. 防止非法值静默写库 (非法日期变 epoch 0, 越界整数被回绕).
 export function validateEjsonValues(obj: unknown): EjsonProblem | null {
   const walk = (v: unknown): EjsonProblem | null => {
     if (Array.isArray(v)) {
@@ -109,6 +124,11 @@ export function validateEjsonValues(obj: unknown): EjsonProblem | null {
     if (v === null || typeof v !== 'object') { return null; }
     const rec = v as Record<string, unknown>;
     const keys = Object.keys(rec);
+    // EJSON 标记与其他字段共存即畸形 wrapper (后端按字面子文档处理 / Mongo 拒绝 $ 字段名).
+    const markerKey = keys.find((k) => EJSON_MARKERS.has(k));
+    if (markerKey && keys.length > 1) {
+      return { marker: markerKey, value: markerKey, message: `EJSON 标记 ${markerKey} 不能与其他字段共存` };
+    }
     if (keys.length === 1) {
       const k = keys[0];
       const val = rec[k];
@@ -118,10 +138,19 @@ export function validateEjsonValues(obj: unknown): EjsonProblem | null {
         if (Number.isNaN(d.getTime())) { return { marker: k, value: s, message: `无效日期: "${s}"` }; }
       } else if (k === '$oid') {
         if (!/^[0-9a-fA-F]{24}$/.test(s)) { return { marker: k, value: s, message: `无效 ObjectId (需 24 位 hex): "${s}"` }; }
-      } else if (k === '$numberLong' || k === '$numberInt') {
+      } else if (k === '$numberInt') {
         if (!/^-?\d+$/.test(s)) { return { marker: k, value: s, message: `无效整数: "${s}"` }; }
+        if (outOfRange(s, INT32_MIN, INT32_MAX)) { return { marker: k, value: s, message: `整数超出 int32 范围: "${s}"` }; }
+      } else if (k === '$numberLong') {
+        if (!/^-?\d+$/.test(s)) { return { marker: k, value: s, message: `无效整数: "${s}"` }; }
+        if (outOfRange(s, INT64_MIN, INT64_MAX)) { return { marker: k, value: s, message: `整数超出 int64 范围: "${s}"` }; }
       } else if (k === '$numberDecimal') {
-        if (s.trim() === '' || Number.isNaN(Number(s))) { return { marker: k, value: s, message: `无效数字: "${s}"` }; }
+        const t = s.trim();
+        if (!(DECIMAL_RE.test(t) || /^[+-]?Infinity$/i.test(t) || /^NaN$/i.test(t))) {
+          return { marker: k, value: s, message: `无效数字: "${s}"` };
+        }
+      } else if (k === '$uuid') {
+        if (!/^[0-9a-fA-F]{32}$/.test(s.replace(/-/g, ''))) { return { marker: k, value: s, message: `无效 UUID: "${s}"` }; }
       }
     }
     for (const key of keys) { const p = walk(rec[key]); if (p) { return p; } }

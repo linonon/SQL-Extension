@@ -21,6 +21,9 @@ describe('tokenizeMongoJson', () => {
     expect(tokenizeMongoJson('ObjectId')[0].type).toBe('bson');
     expect(tokenizeMongoJson('ISODate')[0].type).toBe('bson');
     expect(tokenizeMongoJson('NumberLong')[0].type).toBe('bson');
+    expect(tokenizeMongoJson('UUID')[0].type).toBe('bson');
+    expect(tokenizeMongoJson('BinData')[0].type).toBe('bson');
+    expect(tokenizeMongoJson('Timestamp')[0].type).toBe('bson');
     expect(tokenizeMongoJson('{')[0].type).toBe('punct');
     expect(tokenizeMongoJson(',')[0].type).toBe('punct');
   });
@@ -60,6 +63,27 @@ describe('validateEjsonValues', () => {
   });
   it('嵌套 / 数组内也检查', () => {
     expect(validateEjsonValues({ arr: [{ $date: 'nope' }] })).not.toBeNull();
+  });
+  it('整数越界 (int32 / int64) 报告, 不静默回绕 — H1', () => {
+    expect(validateEjsonValues({ x: { $numberInt: '2147483648' } })).not.toBeNull();
+    expect(validateEjsonValues({ x: { $numberInt: '2147483647' } })).toBeNull();
+    expect(validateEjsonValues({ x: { $numberLong: '9223372036854775808' } })).not.toBeNull();
+    expect(validateEjsonValues({ x: { $numberLong: '9223372036854775807' } })).toBeNull();
+  });
+  it('EJSON 标记与兄弟字段共存 -> 畸形 wrapper 报告 — H5', () => {
+    expect(validateEjsonValues({ x: { $date: '2024-01-01T00:00:00.000Z', extra: 1 } })).not.toBeNull();
+    expect(validateEjsonValues({ x: { $oid: '507f1f77bcf86cd799439011', y: 2 } })).not.toBeNull();
+    // 纯 query operator 多 key (无 EJSON 标记) 不误报
+    expect(validateEjsonValues({ x: { $gt: 1, $lt: 5 } })).toBeNull();
+  });
+  it('$numberDecimal 严格语法: 拒 0x, 接受合法 — L3', () => {
+    expect(validateEjsonValues({ x: { $numberDecimal: '0x10' } })).not.toBeNull();
+    expect(validateEjsonValues({ x: { $numberDecimal: '1.5' } })).toBeNull();
+    expect(validateEjsonValues({ x: { $numberDecimal: '1e10' } })).toBeNull();
+  });
+  it('$uuid 非法格式报告', () => {
+    expect(validateEjsonValues({ x: { $uuid: 'not-a-uuid' } })).not.toBeNull();
+    expect(validateEjsonValues({ x: { $uuid: 'b26ddf70-e8e9-4e7d-9fe9-f05eb8ec872a' } })).toBeNull();
   });
 });
 

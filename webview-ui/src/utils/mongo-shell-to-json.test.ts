@@ -47,6 +47,22 @@ describe('convertShellToJson', () => {
       .toBe('{"$numberDecimal":"3.14"}');
   });
 
+  it('Long/Int32/Decimal128 别名 (与后端对齐) — M1', () => {
+    expect(convertShellToJson('Long(999)')).toBe('{"$numberLong":"999"}');
+    expect(convertShellToJson('Long("999")')).toBe('{"$numberLong":"999"}');
+    expect(convertShellToJson('Int32(42)')).toBe('{"$numberInt":"42"}');
+    expect(convertShellToJson('Decimal128("3.14")')).toBe('{"$numberDecimal":"3.14"}');
+  });
+
+  it('UUID/BinData/Timestamp -> EJSON (与后端对齐) — H3', () => {
+    expect(convertShellToJson('UUID("b26ddf70-e8e9-4e7d-9fe9-f05eb8ec872a")'))
+      .toBe('{"$uuid":"b26ddf70-e8e9-4e7d-9fe9-f05eb8ec872a"}');
+    expect(convertShellToJson('BinData(0,"AQIDBA==")'))
+      .toBe('{"$binary":{"base64":"AQIDBA==","subType":0}}');
+    expect(convertShellToJson('Timestamp(1700000000,5)'))
+      .toBe('{"$timestamp":{"t":1700000000,"i":5}}');
+  });
+
   it('MinKey() -> $minKey', () => {
     expect(convertShellToJson('MinKey()'))
       .toBe('{"$minKey":1}');
@@ -164,6 +180,13 @@ describe('jsonToShell', () => {
   it('还原 NumberDecimal', () => {
     const jsonStr = '"NumberDecimal(\\"3.14\\")"';
     expect(jsonToShell(jsonStr)).toBe('NumberDecimal("3.14")');
+  });
+
+  it('还原 UUID / BinData / Timestamp — H3', () => {
+    expect(jsonToShell('"UUID(\\"b26ddf70-e8e9-4e7d-9fe9-f05eb8ec872a\\")"'))
+      .toBe('UUID("b26ddf70-e8e9-4e7d-9fe9-f05eb8ec872a")');
+    expect(jsonToShell('"BinData(0,\\"AQIDBA==\\")"')).toBe('BinData(0,"AQIDBA==")');
+    expect(jsonToShell('"Timestamp(1700000000,5)"')).toBe('Timestamp(1700000000,5)');
   });
 
   it('还原 MinKey', () => {

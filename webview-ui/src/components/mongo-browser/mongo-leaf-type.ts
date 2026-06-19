@@ -1,5 +1,6 @@
 export type LeafType =
   | 'ObjectId' | 'Date' | 'Long' | 'Int' | 'Decimal128' | 'MinKey' | 'MaxKey'
+  | 'UUID' | 'Binary' | 'Timestamp'
   | 'string' | 'number' | 'boolean' | 'null';
 
 // 判定正则必须与还原正则 (mongo-shell-to-json convertShellToJson/jsonToShell) 对齐:
@@ -10,6 +11,9 @@ const TAG_PATTERNS: ReadonlyArray<{ re: RegExp; type: LeafType }> = [
   { re: /^NumberLong\("-?\d+"\)$/, type: 'Long' },
   { re: /^NumberInt\(-?\d+\)$/, type: 'Int' },
   { re: /^NumberDecimal\(".+"\)$/, type: 'Decimal128' },
+  { re: /^UUID\("[0-9a-fA-F-]+"\)$/, type: 'UUID' },
+  { re: /^BinData\(\d+,"[A-Za-z0-9+/=]*"\)$/, type: 'Binary' },
+  { re: /^Timestamp\(\d+,\d+\)$/, type: 'Timestamp' },
   { re: /^MinKey\(\)$/, type: 'MinKey' },
   { re: /^MaxKey\(\)$/, type: 'MaxKey' },
 ];
