@@ -481,6 +481,16 @@
   user-select: none;
 }
 
+.clone-row-error {
+  margin: 0 16px;
+  padding: 6px 10px;
+  color: var(--vscode-errorForeground);
+  background-color: var(--vscode-inputValidation-errorBackground);
+  border: 1px solid var(--vscode-inputValidation-errorBorder);
+  border-radius: 4px;
+  font-size: 12px;
+}
+
 .clone-row-footer {
   display: flex;
   justify-content: flex-end;

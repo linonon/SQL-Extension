@@ -15,6 +15,7 @@ import { DataGridPagination } from './DataGridPagination';
 import type { ColumnInfo, PageInfo } from '../../types/database';
 import type { ExtensionMessage } from '../../types/messages';
 import { buildInsertRow } from '../../utils/insert-row';
+import { validateCellValue } from '../../utils/cell-value-validator';
 import '../../styles/data-grid.css';
 
 const PAGE_SIZE = 100;
@@ -185,6 +186,17 @@ export function DataGrid({ database, table }: DataGridProps) {
       setError('Cannot update: no primary key defined');
       setEditingCell(null);
       return;
+    }
+
+    // 提交前值校验: 拦非数字写进数字列 / 非法日期写进日期列 等静默写错值
+    const editedCol = columns.find((c) => c.name === editingCell.columnId);
+    if (editedCol) {
+      const problem = validateCellValue(editedCol, newValue);
+      if (problem) {
+        setWriteError(problem);
+        setEditingCell(null);
+        return;
+      }
     }
 
     const primaryKeys: Record<string, unknown> = {};

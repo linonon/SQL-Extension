@@ -13,6 +13,7 @@ import type { ContextMenuItem } from '../common/ContextMenu';
 import { CloneRowModal } from '../common/CloneRowModal';
 import { generateCsv } from '../../utils/csv';
 import { buildInsertRow } from '../../utils/insert-row';
+import { validateCellValue } from '../../utils/cell-value-validator';
 import type { ColumnInfo } from '../../types/database';
 import type { SortState } from '../../utils/sql-builder';
 
@@ -58,6 +59,7 @@ export function QueryResultsGrid({
   const [rowSelection, setRowSelection] = useState<Record<string, boolean>>({});
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; rowIndex: number | null } | null>(null);
   const [cloneRow, setCloneRow] = useState<Record<string, unknown> | null>(null);
+  const [cellError, setCellError] = useState<string | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const { addChange, isCellChanged, getCellValue, buildUpdates, clearChanges, pendingCount } =
     useBatchEdits();
@@ -110,9 +112,20 @@ export function QueryResultsGrid({
     }
     const oldValue = row[editingCell.columnId];
     const newValue = editingCell.value === '' ? null : editingCell.value;
+    // 提交前值校验: 拦非数字/非法日期等静默写错值
+    const editedCol = columns.find((c) => c.name === editingCell.columnId);
+    if (editedCol) {
+      const problem = validateCellValue(editedCol, newValue);
+      if (problem) {
+        setCellError(problem);
+        setEditingCell(null);
+        return;
+      }
+    }
+    setCellError(null);
     addChange(editingCell.rowIndex, editingCell.columnId, oldValue, newValue);
     setEditingCell(null);
-  }, [editingCell, rows, addChange]);
+  }, [editingCell, rows, columns, addChange]);
 
   const selectedIndices = useMemo(
     () => Object.keys(rowSelection).filter((k) => rowSelection[k]).map(Number),
@@ -201,6 +214,12 @@ export function QueryResultsGrid({
         saving={saving}
         onSave={handleSave}
       />
+      {cellError && (
+        <div className="data-grid-write-error">
+          <span>{cellError}</span>
+          <button title="Dismiss" onClick={() => setCellError(null)}>×</button>
+        </div>
+      )}
       <div className="query-results-table" ref={scrollContainerRef}>
         <GridTable
           columns={columns}

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ColumnInfo } from '../../types/database';
 import { isAutoFilledColumn } from '../../utils/insert-row';
+import { validateRow } from '../../utils/cell-value-validator';
 
 interface CloneRowModalProps {
   readonly row: Record<string, unknown>;
@@ -41,6 +42,7 @@ export function CloneRowModal({ row, columns, onSubmit, onClose }: CloneRowModal
     return flags;
   });
   const overlayRef = useRef<HTMLDivElement>(null);
+  const [error, setError] = useState('');
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -84,6 +86,12 @@ export function CloneRowModal({ row, columns, onSubmit, onClose }: CloneRowModal
         continue;
       }
       result[col.name] = values[col.name];
+    }
+    // 提交前值校验: 拦非数字/非法日期等静默写错值
+    const problem = validateRow(columns, result);
+    if (problem) {
+      setError(problem);
+      return;
     }
     onSubmit(result);
   }, [columns, autoIncrementCols, values, nullFlags, onSubmit]);
@@ -129,6 +137,7 @@ export function CloneRowModal({ row, columns, onSubmit, onClose }: CloneRowModal
             );
           })}
         </div>
+        {error && <div className="clone-row-error">{error}</div>}
         <div className="clone-row-footer">
           <button className="clone-row-btn-cancel" onClick={onClose}>Cancel</button>
           <button className="clone-row-btn-insert" onClick={handleSubmit}>Insert</button>
