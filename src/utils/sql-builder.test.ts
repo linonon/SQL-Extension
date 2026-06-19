@@ -5,6 +5,7 @@ import {
   buildInsert,
   buildUpdate,
   buildDelete,
+  buildBatchDelete,
 } from './sql-builder';
 
 describe('sql-builder', () => {
@@ -96,11 +97,9 @@ describe('sql-builder', () => {
       expect(result.sql).toContain('`user``name`');
     });
 
-    it('应该处理空对象 (边界条件)', () => {
-      const row = {};
-      const result = buildInsert('mysql', 'users', row);
-      expect(result.sql).toBe('INSERT INTO `users` () VALUES ()');
-      expect(result.params).toEqual([]);
+    it('空对象应该 fail-fast 抛错而非生成非法 SQL', () => {
+      // 边界 invariant 落在 builder: 无列的 INSERT 在 PG 直接语法错, 应在边界拒绝
+      expect(() => buildInsert('mysql', 'users', {})).toThrow(/no columns/i);
     });
 
     it('应该处理特殊值: null, undefined, 空字符串', () => {
@@ -152,12 +151,13 @@ describe('sql-builder', () => {
       expect(result.sql).toContain('`id``pk`');
     });
 
-    it('应该处理边界条件: 空 changes', () => {
-      const pk = { id: 1 };
-      const changes = {};
-      const result = buildUpdate('mysql', 'users', pk, changes);
-      expect(result.sql).toBe('UPDATE `users` SET  WHERE `id` = ?');
-      expect(result.params).toEqual([1]);
+    it('空 changes 应该 fail-fast 抛错而非生成非法 SQL', () => {
+      expect(() => buildUpdate('mysql', 'users', { id: 1 }, {})).toThrow(/no changes/i);
+    });
+
+    it('空 primaryKeys 应该拒绝生成无 WHERE 的 UPDATE (防误改全表)', () => {
+      // 任何 caller 漏拦空 pk 都要在 builder 边界立即抛错, 而非生成残缺/危险 SQL
+      expect(() => buildUpdate('mysql', 'users', {}, { name: 'x' })).toThrow(/without.*where|primary key/i);
     });
   });
 
@@ -195,6 +195,49 @@ describe('sql-builder', () => {
       const pk = { 'id`key': 1 };
       const result = buildDelete('mysql', 'user`table', pk);
       expect(result.sql).toBe('DELETE FROM `user``table` WHERE `id``key` = ?');
+    });
+
+    it('空 primaryKeys 应该拒绝生成无 WHERE 的 DELETE (防误删全表)', () => {
+      expect(() => buildDelete('mysql', 'users', {})).toThrow(/without.*where|primary key/i);
+    });
+  });
+
+  describe('buildBatchDelete', () => {
+    it('空列表返回空 SQL (no-op)', () => {
+      const result = buildBatchDelete('mysql', 'users', []);
+      expect(result.sql).toBe('');
+      expect(result.params).toEqual([]);
+    });
+
+    it('单主键应直接生成 IN 列表 (不做字符串切片)', () => {
+      const result = buildBatchDelete('mysql', 'users', [{ id: 1 }, { id: 2 }, { id: 3 }]);
+      expect(result.sql).toBe('DELETE FROM `users` WHERE `id` IN (?, ?, ?)');
+      expect(result.params).toEqual([1, 2, 3]);
+    });
+
+    it('复合主键生成 tuple IN', () => {
+      const result = buildBatchDelete('mysql', 'm', [
+        { a: 1, b: 2 },
+        { a: 3, b: 4 },
+      ]);
+      expect(result.sql).toBe('DELETE FROM `m` WHERE (`a`, `b`) IN ((?, ?), (?, ?))');
+      expect(result.params).toEqual([1, 2, 3, 4]);
+    });
+
+    it('PostgreSQL 单主键用 $N 占位符', () => {
+      const result = buildBatchDelete('postgresql', 'users', [{ id: 7 }, { id: 8 }]);
+      expect(result.sql).toBe('DELETE FROM "users" WHERE "id" IN ($1, $2)');
+      expect(result.params).toEqual([7, 8]);
+    });
+
+    it('条目主键键集不一致应 fail-fast (防参数错位误删)', () => {
+      expect(() =>
+        buildBatchDelete('mysql', 'm', [{ a: 1, b: 2 }, { a: 3 }]),
+      ).toThrow(/key/i);
+    });
+
+    it('空主键对象应拒绝 (防无 WHERE 误删全表)', () => {
+      expect(() => buildBatchDelete('mysql', 'users', [{}])).toThrow(/without.*where|primary key/i);
     });
   });
 

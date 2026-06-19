@@ -453,5 +453,36 @@ describe('buildAlterTableStatements', () => {
       const stmts = buildAlterTableStatements('mysql', 'tbl', changes);
       expect(stmts[0]).toContain("DEFAULT 'it''s'");
     });
+
+    it('CURRENT_TIMESTAMP 关键字不加引号 (表达式默认值, 非字面字符串)', () => {
+      const changes = emptyChanges({
+        addedColumns: [{ name: 'created', dataType: 'datetime', nullable: false, defaultValue: 'CURRENT_TIMESTAMP', comment: '' }],
+      });
+      const stmts = buildAlterTableStatements('mysql', 'tbl', changes);
+      expect(stmts[0]).toContain('DEFAULT CURRENT_TIMESTAMP');
+      expect(stmts[0]).not.toContain("'CURRENT_TIMESTAMP'");
+    });
+
+    it('函数调用默认值不加引号 (now() / gen_random_uuid())', () => {
+      const mysqlStmts = buildAlterTableStatements('mysql', 'tbl', emptyChanges({
+        modifiedColumns: [{ name: 'ts', defaultValue: 'now()' }],
+      }));
+      expect(mysqlStmts[0]).toContain('DEFAULT now()');
+      expect(mysqlStmts[0]).not.toContain("'now()'");
+
+      const pgStmts = buildAlterTableStatements('postgresql', 'tbl', emptyChanges({
+        modifiedColumns: [{ name: 'uid', defaultValue: 'gen_random_uuid()' }],
+      }));
+      expect(pgStmts[0]).toContain('SET DEFAULT gen_random_uuid()');
+      expect(pgStmts[0]).not.toContain("'gen_random_uuid()'");
+    });
+
+    it('普通字符串仍加引号 (不被误判为表达式)', () => {
+      const changes = emptyChanges({
+        addedColumns: [{ name: 'status', dataType: 'varchar(20)', nullable: true, defaultValue: 'active', comment: '' }],
+      });
+      const stmts = buildAlterTableStatements('mysql', 'tbl', changes);
+      expect(stmts[0]).toContain("DEFAULT 'active'");
+    });
   });
 });
