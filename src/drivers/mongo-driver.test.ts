@@ -674,6 +674,29 @@ describe('MongoDriver', () => {
       const filterArg = mockCollection.find.mock.calls[0][0];
       expect(filterArg.name).toBe('507f1f77bcf86cd799439011');
     });
+
+    it('_id: {$in: [...]} 内的 24-hex 串递归转 ObjectId — H6', async () => {
+      mockCollection.find.mockReturnValue({
+        limit: vi.fn().mockReturnValue({ toArray: vi.fn().mockResolvedValue([]) }),
+      });
+      await driver.execute('db.users.find({"_id": {"$in": ["507f1f77bcf86cd799439011", "507f1f77bcf86cd799439012", "not-hex"]}})');
+      const { ObjectId } = await import('mongodb');
+      const inArr = mockCollection.find.mock.calls[0][0]._id.$in;
+      expect(inArr[0]).toBeInstanceOf(ObjectId);
+      expect(inArr[1]).toBeInstanceOf(ObjectId);
+      expect(inArr[2]).toBe('not-hex'); // 非 hex 保字符串
+    });
+
+    it('$or/$and 分支内的 _id 24-hex 串递归转 ObjectId — H6', async () => {
+      mockCollection.find.mockReturnValue({
+        limit: vi.fn().mockReturnValue({ toArray: vi.fn().mockResolvedValue([]) }),
+      });
+      await driver.execute('db.users.find({"$or": [{"_id": "507f1f77bcf86cd799439011"}, {"name": "x"}]})');
+      const { ObjectId } = await import('mongodb');
+      const orArr = mockCollection.find.mock.calls[0][0].$or;
+      expect(orArr[0]._id).toBeInstanceOf(ObjectId);
+      expect(orArr[1].name).toBe('x');
+    });
   });
 
   describe('insertOne with EJSON', () => {
@@ -820,6 +843,43 @@ describe('MongoDriver', () => {
 
       const pipelineArg = mockCollection.aggregate.mock.calls[0][0];
       expect(pipelineArg[0].$match._id).toBeInstanceOf(ObjectId);
+    });
+
+    it('$match 内裸 24-hex _id 串自动转 ObjectId, 与 count/explain 一致 — M2/M3', async () => {
+      mockDb.command.mockResolvedValue({ ok: 1 });
+      await driver.connect({
+        id: 't', name: 't', driverType: 'mongodb',
+        host: 'localhost', port: 27017, username: '', password: '', database: '',
+      });
+      mockCollection.aggregate.mockReturnValue({ toArray: vi.fn().mockResolvedValue([]) });
+
+      await driver.findDocumentsForBrowser('db', 'coll', [
+        { $match: { _id: '507f1f77bcf86cd799439011' } },
+      ]);
+
+      const pipelineArg = mockCollection.aggregate.mock.calls[0][0];
+      expect(pipelineArg[0].$match._id).toBeInstanceOf(ObjectId);
+    });
+  });
+
+  describe('exportDocuments', () => {
+    it('pipeline 内 EJSON 被还原为 BSON (导出过滤可命中) — H2', async () => {
+      mockDb.command.mockResolvedValue({ ok: 1 });
+      await driver.connect({
+        id: 't', name: 't', driverType: 'mongodb',
+        host: 'localhost', port: 27017, username: '', password: '', database: '',
+      });
+      mockCollection.aggregate.mockReturnValue({
+        toArray: vi.fn().mockResolvedValue([{ _id: 'x' }]),
+      });
+
+      const res = await driver.exportDocuments('db', 'coll', [
+        { $match: { _id: { $oid: '507f1f77bcf86cd799439011' } } },
+      ]);
+
+      const pipelineArg = mockCollection.aggregate.mock.calls[0][0];
+      expect(pipelineArg[0].$match._id).toBeInstanceOf(ObjectId);
+      expect(res.count).toBe(1);
     });
   });
 });

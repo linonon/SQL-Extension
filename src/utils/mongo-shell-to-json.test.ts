@@ -34,7 +34,7 @@ vi.mock('mongodb', () => {
   };
 });
 
-import { convertShellToJson, convertEjsonToBson } from './mongo-shell-to-json';
+import { convertShellToJson, convertEjsonToBson, assertValidBson } from './mongo-shell-to-json';
 import { ObjectId, Long, Int32, Decimal128, MinKey, MaxKey } from 'mongodb';
 
 describe('convertShellToJson', () => {
@@ -271,5 +271,56 @@ describe('convertEjsonToBson', () => {
     const result = convertEjsonToBson(input) as unknown[];
     expect(result[0]).toBeInstanceOf(ObjectId);
     expect(result[1]).toBeInstanceOf(Date);
+  });
+
+  it('$numberInt 越界 (超 int32 范围) 抛错, 不静默回绕', () => {
+    expect(() => convertEjsonToBson({ $numberInt: '2147483648' })).toThrow(/int32|范围|range/i);
+    expect(() => convertEjsonToBson({ $numberInt: '-2147483649' })).toThrow();
+    expect(() => convertEjsonToBson({ $numberInt: '9999999999' })).toThrow();
+    // 边界内正常
+    expect(convertEjsonToBson({ $numberInt: '2147483647' })).toBeInstanceOf(Int32);
+    expect(convertEjsonToBson({ $numberInt: '-2147483648' })).toBeInstanceOf(Int32);
+  });
+
+  it('$numberLong 越界 (超 int64 范围) 抛错, 不静默回绕/翻转符号', () => {
+    expect(() => convertEjsonToBson({ $numberLong: '9223372036854775808' })).toThrow(/int64|范围|range/i);
+    expect(() => convertEjsonToBson({ $numberLong: '-9223372036854775809' })).toThrow();
+    expect(() => convertEjsonToBson({ $numberLong: '18446744073709551616' })).toThrow();
+    // 边界内正常
+    expect(convertEjsonToBson({ $numberLong: '9223372036854775807' })).toBeInstanceOf(Long);
+    expect(convertEjsonToBson({ $numberLong: '-9223372036854775808' })).toBeInstanceOf(Long);
+  });
+
+  it('$numberDecimal 拒绝非十进制语法 (0x / 空白), 接受合法值含 Infinity', () => {
+    expect(() => convertEjsonToBson({ $numberDecimal: '0x10' })).toThrow();
+    expect(() => convertEjsonToBson({ $numberDecimal: '   ' })).toThrow();
+    expect(() => convertEjsonToBson({ $numberDecimal: 'abc' })).toThrow();
+    expect(convertEjsonToBson({ $numberDecimal: '3.14' })).toBeInstanceOf(Decimal128);
+    expect(convertEjsonToBson({ $numberDecimal: '1e10' })).toBeInstanceOf(Decimal128);
+    expect(convertEjsonToBson({ $numberDecimal: 'Infinity' })).toBeInstanceOf(Decimal128);
+  });
+
+  it('用户字段名 __proto__ 不污染原型, 作为自有数据保留 (H4)', () => {
+    const input = JSON.parse('{"__proto__":{"polluted":true},"name":"alice"}');
+    const result = convertEjsonToBson(input) as Record<string, unknown>;
+    // 无全局原型污染
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    // __proto__ 字段作为自有 key 保留, 而非被静默丢弃
+    expect(Object.keys(result).sort()).toEqual(['__proto__', 'name']);
+    expect(result.name).toBe('alice');
+  });
+});
+
+describe('assertValidBson (import 路径值校验)', () => {
+  it('非法 Date (Invalid Date) 抛错, 阻止静默写 epoch 0', () => {
+    expect(() => assertValidBson({ createdAt: new Date('2026-13-99') })).toThrow(/date|日期/i);
+    expect(() => assertValidBson([{ d: new Date(NaN) }])).toThrow();
+    expect(() => assertValidBson({ nested: { deep: { d: new Date('garbage') } } })).toThrow();
+  });
+
+  it('合法文档通过 (含合法 Date / 嵌套 / 数组)', () => {
+    expect(() => assertValidBson({ createdAt: new Date('2024-01-15T00:00:00.000Z') })).not.toThrow();
+    expect(() => assertValidBson([{ a: 1 }, { b: 'x', c: [1, 2, { d: new Date() }] }])).not.toThrow();
+    expect(() => assertValidBson({ x: null, y: undefined, z: true })).not.toThrow();
   });
 });

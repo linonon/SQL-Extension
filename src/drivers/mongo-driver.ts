@@ -4,7 +4,7 @@ import type { ConnectionConfig } from '../types/connection.js';
 import type { IDatabaseDriver } from '../types/driver.js';
 import type { ColumnInfo, DetailedColumnInfo, QueryResult, TableInfo } from '../types/query.js';
 import { parseMongoQuery } from '../utils/mongo-query-parser.js';
-import { convertEjsonToBson } from '../utils/mongo-shell-to-json.js';
+import { convertEjsonToBson, assertValidBson } from '../utils/mongo-shell-to-json.js';
 import { summarizeExplain, type ExplainSummary } from '../utils/mongo-explain.js';
 
 export class MongoDriver implements IDatabaseDriver {
@@ -172,7 +172,10 @@ export class MongoDriver implements IDatabaseDriver {
     pipeline: unknown[]
   ): Promise<{ json: string; count: number }> {
     this.assertConnected();
-    const docs = await this.client!.db(database).collection(collection).aggregate(pipeline).toArray();
+    // 还原 pipeline 内 EJSON 标记为 BSON, 否则 $match 过滤 (ObjectId/$date 等) 当字面子文档恒不命中,
+    // 导致导出空集或错集 (与 findDocumentsForBrowser 对齐).
+    const bsonPipeline = convertEjsonToBson(pipeline) as unknown[];
+    const docs = await this.client!.db(database).collection(collection).aggregate(bsonPipeline).toArray();
     const json = EJSON.stringify(docs, undefined, 2);
     return { json, count: docs.length };
   }
@@ -184,8 +187,14 @@ export class MongoDriver implements IDatabaseDriver {
   ): Promise<{ rows: Record<string, unknown>[]; columns: ColumnInfo[] }> {
     this.assertConnected();
     // 还原 pipeline 内的 EJSON 标记 ($oid/$date/$numberLong 等) 为 BSON, 否则按 ObjectId/Long
-    // 过滤的 $match 会被当字面子文档匹配而恒不命中 (review round2 #4; 与 explainFind 对齐).
-    const bsonPipeline = convertEjsonToBson(pipeline) as unknown[];
+    // 过滤的 $match 会被当字面子文档匹配而恒不命中 (与 explainFind 对齐).
+    // 并对 $match 跑 autoConvertIds: 裸 24-hex 串 _id 自动转 ObjectId, 使浏览结果与 count/explain 一致 (M2/M3).
+    const bsonPipeline = (convertEjsonToBson(pipeline) as Record<string, unknown>[]).map((stage) => {
+      if (stage !== null && typeof stage === 'object' && '$match' in stage) {
+        return { ...stage, $match: autoConvertIds(stage.$match as Record<string, unknown>) };
+      }
+      return stage;
+    });
     const docs = await this.client!.db(database).collection(collection)
       .aggregate(bsonPipeline).toArray();
     return { rows: docs.map(deepFormatDocument), columns: inferSchema(docs) };
@@ -206,6 +215,10 @@ export class MongoDriver implements IDatabaseDriver {
         .filter((l) => l.trim())
         .map((line) => EJSON.parse(line) as Record<string, unknown>);
     }
+
+    // EJSON.parse 不校验 $date 合法性 (非法日期产出 Invalid Date -> 落库变 epoch 0),
+    // 与编辑/CRUD 路径一致: 写库前显式拒绝非法值, 不静默污染.
+    assertValidBson(docs);
 
     let inserted = 0;
     const BATCH = 500;
@@ -349,12 +362,39 @@ export type DispatchResult =
 // --- ObjectId 自动转换 ---
 
 const OBJECT_ID_REGEX = /^[0-9a-fA-F]{24}$/;
+const ID_LOGICAL_OPS = new Set(['$and', '$or', '$nor']);
 
+// 把 _id 上下文里的 24-hex 字符串转 ObjectId. 覆盖裸值与 {$in/$nin:[...]} 数组;
+// 已是 BSON 实例 (ObjectId/Long 等) 的确定类型原样保留, 不当作 operator 子文档拆解.
+function convertIdValue(value: unknown): unknown {
+  if (typeof value === 'string') {
+    return OBJECT_ID_REGEX.test(value) ? new ObjectId(value) : value;
+  }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) { return value; }
+  if (value instanceof ObjectId || '_bsontype' in (value as Record<string, unknown>)) { return value; }
+  const out: Record<string, unknown> = {};
+  for (const [op, opVal] of Object.entries(value as Record<string, unknown>)) {
+    if ((op === '$in' || op === '$nin') && Array.isArray(opVal)) {
+      out[op] = opVal.map((el) => (typeof el === 'string' && OBJECT_ID_REGEX.test(el)) ? new ObjectId(el) : el);
+    } else {
+      out[op] = opVal;
+    }
+  }
+  return out;
+}
+
+// 裸字符串 _id 自动转 ObjectId 的便利 (查询/浏览/count/explain 共用单一策略).
+// 递归进 $and/$or/$nor 分支与 _id 的 $in/$nin 数组, 否则这些上下文里的 24-hex 串会静默不命中 (H6).
 function autoConvertIds(filter: Record<string, unknown>): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(filter)) {
-    if (key === '_id' && typeof value === 'string' && OBJECT_ID_REGEX.test(value)) {
-      result[key] = new ObjectId(value);
+    if (key === '_id') {
+      result[key] = convertIdValue(value);
+    } else if (ID_LOGICAL_OPS.has(key) && Array.isArray(value)) {
+      result[key] = value.map((sub) =>
+        (sub !== null && typeof sub === 'object' && !Array.isArray(sub))
+          ? autoConvertIds(sub as Record<string, unknown>)
+          : sub);
     } else {
       result[key] = value;
     }
