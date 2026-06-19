@@ -124,13 +124,12 @@ export class MySQLDriver implements IDatabaseDriver {
     return String(rows[0]?.['Create Table'] ?? '');
   }
 
-  async execute(sql: string, params?: unknown[]): Promise<QueryResult> {
-    this.assertConnected();
-    const start = Date.now();
-    const [result, fields] = await this.pool!.query(sql, params);
-    const executionTime = Date.now() - start;
-
-    // SELECT 类查询返回行数组, INSERT/UPDATE/DELETE 返回 ResultSetHeader
+  // SELECT 类查询返回行数组, INSERT/UPDATE/DELETE 返回 ResultSetHeader
+  private toQueryResult(
+    result: unknown,
+    fields: mysql.FieldPacket[] | undefined,
+    executionTime: number
+  ): QueryResult {
     if (Array.isArray(result)) {
       const columns: ColumnInfo[] = (fields ?? []).map((f: mysql.FieldPacket) => ({
         name: f.name,
@@ -140,21 +139,40 @@ export class MySQLDriver implements IDatabaseDriver {
         defaultValue: null,
         extra: '',
       }));
-      return {
-        columns,
-        rows: result as Record<string, unknown>[],
-        affectedRows: 0,
-        executionTime,
-      };
+      return { columns, rows: result as Record<string, unknown>[], affectedRows: 0, executionTime };
     }
-
     const header = result as mysql.ResultSetHeader;
-    return {
-      columns: [],
-      rows: [],
-      affectedRows: header.affectedRows,
-      executionTime,
-    };
+    return { columns: [], rows: [], affectedRows: header.affectedRows, executionTime };
+  }
+
+  async execute(sql: string, params?: unknown[]): Promise<QueryResult> {
+    this.assertConnected();
+    const start = Date.now();
+    const [result, fields] = await this.pool!.query(sql, params);
+    return this.toQueryResult(result, fields, Date.now() - start);
+  }
+
+  async transaction<T>(
+    work: (exec: (sql: string, params?: unknown[]) => Promise<QueryResult>) => Promise<T>
+  ): Promise<T> {
+    this.assertConnected();
+    const conn = await this.pool!.getConnection();
+    try {
+      await conn.beginTransaction();
+      const exec = async (sql: string, params?: unknown[]): Promise<QueryResult> => {
+        const start = Date.now();
+        const [result, fields] = await conn.query(sql, params);
+        return this.toQueryResult(result, fields, Date.now() - start);
+      };
+      const out = await work(exec);
+      await conn.commit();
+      return out;
+    } catch (err) {
+      try { await conn.rollback(); } catch { /* rollback 失败忽略, 原始错误更重要 */ }
+      throw err;
+    } finally {
+      conn.release();
+    }
   }
 
   executeCancellable(sql: string, params?: unknown[], database?: string): {
@@ -175,22 +193,7 @@ export class MySQLDriver implements IDatabaseDriver {
         }
         const start = Date.now();
         const [result, fields] = await conn.query(sql, params);
-        const executionTime = Date.now() - start;
-
-        if (Array.isArray(result)) {
-          const columns: ColumnInfo[] = (fields ?? []).map((f: mysql.FieldPacket) => ({
-            name: f.name,
-            dataType: String(f.type),
-            nullable: true,
-            isPrimaryKey: false,
-            defaultValue: null,
-            extra: '',
-          }));
-          return { columns, rows: result as Record<string, unknown>[], affectedRows: 0, executionTime };
-        }
-
-        const header = result as mysql.ResultSetHeader;
-        return { columns: [], rows: [], affectedRows: header.affectedRows, executionTime };
+        return this.toQueryResult(result, fields, Date.now() - start);
       } finally {
         conn.release();
       }

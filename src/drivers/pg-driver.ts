@@ -197,12 +197,7 @@ export class PgDriver implements IDatabaseDriver {
     return ddl;
   }
 
-  async execute(sql: string, params?: unknown[]): Promise<QueryResult> {
-    this.assertConnected();
-    const start = Date.now();
-    const result = await this.pool!.query(sql, params);
-    const executionTime = Date.now() - start;
-
+  private toQueryResult(result: pg.QueryResult, executionTime: number): QueryResult {
     const columns: ColumnInfo[] = (result.fields ?? []).map((f) => ({
       name: f.name,
       dataType: String(f.dataTypeID),
@@ -211,13 +206,42 @@ export class PgDriver implements IDatabaseDriver {
       defaultValue: null,
       extra: '',
     }));
-
     return {
       columns,
       rows: result.rows ?? [],
       affectedRows: result.rowCount ?? 0,
       executionTime,
     };
+  }
+
+  async execute(sql: string, params?: unknown[]): Promise<QueryResult> {
+    this.assertConnected();
+    const start = Date.now();
+    const result = await this.pool!.query(sql, params);
+    return this.toQueryResult(result, Date.now() - start);
+  }
+
+  async transaction<T>(
+    work: (exec: (sql: string, params?: unknown[]) => Promise<QueryResult>) => Promise<T>
+  ): Promise<T> {
+    this.assertConnected();
+    const client = await this.pool!.connect();
+    try {
+      await client.query('BEGIN');
+      const exec = async (sql: string, params?: unknown[]): Promise<QueryResult> => {
+        const start = Date.now();
+        const result = await client.query(sql, params);
+        return this.toQueryResult(result, Date.now() - start);
+      };
+      const out = await work(exec);
+      await client.query('COMMIT');
+      return out;
+    } catch (err) {
+      try { await client.query('ROLLBACK'); } catch { /* rollback 失败忽略, 原始错误更重要 */ }
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   executeCancellable(sql: string, params?: unknown[], _database?: string): {
@@ -236,23 +260,7 @@ export class PgDriver implements IDatabaseDriver {
       try {
         const start = Date.now();
         const result = await client.query(sql, params);
-        const executionTime = Date.now() - start;
-
-        const columns: ColumnInfo[] = (result.fields ?? []).map((f) => ({
-          name: f.name,
-          dataType: String(f.dataTypeID),
-          nullable: true,
-          isPrimaryKey: false,
-          defaultValue: null,
-          extra: '',
-        }));
-
-        return {
-          columns,
-          rows: result.rows ?? [],
-          affectedRows: result.rowCount ?? 0,
-          executionTime,
-        };
+        return this.toQueryResult(result, Date.now() - start);
       } finally {
         client.release();
       }

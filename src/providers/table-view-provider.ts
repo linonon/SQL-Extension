@@ -348,15 +348,13 @@ export class TableViewProvider implements vscode.Disposable {
 
         case 'batchUpdate': {
           const driver = this.connectionManager.getDriver(connectionId!);
-          for (const update of message.updates) {
-            await this.queryService.updateRow(
-              driver,
-              message.database,
-              message.table,
-              update.primaryKeys,
-              update.changes
-            );
-          }
+          // 整批在单个事务内执行, 任一行失败全部回滚 (失败由外层 catch 回 batchUpdateResult)
+          await this.queryService.batchUpdate(
+            driver,
+            message.database,
+            message.table,
+            message.updates
+          );
           panel.webview.postMessage({ type: 'batchUpdateResult', success: true });
           break;
         }

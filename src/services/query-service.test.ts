@@ -322,6 +322,52 @@ describe('QueryService', () => {
     });
   });
 
+  describe('batchUpdate', () => {
+    it('应该在单个事务内执行所有 update (原子)', async () => {
+      const exec = vi.fn().mockResolvedValue({
+        columns: [], rows: [], affectedRows: 1, executionTime: 1,
+      } as QueryResult);
+      mockDriver.transaction = vi.fn(async (work) => work(exec));
+
+      await service.batchUpdate(mockDriver, 'testdb', 'users', [
+        { primaryKeys: { id: 1 }, changes: { name: 'A' } },
+        { primaryKeys: { id: 2 }, changes: { name: 'B' } },
+      ]);
+
+      expect(mockDriver.transaction).toHaveBeenCalledTimes(1);
+      expect(exec).toHaveBeenNthCalledWith(1, 'UPDATE `testdb`.`users` SET `name` = ? WHERE `id` = ?', ['A', 1]);
+      expect(exec).toHaveBeenNthCalledWith(2, 'UPDATE `testdb`.`users` SET `name` = ? WHERE `id` = ?', ['B', 2]);
+    });
+
+    it('某行失败时错误传播 (由 driver.transaction 负责 rollback)', async () => {
+      const exec = vi.fn()
+        .mockResolvedValueOnce({ columns: [], rows: [], affectedRows: 1, executionTime: 1 } as QueryResult)
+        .mockRejectedValueOnce(new Error('constraint violation'));
+      mockDriver.transaction = vi.fn(async (work) => work(exec));
+
+      await expect(service.batchUpdate(mockDriver, 'testdb', 'users', [
+        { primaryKeys: { id: 1 }, changes: { name: 'A' } },
+        { primaryKeys: { id: 2 }, changes: { name: 'B' } },
+      ])).rejects.toThrow('constraint violation');
+    });
+
+    it('空 updates 不触发 transaction', async () => {
+      mockDriver.transaction = vi.fn();
+      await service.batchUpdate(mockDriver, 'testdb', 'users', []);
+      expect(mockDriver.transaction).not.toHaveBeenCalled();
+    });
+
+    it('driver 无 transaction 能力时退化为逐条 execute', async () => {
+      vi.mocked(mockDriver.execute).mockResolvedValue({
+        columns: [], rows: [], affectedRows: 1, executionTime: 1,
+      } as QueryResult);
+      await service.batchUpdate(mockDriver, 'testdb', 'users', [
+        { primaryKeys: { id: 1 }, changes: { name: 'A' } },
+      ]);
+      expect(mockDriver.execute).toHaveBeenCalledWith('UPDATE `testdb`.`users` SET `name` = ? WHERE `id` = ?', ['A', 1]);
+    });
+  });
+
   describe('executeRaw', () => {
     it('应该执行原始 SQL', async () => {
       vi.mocked(mockDriver.execute).mockResolvedValue({
