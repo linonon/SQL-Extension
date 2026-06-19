@@ -113,6 +113,7 @@ export async function handleMongoMessage(
       // 仅标量值, path 支持 dotted (嵌套字段); _id filter 经 buildIdFilter 保留类型.
       const { database, collection, id, path, value } = message;
       try {
+        assertSafeFieldPath(path);
         const filterJson = buildIdFilter(id);
         const setJson = JSON.stringify({ [path]: value });
         const query = `db.${collection}.updateOne(${filterJson},{"$set":${setJson}})`;
@@ -236,6 +237,23 @@ async function postRefreshedCollections(
 // 单一 source: 与查询编辑器共用 convertShellToJson, _id 类型不在 handler 里二次猜测.
 function buildIdFilter(idShell: string): string {
   return convertShellToJson(`{"_id":${idShell}}`);
+}
+
+// 单元格 $set 的 field path 来自 webview, 须校验: $ 前缀会被 Mongo 当 update operator,
+// __proto__/constructor/prototype 段是原型污染向量. 任一非法即拒绝, 不构建 update.
+const UNSAFE_PATH_SEGMENTS = new Set(['__proto__', 'constructor', 'prototype']);
+function assertSafeFieldPath(path: string): void {
+  if (typeof path !== 'string' || path.trim() === '') {
+    throw new Error(`Invalid field path: ${String(path)}`);
+  }
+  if (path.startsWith('$')) {
+    throw new Error(`Field path must not start with "$": ${path}`);
+  }
+  for (const seg of path.split('.')) {
+    if (UNSAFE_PATH_SEGMENTS.has(seg)) {
+      throw new Error(`Unsafe field path segment "${seg}" in: ${path}`);
+    }
+  }
 }
 
 export function buildExportPipeline(

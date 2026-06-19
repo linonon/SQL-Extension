@@ -432,6 +432,20 @@ describe('handleMongoMessage', () => {
       const posted = postMessage.mock.calls[0][0];
       expect(posted.success).toBe(false);
     });
+
+    it('拒绝 $ 前缀 / __proto__ 等危险 path, 不执行更新 — L2', async () => {
+      mockAffected(1);
+      for (const path of ['$where', '__proto__', 'a.__proto__.b', 'constructor', '$set']) {
+        (driver.executeCancellable as any).mockClear();
+        postMessage.mockClear();
+        const msg = {
+          type: 'mongoUpdateField', database: 'd', collection: 'c', id: '"a"', path, value: 1,
+        } as WebviewMessage;
+        await handleMongoMessage(msg, driver, postMessage);
+        expect(driver.executeCancellable).not.toHaveBeenCalled();
+        expect(postMessage.mock.calls[0][0].success).toBe(false);
+      }
+    });
   });
 
   describe('mongoDeleteDocument', () => {
