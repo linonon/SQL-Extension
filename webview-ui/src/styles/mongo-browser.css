@@ -1063,7 +1063,9 @@
 /* in-card 编辑: 卡片内嵌编辑器, 高度自适应内容并设上限滚动 (不再依赖整面板高度) */
 .mongo-doc-card-editing { padding: 0; border-color: var(--vscode-focusBorder, #007fd4); }
 .mongo-doc-card-editing .mongo-document-detail { height: auto; }
-.mongo-doc-card-editing .detail-body { min-height: 200px; max-height: 50vh; overflow: auto; }
+/* 定高 (clamp 是确定长度) 让内部 height:100% 链能解析; 否则 textarea 塌成默认 ~2 行
+   而 detail-body 仍 200px+, 形成"两行文字 + 大片空白"且无法滚动 (in-card 编辑器布局 bug). */
+.mongo-doc-card-editing .detail-body { height: clamp(200px, 40vh, 50vh); overflow: hidden; }
 .mongo-doc-card-composing { border-style: dashed; }
 .mongo-clone-hint {
   padding: 6px 12px;
