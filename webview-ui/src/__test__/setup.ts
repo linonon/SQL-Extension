@@ -11,6 +11,9 @@ const mockSetState = vi.fn();
   setState: mockSetState,
 });
 
+// jsdom 未实现 scrollIntoView (调用会抛); 真实 webview (Chromium) 有. 测试环境 stub 掉.
+Element.prototype.scrollIntoView = vi.fn();
+
 // 每个 test 之间重置 mock
 beforeEach(() => {
   mockPostMessage.mockClear();

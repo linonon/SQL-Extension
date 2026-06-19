@@ -40,25 +40,14 @@ export function HighlightEditor({
     onChange(proxied as ChangeEvent<HTMLTextAreaElement>);
   }, [onChange]);
 
-  // sync scroll position between textarea and backdrop
-  const handleScroll = useCallback(() => {
-    if (ref.current && backdropRef.current) {
-      backdropRef.current.scrollTop = ref.current.scrollTop;
-      backdropRef.current.scrollLeft = ref.current.scrollLeft;
-    }
-  }, [ref]);
-
-  // scroll active match into view via manual offsetTop calculation
+  // 编辑器自适应内容高度: backdrop 在普通流中决定高度, textarea 绝对覆盖.
+  // 滚动由外层容器 (detail-body) 承担, 故把命中项滚到可视区用 scrollIntoView
+  // (会滚动最近的可滚动祖先), 而非手动操作 backdrop.scrollTop.
   useEffect(() => {
     if (activeMatchIndex < 0 || activeMatchIndex >= matches.length) { return; }
     const mark = backdropRef.current?.querySelectorAll('mark')[activeMatchIndex] as HTMLElement | undefined;
-    if (!mark || !backdropRef.current || !ref.current) { return; }
-    const markTop = mark.offsetTop;
-    const containerHeight = backdropRef.current.clientHeight;
-    const scrollTarget = Math.max(0, markTop - containerHeight / 2);
-    backdropRef.current.scrollTop = scrollTarget;
-    ref.current.scrollTop = scrollTarget;
-  }, [activeMatchIndex, matches.length, ref]);
+    mark?.scrollIntoView({ block: 'center', inline: 'nearest' });
+  }, [activeMatchIndex, matches.length]);
 
   // build highlighted segments
   const segments = useMemo(() => {
@@ -100,7 +89,6 @@ export function HighlightEditor({
         value={value}
         onChange={handleChange}
         onKeyDown={onKeyDown}
-        onScroll={handleScroll}
         spellCheck={false}
       />
     </div>
