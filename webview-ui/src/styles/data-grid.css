@@ -144,6 +144,30 @@
   margin: 8px;
 }
 
+/* 写操作失败的非致命行内提示 (保留网格, 不整屏替换) */
+.data-grid-write-error {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  margin: 4px 8px;
+  color: var(--vscode-errorForeground);
+  background-color: var(--vscode-inputValidation-errorBackground);
+  border: 1px solid var(--vscode-inputValidation-errorBorder);
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.data-grid-write-error button {
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+
 /* --- QueryResultsGrid: Excel-like styles --- */
 
 .query-grid th,

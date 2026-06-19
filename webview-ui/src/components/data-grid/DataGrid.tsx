@@ -43,7 +43,12 @@ export function DataGrid({ database, table }: DataGridProps) {
   const [editingCell, setEditingCell] = useState<EditingCell | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // 写操作 (insert/update/delete) 失败的非致命错误: 行内提示, 不替换整个网格
+  const [writeError, setWriteError] = useState<string | null>(null);
   const tableContainerRef = useRef<HTMLDivElement>(null);
+  // 给 message handler 读取当前 offset 而不必把 handler 依赖到 page 上 (避免每翻页重订阅)
+  const pageOffsetRef = useRef(page.offset);
+  pageOffsetRef.current = page.offset;
 
   const fetchData = useCallback(
     (offset: number) => {
@@ -68,9 +73,20 @@ export function DataGrid({ database, table }: DataGridProps) {
           setError(message.message);
           setLoading(false);
           break;
+        // 写操作回执: 成功才刷新 (消除写入与刷新的竞态), 失败行内提示且保留网格
+        case 'updateRowResult':
+        case 'insertRowResult':
+        case 'deleteRowsResult':
+          if (message.success) {
+            setWriteError(null);
+            fetchData(pageOffsetRef.current);
+          } else if (message.type !== 'deleteRowsResult' || !message.cancelled) {
+            setWriteError(message.error ?? '操作失败');
+          }
+          break;
       }
     },
-    []
+    [fetchData]
   );
 
   useVSCodeMessage(handleMessage);
@@ -184,17 +200,15 @@ export function DataGrid({ database, table }: DataGridProps) {
       changes: { [editingCell.columnId]: newValue },
     });
     setEditingCell(null);
-    // 编辑后刷新当前页
-    fetchData(page.offset);
-  }, [editingCell, rows, columns, database, table, postMessage, fetchData, page.offset]);
+    // 不立即刷新: 等 updateRowResult 成功回执再刷新, 避免 SELECT 早于 UPDATE 提交读到旧值
+  }, [editingCell, rows, columns, database, table, postMessage]);
 
   const handleInsert = useCallback(() => {
     // 自增/序列/表达式默认值列省略, 交给 DB 应用默认; 不把 defaultValue 文本当字面值写库
     const newRow = buildInsertRow(columns);
     postMessage({ type: 'insertRow', database, table, row: newRow });
-    // 刷新当前页
-    setTimeout(() => fetchData(page.offset), 200);
-  }, [columns, database, table, postMessage, fetchData, page.offset]);
+    // 刷新由 insertRowResult 成功回执驱动 (不用定时器猜写入是否完成)
+  }, [columns, database, table, postMessage]);
 
   const handleDelete = useCallback(() => {
     const pkColumns = columns.filter((c) => c.isPrimaryKey);
@@ -216,9 +230,9 @@ export function DataGrid({ database, table }: DataGridProps) {
 
     if (keysToDelete.length > 0) {
       postMessage({ type: 'deleteRows', database, table, primaryKeys: keysToDelete });
-      setTimeout(() => fetchData(page.offset), 200);
+      // 刷新由 deleteRowsResult 成功回执驱动
     }
-  }, [columns, selectedRows, rows, database, table, postMessage, fetchData, page.offset]);
+  }, [columns, selectedRows, rows, database, table, postMessage]);
 
   const handlePageChange = useCallback(
     (newOffset: number) => {
@@ -256,6 +270,12 @@ export function DataGrid({ database, table }: DataGridProps) {
         onDelete={handleDelete}
         hasSelection={selectedRows.size > 0}
       />
+      {writeError && (
+        <div className="data-grid-write-error">
+          <span>{writeError}</span>
+          <button title="Dismiss" onClick={() => setWriteError(null)}>×</button>
+        </div>
+      )}
       <div className="data-grid-wrapper" ref={tableContainerRef}>
         <table className="data-grid-table">
           <thead>

@@ -55,6 +55,8 @@ export type ExtensionMessage =
   | { type: 'columnsResult'; columns: ColumnInfo[] }
   | { type: 'batchUpdateResult'; success: boolean; error?: string }
   | { type: 'insertRowResult'; success: boolean; error?: string }
+  | { type: 'updateRowResult'; success: boolean; error?: string }
+  | { type: 'deleteRowsResult'; success: boolean; error?: string; cancelled?: boolean }
   | { type: 'connectionTestResult'; success: boolean; error?: string }
   | { type: 'error'; message: string }
   | { type: 'viewInit'; view: ViewType; context?: Record<string, unknown> }

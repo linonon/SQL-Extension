@@ -314,14 +314,23 @@ export class TableViewProvider implements vscode.Disposable {
         }
 
         case 'updateRow': {
-          const driver = this.connectionManager.getDriver(connectionId!);
-          await this.queryService.updateRow(
-            driver,
-            message.database,
-            message.table,
-            message.primaryKeys,
-            message.changes
-          );
+          try {
+            const driver = this.connectionManager.getDriver(connectionId!);
+            await this.queryService.updateRow(
+              driver,
+              message.database,
+              message.table,
+              message.primaryKeys,
+              message.changes
+            );
+            panel.webview.postMessage({ type: 'updateRowResult', success: true });
+          } catch (err) {
+            panel.webview.postMessage({
+              type: 'updateRowResult',
+              success: false,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
           break;
         }
 
@@ -330,11 +339,24 @@ export class TableViewProvider implements vscode.Disposable {
           const confirmDelete = await vscode.window.showWarningMessage(
             `Delete ${count} row(s)?`, { modal: true }, 'Delete'
           );
-          if (confirmDelete !== 'Delete') { break; }
-          const driver = this.connectionManager.getDriver(connectionId!);
-          const batchQuery = buildBatchDelete(driver.driverType, message.table, message.primaryKeys, message.database);
-          if (batchQuery.sql) {
-            await driver.execute(batchQuery.sql, batchQuery.params);
+          if (confirmDelete !== 'Delete') {
+            // 用户取消: 回执 cancelled, 让前端停止等待而不刷新/不报错
+            panel.webview.postMessage({ type: 'deleteRowsResult', success: false, cancelled: true });
+            break;
+          }
+          try {
+            const driver = this.connectionManager.getDriver(connectionId!);
+            const batchQuery = buildBatchDelete(driver.driverType, message.table, message.primaryKeys, message.database);
+            if (batchQuery.sql) {
+              await driver.execute(batchQuery.sql, batchQuery.params);
+            }
+            panel.webview.postMessage({ type: 'deleteRowsResult', success: true });
+          } catch (err) {
+            panel.webview.postMessage({
+              type: 'deleteRowsResult',
+              success: false,
+              error: err instanceof Error ? err.message : String(err),
+            });
           }
           break;
         }
