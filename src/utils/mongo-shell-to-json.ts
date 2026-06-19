@@ -1,4 +1,4 @@
-import { ObjectId, Long, Int32, Decimal128, MinKey, MaxKey } from 'mongodb';
+import { ObjectId, Long, Int32, Decimal128, MinKey, MaxKey, Binary, UUID, Timestamp } from 'mongodb';
 
 // --- MongoDB shell 语法转 Extended JSON ---
 
@@ -57,6 +57,18 @@ const SHELL_PATTERNS: ReadonlyArray<{
   {
     pattern: /Decimal128\(\s*"([^"]+)"\s*\)/g,
     replace: (_, n) => `{"$numberDecimal":"${n}"}`,
+  },
+  {
+    pattern: /UUID\(\s*"([0-9a-fA-F-]+)"\s*\)/g,
+    replace: (_, u) => `{"$uuid":"${u}"}`,
+  },
+  {
+    pattern: /BinData\(\s*(\d+)\s*,\s*"([A-Za-z0-9+/=]*)"\s*\)/g,
+    replace: (_, sub, b64) => `{"$binary":{"base64":"${b64}","subType":${sub}}}`,
+  },
+  {
+    pattern: /Timestamp\(\s*(\d+)\s*,\s*(\d+)\s*\)/g,
+    replace: (_, t, i) => `{"$timestamp":{"t":${t},"i":${i}}}`,
   },
   {
     pattern: /MinKey\(\s*\)/g,
@@ -146,6 +158,21 @@ const EJSON_CONVERTERS: ReadonlyArray<{
         throw new Error(`Invalid $numberDecimal value: ${String(v)}`);
       }
       return new Decimal128(s);
+    },
+  },
+  { key: '$uuid', convert: (v) => new UUID(String(v)) },
+  {
+    key: '$binary',
+    convert: (v) => {
+      const o = v as { base64?: unknown; subType?: unknown };
+      return new Binary(Buffer.from(String(o.base64 ?? ''), 'base64'), Number(o.subType ?? 0));
+    },
+  },
+  {
+    key: '$timestamp',
+    convert: (v) => {
+      const o = v as { t?: unknown; i?: unknown };
+      return new Timestamp({ t: Number(o.t ?? 0), i: Number(o.i ?? 0) });
     },
   },
   { key: '$minKey', convert: () => new MinKey() },

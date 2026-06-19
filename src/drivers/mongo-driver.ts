@@ -420,19 +420,36 @@ function flattenValue(value: unknown): unknown {
   if (typeof value === 'object') {
     const obj = value as Record<string, unknown>;
     if ('_bsontype' in obj) {
-      const bt = (obj as { _bsontype: string })._bsontype;
-      if (bt === 'Long') { return `NumberLong("${String(value)}")`; }
-      if (bt === 'Int32') { return `NumberInt(${String(value)})`; }
-      if (bt === 'Decimal128') { return `NumberDecimal("${String(value)}")`; }
-      if (bt === 'MinKey') { return 'MinKey()'; }
-      if (bt === 'MaxKey') { return 'MaxKey()'; }
-      return String(value);
+      return bsonToShellTag(obj);
     }
     const result: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(obj)) { result[k] = flattenValue(v); }
     return JSON.stringify(result);
   }
   return value;
+}
+
+// BSON 实例 -> shell-tag 字符串. 未知类型回退 String(value) (展示路径不可抛错, 否则浏览崩溃).
+function bsonToShellTag(obj: Record<string, unknown>): string {
+  const bt = (obj as { _bsontype: string })._bsontype;
+  if (bt === 'Long') { return `NumberLong("${String(obj)}")`; }
+  if (bt === 'Int32') { return `NumberInt(${String(obj)})`; }
+  if (bt === 'Decimal128') { return `NumberDecimal("${String(obj)}")`; }
+  if (bt === 'MinKey') { return 'MinKey()'; }
+  if (bt === 'MaxKey') { return 'MaxKey()'; }
+  if (bt === 'Binary') {
+    // sub_type 4 即 UUID, 用 UUID("...") 展示; 其余 Binary 用 BinData(sub,"base64") 保留原值.
+    if ((obj as { sub_type?: number }).sub_type === 4) { return `UUID("${String(obj)}")`; }
+    const sub = (obj as { sub_type?: number }).sub_type ?? 0;
+    const b64 = (obj as { buffer?: { toString(enc: string): string } }).buffer?.toString('base64') ?? '';
+    return `BinData(${sub},"${b64}")`;
+  }
+  if (bt === 'Timestamp') {
+    const ext = (obj as { toExtendedJSON?: () => { $timestamp?: { t: number; i: number } } }).toExtendedJSON?.();
+    const ts = ext?.$timestamp ?? { t: 0, i: 0 };
+    return `Timestamp(${ts.t},${ts.i})`;
+  }
+  return String(obj);
 }
 
 // deep 格式化: 保留嵌套结构 (object/array 不 JSON.stringify), 叶子 BSON 转 shell-tag 字符串.
@@ -445,13 +462,7 @@ export function deepFormatValue(value: unknown): unknown {
   if (typeof value === 'object') {
     const obj = value as Record<string, unknown>;
     if ('_bsontype' in obj) {
-      const bt = (obj as { _bsontype: string })._bsontype;
-      if (bt === 'Long') { return `NumberLong("${String(value)}")`; }
-      if (bt === 'Int32') { return `NumberInt(${String(value)})`; }
-      if (bt === 'Decimal128') { return `NumberDecimal("${String(value)}")`; }
-      if (bt === 'MinKey') { return 'MinKey()'; }
-      if (bt === 'MaxKey') { return 'MaxKey()'; }
-      return String(value);
+      return bsonToShellTag(obj);
     }
     const result: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(obj)) { result[k] = deepFormatValue(v); }
@@ -525,6 +536,10 @@ function bsonTypeName(value: unknown): string {
   if (value instanceof ObjectId) { return 'ObjectId'; }
   if (value instanceof Date) { return 'date'; }
   if (Array.isArray(value)) { return 'array'; }
+  // 包装类型 (Long/Int32/Decimal128/Binary/Timestamp 等) 报告真实 BSON 类型, 而非笼统 object
+  if (value !== null && typeof value === 'object' && '_bsontype' in value) {
+    return (value as { _bsontype: string })._bsontype;
+  }
   if (typeof value === 'object') { return 'object'; }
   if (typeof value === 'number') { return 'number'; }
   if (typeof value === 'boolean') { return 'boolean'; }

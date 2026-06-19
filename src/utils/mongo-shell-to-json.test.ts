@@ -24,6 +24,21 @@ vi.mock('mongodb', () => {
   }
   class FakeMinKey {}
   class FakeMaxKey {}
+  class FakeBinary {
+    readonly _bsontype = 'Binary';
+    constructor(readonly buffer: unknown, readonly sub_type: number) {}
+  }
+  class FakeUUID {
+    readonly _bsontype = 'Binary';
+    readonly sub_type = 4;
+    constructor(private readonly v: string) {}
+    toString() { return this.v; }
+  }
+  class FakeTimestamp {
+    readonly _bsontype = 'Timestamp';
+    constructor(readonly obj: { t: number; i: number }) {}
+    toExtendedJSON() { return { $timestamp: this.obj }; }
+  }
   return {
     ObjectId: FakeObjectId,
     Long: FakeLong,
@@ -31,11 +46,14 @@ vi.mock('mongodb', () => {
     Decimal128: FakeDecimal128,
     MinKey: FakeMinKey,
     MaxKey: FakeMaxKey,
+    Binary: FakeBinary,
+    UUID: FakeUUID,
+    Timestamp: FakeTimestamp,
   };
 });
 
 import { convertShellToJson, convertEjsonToBson, assertValidBson } from './mongo-shell-to-json';
-import { ObjectId, Long, Int32, Decimal128, MinKey, MaxKey } from 'mongodb';
+import { ObjectId, Long, Int32, Decimal128, MinKey, MaxKey, Binary, UUID, Timestamp } from 'mongodb';
 
 describe('convertShellToJson', () => {
   it('ObjectId("...") 转为 {"$oid":"..."}', () => {
@@ -118,6 +136,21 @@ describe('convertShellToJson', () => {
     expect(result).toBe('{"$numberDecimal":"3.14"}');
   });
 
+  it('UUID("...") 转为 {"$uuid":"..."}', () => {
+    expect(convertShellToJson('UUID("b26ddf70-e8e9-4e7d-9fe9-f05eb8ec872a")'))
+      .toBe('{"$uuid":"b26ddf70-e8e9-4e7d-9fe9-f05eb8ec872a"}');
+  });
+
+  it('BinData(sub,"base64") 转为 {"$binary":{...}}', () => {
+    expect(convertShellToJson('BinData(0,"AQIDBA==")'))
+      .toBe('{"$binary":{"base64":"AQIDBA==","subType":0}}');
+  });
+
+  it('Timestamp(t,i) 转为 {"$timestamp":{...}}', () => {
+    expect(convertShellToJson('Timestamp(1700000000,5)'))
+      .toBe('{"$timestamp":{"t":1700000000,"i":5}}');
+  });
+
   it('MinKey() 转为 {"$minKey":1}', () => {
     const result = convertShellToJson('MinKey()');
     expect(result).toBe('{"$minKey":1}');
@@ -193,6 +226,18 @@ describe('convertEjsonToBson', () => {
   it('{"$numberDecimal":"3.14"} 转为 Decimal128 实例', () => {
     const result = convertEjsonToBson({ $numberDecimal: '3.14' });
     expect(result).toBeInstanceOf(Decimal128);
+  });
+
+  it('{"$uuid":"..."} 转为 UUID 实例', () => {
+    expect(convertEjsonToBson({ $uuid: 'b26ddf70-e8e9-4e7d-9fe9-f05eb8ec872a' })).toBeInstanceOf(UUID);
+  });
+
+  it('{"$binary":{base64,subType}} 转为 Binary 实例', () => {
+    expect(convertEjsonToBson({ $binary: { base64: 'AQIDBA==', subType: 0 } })).toBeInstanceOf(Binary);
+  });
+
+  it('{"$timestamp":{t,i}} 转为 Timestamp 实例', () => {
+    expect(convertEjsonToBson({ $timestamp: { t: 1700000000, i: 5 } })).toBeInstanceOf(Timestamp);
   });
 
   it('{"$minKey":1} 转为 MinKey 实例', () => {

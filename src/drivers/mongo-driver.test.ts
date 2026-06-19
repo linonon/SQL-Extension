@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { MongoDriver, deepFormatValue, deepFormatDocument } from './mongo-driver';
-import { ObjectId, Long } from 'mongodb';
+import { ObjectId, Long, Binary, UUID, Timestamp } from 'mongodb';
 
 // Mock mongodb
 const mockCollection = {
@@ -70,6 +70,21 @@ vi.mock('mongodb', () => {
   class FakeMaxKey {
     readonly _bsontype = 'MaxKey';
   }
+  class FakeBinary {
+    readonly _bsontype = 'Binary';
+    constructor(readonly buffer: Buffer, readonly sub_type: number) {}
+  }
+  class FakeUUID {
+    readonly _bsontype = 'Binary';
+    readonly sub_type = 4;
+    constructor(private readonly v: string) {}
+    toString() { return this.v; }
+  }
+  class FakeTimestamp {
+    readonly _bsontype = 'Timestamp';
+    constructor(private readonly o: { t: number; i: number }) {}
+    toExtendedJSON() { return { $timestamp: this.o }; }
+  }
   class FakeMongoClient {
     constructor() {
       // 代理到 mockClient
@@ -84,6 +99,9 @@ vi.mock('mongodb', () => {
     Decimal128: FakeDecimal128,
     MinKey: FakeMinKey,
     MaxKey: FakeMaxKey,
+    Binary: FakeBinary,
+    UUID: FakeUUID,
+    Timestamp: FakeTimestamp,
   };
 });
 
@@ -904,5 +922,20 @@ describe('deepFormatValue', () => {
     expect(deepFormatValue(null)).toBe(null);
     expect(deepFormatValue(42)).toBe(42);
     expect(deepFormatValue('plain')).toBe('plain');
+  });
+
+  it('UUID (Binary sub_type 4) 转 UUID("...") — H3', () => {
+    const u = new UUID('b26ddf70-e8e9-4e7d-9fe9-f05eb8ec872a');
+    expect(deepFormatValue(u)).toBe('UUID("b26ddf70-e8e9-4e7d-9fe9-f05eb8ec872a")');
+  });
+
+  it('普通 Binary 转 BinData(sub,"base64"), 不再 String(value) 乱码 — H3', () => {
+    const b = new Binary(Buffer.from([1, 2, 3, 4]), 0);
+    expect(deepFormatValue(b)).toBe('BinData(0,"AQIDBA==")');
+  });
+
+  it('Timestamp 转 Timestamp(t,i) — H3', () => {
+    const t = new Timestamp({ t: 1700000000, i: 5 });
+    expect(deepFormatValue(t)).toBe('Timestamp(1700000000,5)');
   });
 });
