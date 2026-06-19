@@ -456,14 +456,29 @@ export class TableViewProvider implements vscode.Disposable {
         case 'alterTable': {
           const driver = this.connectionManager.getDriver(connectionId!);
           const stmts = buildAlterTableStatements(driver.driverType, message.table, message.changes);
-          for (const stmt of stmts) {
-            const { promise } = driver.executeCancellable(stmt, undefined, message.database);
-            await promise;
+          let executed = 0;
+          try {
+            for (const stmt of stmts) {
+              const { promise } = driver.executeCancellable(stmt, undefined, message.database);
+              await promise;
+              executed++;
+            }
+            panel.webview.postMessage({ type: 'alterTableResult', success: true });
+          } catch (err) {
+            const base = err instanceof Error ? err.message : String(err);
+            // 多条 DDL 非原子 (MySQL DDL 隐式提交无法回滚): 明确回报已执行/未执行边界,
+            // 防用户基于陈旧结构重试重复已落库的改动
+            const detail = stmts.length > 1
+              ? `${base} (已执行 ${executed}/${stmts.length} 条, 表结构可能部分变更)`
+              : base;
+            panel.webview.postMessage({ type: 'alterTableResult', success: false, error: detail });
           }
-          panel.webview.postMessage({ type: 'alterTableResult', success: true });
-          // 刷新列信息
-          const freshColumns = await driver.getDetailedColumns(message.database, message.table);
-          panel.webview.postMessage({ type: 'tableDetails', columns: freshColumns, tableName: message.table });
+          // 无论成败都刷新列信息, 让 UI 基线与 DB 实际状态一致 (rename 后用新表名)
+          const refreshTable = message.changes.renamedTable ?? message.table;
+          try {
+            const freshColumns = await driver.getDetailedColumns(message.database, refreshTable);
+            panel.webview.postMessage({ type: 'tableDetails', columns: freshColumns, tableName: refreshTable });
+          } catch { /* 刷新失败忽略: 主操作结果已回报 */ }
           break;
         }
 

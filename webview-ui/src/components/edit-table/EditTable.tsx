@@ -194,6 +194,18 @@ export function EditTable({ database, table }: EditTableProps) {
       setError('No changes to apply');
       return;
     }
+    // 前置校验: 空列名 / 新增列空类型会生成晦涩失败的 DDL, 在客户端先拦
+    for (const col of columns) {
+      if (col.isDropped) { continue; }
+      if ((col.isNew || col.name !== col.originalName) && col.name.trim() === '') {
+        setError('列名不能为空');
+        return;
+      }
+      if (col.isNew && col.dataType.trim() === '') {
+        setError(`列 "${col.name}" 缺少类型`);
+        return;
+      }
+    }
     setError('');
     setSuccessMsg('');
     postMessage({ type: 'alterTable', database, table, changes });
