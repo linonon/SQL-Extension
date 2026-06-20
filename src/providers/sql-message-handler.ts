@@ -6,6 +6,7 @@ import type { QueryService } from '../services/query-service.js';
 import { buildBatchDelete } from '../utils/sql-builder.js';
 import { buildAlterTableStatements } from '../utils/alter-table-builder.js';
 import { isWholeTableWrite } from '../utils/destructive-sql.js';
+import { sanitizeErrorMessage } from '../utils/sanitize-error.js';
 
 // SQL (MySQL/PostgreSQL) CRUD 消息处理. 与 handleMongoMessage / handleRedisMessage 等对齐:
 // 由 provider 解析依赖后调用, 返回 true 表示已处理 (provider 即停止路由), false 表示非 SQL 消息.
@@ -20,13 +21,6 @@ export interface SqlMessageContext {
   readonly database?: string;
   // schema 缓存读取 (缓存归 provider 所有, 跟随其生命周期); forceRefresh 对应 refreshSchema
   readonly getSchema: (database: string, forceRefresh: boolean) => Promise<Record<string, string[]>>;
-}
-
-// 脱敏: 过滤可能包含凭证的 URL 格式错误消息
-function sanitizeError(err: unknown): string {
-  return err instanceof Error
-    ? err.message.replace(/([a-z][a-z0-9+\-.]*:\/\/)[^@\s]*@/gi, '$1***@')
-    : String(err);
 }
 
 export async function handleSqlMessage(
@@ -132,7 +126,7 @@ export async function handleSqlMessage(
           );
           ctx.post({ type: 'batchUpdateResult', success: true });
         } catch (err) {
-          ctx.post({ type: 'batchUpdateResult', success: false, error: sanitizeError(err) });
+          ctx.post({ type: 'batchUpdateResult', success: false, error: sanitizeErrorMessage(err) });
         }
         return true;
       }
@@ -146,7 +140,8 @@ export async function handleSqlMessage(
             'Execute'
           );
           if (confirm !== 'Execute') {
-            ctx.post({ type: 'queryResult', columns: [], rows: [], rowCount: 0, truncated: false });
+            // 取消: 回空结果, 形状与成功/错误分支一致 (queryResult 字段是 affectedRows/executionTime)
+            ctx.post({ type: 'queryResult', columns: [], rows: [], affectedRows: 0, executionTime: 0 });
             return true;
           }
         }
@@ -166,7 +161,7 @@ export async function handleSqlMessage(
           ctx.post({
             type: 'queryResult',
             columns: [], rows: [], affectedRows: 0, executionTime: 0,
-            error: sanitizeError(err),
+            error: sanitizeErrorMessage(err),
           });
         } finally {
           ctx.pendingCancels.delete(ctx.panel);
@@ -321,7 +316,7 @@ export async function handleSqlMessage(
     }
   } catch (err) {
     // 兜底: 未自管回执的 SQL case 抛错 -> 通用 error (脱敏)
-    ctx.post({ type: 'error', message: sanitizeError(err) });
+    ctx.post({ type: 'error', message: sanitizeErrorMessage(err) });
     return true;
   }
 }

@@ -16,6 +16,7 @@ import { handleMongoMessage, buildExportPipeline } from './mongo-message-handler
 import { getWebviewContent, getWebviewOptions } from './webview-helper.js';
 import { buildDefaultSelectSql } from '../utils/sql-builder.js';
 import { handleSqlMessage, type SqlMessageContext } from './sql-message-handler.js';
+import { sanitizeErrorMessage } from '../utils/sanitize-error.js';
 
 function buildSSHConfig(msg: ConnectionFormSSH): SSHTunnelConfig | undefined {
   if (!msg.sshEnabled) { return undefined; }
@@ -612,12 +613,9 @@ export class TableViewProvider implements vscode.Disposable {
         }
       }
     } catch (err) {
-      // 脱敏处理: 过滤可能包含凭证的 URL 格式错误消息
+      // 脱敏: 过滤可能包含凭证的 URL 格式错误消息 (单一实现见 utils/sanitize-error)
       // (SQL 路径的特定回执 queryResult/batchUpdateResult 已在 sql-message-handler 内自管)
-      const safeMessage = (err instanceof Error)
-        ? err.message.replace(/([a-z][a-z0-9+\-.]*:\/\/)[^@\s]*@/gi, '$1***@')
-        : String(err);
-      panel.webview.postMessage({ type: 'error', message: safeMessage });
+      panel.webview.postMessage({ type: 'error', message: sanitizeErrorMessage(err) });
     }
   }
 
