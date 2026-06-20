@@ -31,6 +31,11 @@ describe('isExpressionDefault', () => {
     expect(isExpressionDefault('now()')).toBe(true);
     expect(isExpressionDefault('gen_random_uuid()')).toBe(true);
   });
+  it('布尔/NULL 关键字算表达式 (与 ext-host DDL builder 关键字集一致)', () => {
+    expect(isExpressionDefault('true')).toBe(true);
+    expect(isExpressionDefault('FALSE')).toBe(true);
+    expect(isExpressionDefault('null')).toBe(true);
+  });
   it('字面量不算表达式', () => {
     expect(isExpressionDefault('active')).toBe(false);
     expect(isExpressionDefault('0')).toBe(false);

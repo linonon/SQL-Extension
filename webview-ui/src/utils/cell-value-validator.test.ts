@@ -24,6 +24,10 @@ describe('validateCellValue', () => {
       expect(validateCellValue(intCol, '12,50')).toMatch(/需要数字/);
       expect(validateCellValue(intCol, 'Infinity')).toMatch(/需要数字/);
     });
+
+    it('纯空白拦截 (不被 Number("")=0 静默放行)', () => {
+      expect(validateCellValue(intCol, '   ')).toMatch(/空白|需要数字/);
+    });
   });
 
   describe('日期列', () => {
@@ -38,6 +42,15 @@ describe('validateCellValue', () => {
     });
     it('不像日期的串放行 (交给 DB, 避免误伤奇异格式)', () => {
       expect(validateCellValue(dateCol, 'now')).toBeNull();
+    });
+
+    it('闰年判定正确 (不受 JS Date 0-99 年映射影响)', () => {
+      expect(validateCellValue(dateCol, '2000-02-29')).toBeNull();   // 2000 能被 400 整除, 闰年
+      expect(validateCellValue(dateCol, '2024-02-29')).toBeNull();   // 2024 闰年
+      expect(validateCellValue(dateCol, '1900-02-29')).toMatch(/日期非法/); // 1900 世纪非闰年
+      expect(validateCellValue(dateCol, '2023-02-29')).toMatch(/日期非法/); // 2023 平年
+      // year 0 按 400 规则是闰年; JS new Date(0,2,0) 会误映射成 1900(非闰)->误判, 自算则正确
+      expect(validateCellValue(dateCol, '0000-02-29')).toBeNull();
     });
   });
 

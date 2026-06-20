@@ -3,6 +3,11 @@ import { isAutoFilledColumn } from './insert-row';
 
 const NUMERIC_TYPE_RE = /^(tinyint|smallint|mediumint|int|integer|bigint|decimal|numeric|dec|fixed|float|double|real)\b/i;
 const DATE_TYPE_RE = /^(date|datetime|timestamp)\b/i;
+const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+function isLeapYear(y: number): boolean {
+  return (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+}
 
 // 像日期 (YYYY-M-D 开头) 但日历非法 (月份越界 / 该月无此日) 时返回错误.
 // 不匹配日期形态的串一律放行, 交给 DB 判, 避免误伤合法的奇异格式.
@@ -17,8 +22,8 @@ function validateDateLike(colName: string, s: string): string | null {
   if (month < 1 || month > 12) {
     return `列 "${colName}" 日期非法: 月份 ${month} 越界`;
   }
-  // new Date(year, month, 0) 取该月最后一天 (month 此处按 1-based 传入, 0 日回退到上月末)
-  const maxDay = new Date(year, month, 0).getDate();
+  // 自行算当月天数 + 闰年, 不用 new Date (其对 0-99 年映射到 1900+ 会错判闰年)
+  const maxDay = month === 2 && isLeapYear(year) ? 29 : DAYS_IN_MONTH[month - 1];
   if (day < 1 || day > maxDay) {
     return `列 "${colName}" 日期非法: ${year}-${month} 月没有第 ${day} 天`;
   }
@@ -38,6 +43,13 @@ export function validateCellValue(col: ColumnInfo, value: unknown): string | nul
   }
   const s = String(value).trim();
   const type = col.dataType.toLowerCase();
+  // 纯空白: 对数字/日期列是非法值 (Number("")=0 会静默放行), 字符串列空白合法
+  if (s === '') {
+    if (NUMERIC_TYPE_RE.test(type) || DATE_TYPE_RE.test(type)) {
+      return `列 "${col.name}" (${col.dataType}) 不能为纯空白`;
+    }
+    return null;
+  }
   if (NUMERIC_TYPE_RE.test(type)) {
     if (!Number.isFinite(Number(s))) {
       return `列 "${col.name}" (${col.dataType}) 需要数字, 收到 "${value}"`;

@@ -12,12 +12,14 @@ export function isAutoFilledColumn(col: ColumnInfo): boolean {
 }
 
 // 默认值是 SQL 表达式 (无参关键字或函数调用) 而非字面量: 当字面值写库会存进文本而非求值结果.
-// information_schema 对这类列返回的是表达式文本 (如 "CURRENT_TIMESTAMP", "now()").
+// information_schema 对这类列返回的是表达式文本 (如 "CURRENT_TIMESTAMP", "now()", "true").
+// 关键字集与 ext-host alter-table-builder.EXPRESSION_DEFAULT_KEYWORDS 保持一致 (两端独立构建无法共享).
 export function isExpressionDefault(value: string): boolean {
   const v = value.trim();
-  if (/^(current_timestamp|current_date|current_time|localtime|localtimestamp|now)$/i.test(v)) {
+  if (/^(current_timestamp|current_date|current_time|localtime|localtimestamp|null|true|false)$/i.test(v)) {
     return true;
   }
+  // 函数调用形态: ident(...) 如 now(), gen_random_uuid(), nextval('s')
   return /^[a-z_][a-z0-9_]*\s*\(.*\)$/i.test(v);
 }
 
