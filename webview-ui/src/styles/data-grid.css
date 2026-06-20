@@ -293,8 +293,14 @@
   font-weight: 600;
 }
 
-.query-results-toolbar-save {
+.query-results-toolbar-actions {
   margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.query-results-toolbar-save {
   padding: 2px 12px;
   font-size: 12px;
 }
@@ -302,6 +308,20 @@
 .query-results-toolbar-save:not(:disabled) {
   background-color: var(--vscode-button-background);
   color: var(--vscode-button-foreground);
+}
+
+.query-results-toolbar-discard {
+  padding: 2px 12px;
+  font-size: 12px;
+  background-color: var(--vscode-button-secondaryBackground, transparent);
+  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+  border: 1px solid var(--vscode-panel-border);
+  cursor: pointer;
+}
+
+.query-results-toolbar-discard:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* --- Checkbox select column --- */

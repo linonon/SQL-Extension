@@ -5,6 +5,7 @@ interface QueryResultsToolbarProps {
   readonly editable: boolean;
   readonly saving: boolean;
   readonly onSave: () => void;
+  readonly onDiscard: () => void;
 }
 
 export function QueryResultsToolbar({
@@ -14,6 +15,7 @@ export function QueryResultsToolbar({
   editable,
   saving,
   onSave,
+  onDiscard,
 }: QueryResultsToolbarProps) {
   return (
     <div className="query-results-toolbar">
@@ -26,13 +28,25 @@ export function QueryResultsToolbar({
         </span>
       )}
       {editable && (
-        <button
-          className="query-results-toolbar-save"
-          disabled={pendingCount === 0 || saving}
-          onClick={onSave}
-        >
-          {saving ? 'Saving...' : 'Save'}
-        </button>
+        <div className="query-results-toolbar-actions">
+          {pendingCount > 0 && (
+            <button
+              className="query-results-toolbar-discard"
+              disabled={saving}
+              title="撤销所有未保存的编辑, 恢复原值"
+              onClick={onDiscard}
+            >
+              Discard
+            </button>
+          )}
+          <button
+            className="query-results-toolbar-save"
+            disabled={pendingCount === 0 || saving}
+            onClick={onSave}
+          >
+            {saving ? 'Saving...' : 'Save'}
+          </button>
+        </div>
       )}
     </div>
   );

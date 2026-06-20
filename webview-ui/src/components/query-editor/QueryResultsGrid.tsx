@@ -84,6 +84,14 @@ export function QueryResultsGrid({
     }
   }, [buildUpdates, rows, columns, onSave]);
 
+  // 撤销所有未保存编辑: 清空 pending (单元格恢复原值, 无需重跑 query), 并清掉错误提示
+  const handleDiscard = useCallback(() => {
+    clearChanges();
+    setEditingCell(null);
+    setCellError(null);
+    onDismissSaveError?.();
+  }, [clearChanges, onDismissSaveError]);
+
   // Cmd+S / Ctrl+S 快捷键
   useEffect(() => {
     if (!editable) return;
@@ -233,6 +241,7 @@ export function QueryResultsGrid({
         editable={editable}
         saving={saving}
         onSave={handleSave}
+        onDiscard={handleDiscard}
       />
       {saveError && (
         <div className="data-grid-write-error">
