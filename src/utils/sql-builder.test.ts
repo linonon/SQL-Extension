@@ -237,6 +237,16 @@ describe('sql-builder', () => {
       ).toThrow(/key/i);
     });
 
+    it('同一组复合主键键顺序不同不应误判为不一致', () => {
+      // {a,b} 与 {b,a} 是同一键集, 不同插入顺序; 取值按 keys[0] 名字索引故仍正确
+      const result = buildBatchDelete('mysql', 'm', [
+        { a: 1, b: 2 },
+        { b: 4, a: 3 },
+      ]);
+      expect(result.sql).toBe('DELETE FROM `m` WHERE (`a`, `b`) IN ((?, ?), (?, ?))');
+      expect(result.params).toEqual([1, 2, 3, 4]);
+    });
+
     it('空主键对象应拒绝 (防无 WHERE 误删全表)', () => {
       expect(() => buildBatchDelete('mysql', 'users', [{}])).toThrow(/without.*where|primary key/i);
     });

@@ -12,16 +12,22 @@ function stripCommentsAndStrings(sql: string): string {
     .trim();
 }
 
-// 是否为需要确认的破坏性写操作:
+// 单条语句是否为需要确认的破坏性写操作:
 // - DROP / TRUNCATE: 总是
-// - DELETE FROM / UPDATE: 仅当无顶层 WHERE 子句 (整表操作) 时
-export function isWholeTableWrite(sql: string): boolean {
-  const cleaned = stripCommentsAndStrings(sql);
-  if (/^(DROP|TRUNCATE)\b/i.test(cleaned)) {
+// - DELETE FROM / UPDATE: 仅当本语句无 WHERE 子句 (整表操作) 时
+function isDestructiveStatement(stmt: string): boolean {
+  const s = stmt.trim();
+  if (/^(DROP|TRUNCATE)\b/i.test(s)) {
     return true;
   }
-  if (/^(DELETE\s+FROM|UPDATE)\b/i.test(cleaned)) {
-    return !/\bWHERE\b/i.test(cleaned);
+  if (/^(DELETE\s+FROM|UPDATE)\b/i.test(s)) {
+    return !/\bWHERE\b/i.test(s);
   }
   return false;
+}
+
+// 脚本中任一条语句命中即需确认. 逐条判断, 避免别条的 WHERE/前缀掩盖某条整表操作
+// (PG simple query protocol 单字符串可执行多语句; 去掉字符串/注释后按 ; 切分是安全的).
+export function isWholeTableWrite(sql: string): boolean {
+  return stripCommentsAndStrings(sql).split(';').some(isDestructiveStatement);
 }

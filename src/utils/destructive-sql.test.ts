@@ -35,4 +35,17 @@ describe('isWholeTableWrite', () => {
   it('SELECT 不需要确认', () => {
     expect(isWholeTableWrite('SELECT * FROM users')).toBe(false);
   });
+
+  it('多语句: 任一条整表 DELETE/UPDATE/DROP 都需确认 (逐条判断, 不被别条的 WHERE 掩盖)', () => {
+    // 第一条带 WHERE, 第二条整表 DELETE -> 仍需确认
+    expect(isWholeTableWrite('UPDATE t SET x=1 WHERE id=1; DELETE FROM big_table')).toBe(true);
+    // 前置无害语句 + DROP -> 需确认
+    expect(isWholeTableWrite('SELECT 1; DROP TABLE t')).toBe(true);
+    // 第一条整表 DELETE, 第二条带 WHERE -> 仍需确认
+    expect(isWholeTableWrite('DELETE FROM a; DELETE FROM b WHERE id=1')).toBe(true);
+  });
+
+  it('多语句: 每条 DELETE/UPDATE 都带 WHERE 时不打扰', () => {
+    expect(isWholeTableWrite('UPDATE t SET x=1 WHERE id=1; DELETE FROM b WHERE id=2')).toBe(false);
+  });
 });
