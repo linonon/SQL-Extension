@@ -27,6 +27,9 @@ interface QueryResultsGridProps {
   readonly affectedRows: number;
   readonly executionTime: number;
   readonly error?: string;
+  // 保存失败的错误: 行内提示, 不替换结果表 (区别于 error = 查询执行失败, 无表可展示)
+  readonly saveError?: string;
+  readonly onDismissSaveError?: () => void;
   readonly editable: boolean;
   readonly saving: boolean;
   readonly onSave: (updates: { primaryKeys: Record<string, unknown>; changes: Record<string, unknown> }[]) => void;
@@ -48,6 +51,8 @@ export function QueryResultsGrid({
   affectedRows,
   executionTime,
   error,
+  saveError,
+  onDismissSaveError,
   editable,
   saving,
   onSave,
@@ -229,6 +234,12 @@ export function QueryResultsGrid({
         saving={saving}
         onSave={handleSave}
       />
+      {saveError && (
+        <div className="data-grid-write-error">
+          <span>{saveError}</span>
+          <button title="Dismiss" onClick={onDismissSaveError}>×</button>
+        </div>
+      )}
       {cellError && (
         <div className="data-grid-write-error">
           <span>{cellError}</span>

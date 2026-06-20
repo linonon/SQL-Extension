@@ -38,6 +38,8 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
   const [showHistory, setShowHistory] = useState(false);
   const [fullColumns, setFullColumns] = useState<ColumnInfo[]>([]);
   const [saving, setSaving] = useState(false);
+  // 保存(批量更新/插入)失败的错误: 单独存, 不并入 result.error, 以免覆盖整个结果表丢失数据+未保存编辑
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [sortState, setSortState] = useState<SortState | null>(null);
   const postMessage = usePostMessage();
   const { entries: historyEntries, addEntry: addHistoryEntry } = useQueryHistory();
@@ -66,6 +68,7 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
     if (message.type === 'batchUpdateResult') {
       setSaving(false);
       if (message.success) {
+        setSaveError(null);
         // 重新执行原始 SQL 刷新数据
         if (lastSqlRef.current) {
           setExecuting(true);
@@ -74,17 +77,19 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
         }
       }
       if (message.error) {
-        setResult((prev) => prev ? { ...prev, error: message.error } : null);
+        // 行内提示, 保留结果表与未保存编辑, 用户可就地改正重存, 无需重跑 query
+        setSaveError(message.error);
       }
     }
     if (message.type === 'insertRowResult') {
       if (message.success && lastSqlRef.current) {
+        setSaveError(null);
         setExecuting(true);
         setResult(null);
         postMessage({ type: 'executeQuery', database, sql: lastSqlRef.current });
       }
       if (message.error) {
-        setResult((prev) => prev ? { ...prev, error: message.error } : null);
+        setSaveError(message.error);
       }
     }
   }, [database, postMessage]);
@@ -124,6 +129,7 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
     const trimmed = sqlText.trim();
     if (!trimmed) return;
     setExecuting(true);
+    setSaveError(null);
     setResult(null);
     lastSqlRef.current = trimmed;
     postMessage({ type: 'executeQuery', database, sql: trimmed });
@@ -160,6 +166,7 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
     (updates: { primaryKeys: Record<string, unknown>; changes: Record<string, unknown> }[]) => {
       if (!table || updates.length === 0) return;
       setSaving(true);
+      setSaveError(null);
       postMessage({ type: 'batchUpdate', database, table, updates });
     },
     [database, table, postMessage]
@@ -168,6 +175,7 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
   const handleInsertRow = useCallback(
     (row: Record<string, unknown>) => {
       if (!table) return;
+      setSaveError(null);
       postMessage({ type: 'insertRow', database, table, row });
     },
     [table, database, postMessage]
@@ -285,6 +293,8 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
           affectedRows={result.affectedRows}
           executionTime={result.executionTime}
           error={result.error}
+          saveError={saveError ?? undefined}
+          onDismissSaveError={() => setSaveError(null)}
           editable={editable}
           saving={saving}
           onSave={handleBatchSave}

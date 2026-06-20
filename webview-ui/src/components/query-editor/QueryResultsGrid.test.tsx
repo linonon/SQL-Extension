@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { render } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { QueryResultsGrid } from './QueryResultsGrid';
 import type { ColumnInfo } from '../../types/database';
 
@@ -37,5 +37,22 @@ describe('QueryResultsGrid hooks order', () => {
     expect(() =>
       rerender(<QueryResultsGrid {...baseProps} columns={[]} rows={[]} error="update failed" />)
     ).not.toThrow();
+  });
+
+  // 保存失败 (saveError) 必须保留结果表, 仅行内提示; 不能像 error (查询失败) 那样整表替换,
+  // 否则用户丢失数据与未保存编辑, 只能重跑 query.
+  it('saveError 保留表格并行内提示, 不替换结果', () => {
+    render(
+      <QueryResultsGrid
+        {...baseProps}
+        columns={columns}
+        rows={rows}
+        saveError="Incorrect datetime value for column 'ts'"
+      />
+    );
+    // 表格仍在
+    expect(screen.getByRole('table')).toBeInTheDocument();
+    // 错误以行内 banner 展示
+    expect(screen.getByText(/Incorrect datetime value/)).toBeInTheDocument();
   });
 });
