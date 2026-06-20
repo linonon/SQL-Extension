@@ -14,6 +14,7 @@ import { CloneRowModal } from '../common/CloneRowModal';
 import { generateCsv } from '../../utils/csv';
 import { buildInsertRow } from '../../utils/insert-row';
 import { validateCellValue } from '../../utils/cell-value-validator';
+import { widestCellSample, MAX_FIT_CHARS } from '../../utils/column-fit';
 import type { ColumnInfo } from '../../types/database';
 import type { SortState } from '../../utils/sql-builder';
 
@@ -291,9 +292,17 @@ interface GridTableProps {
   readonly onRowContextMenu: (e: React.MouseEvent, rowIndex: number) => void;
 }
 
-// DOM 测量列内容最大宽度, 从真实渲染元素读 computedStyle 获取 font
+// 测量列自适应宽度.
+// header 从 thead DOM 量 (thead 恒渲染, 能准确算上 PK/NN 徽标与粗体);
+// body 从 rows 全量数据量 (而非虚拟滚动下只有可见行的 tbody DOM —— 那会漏掉未渲染行,
+// 使列宽塌成表头宽度), 内容截断到 MAX_FIT_CHARS 作为列宽上限.
 // columnIndex 相对于数据列 (跳过 checkbox 列)
-function measureColumnFitWidth(tableEl: HTMLTableElement, columnIndex: number): number {
+function measureColumnFitWidth(
+  tableEl: HTMLTableElement,
+  columnIndex: number,
+  rows: readonly Record<string, unknown>[],
+  colName: string,
+): number {
   // +1 因为第一列是 checkbox
   const domIndex = columnIndex + 1;
   const span = document.createElement('span');
@@ -304,33 +313,26 @@ function measureColumnFitWidth(tableEl: HTMLTableElement, columnIndex: number): 
 
   let maxWidth = 0;
 
-  // 测量 header
+  // 测量 header (name 行含徽标 / type 行)
   const th = tableEl.querySelector(`thead tr th:nth-child(${domIndex + 1})`);
   if (th) {
-    const computed = getComputedStyle(th);
-    span.style.font = computed.font;
+    span.style.font = getComputedStyle(th).font;
     const nameEl = th.querySelector('.column-name');
     span.textContent = nameEl?.textContent ?? '';
-    let headerWidth = span.offsetWidth;
+    maxWidth = span.offsetWidth;
 
     const typeEl = th.querySelector('.column-type');
     if (typeEl) {
       span.textContent = typeEl.textContent ?? '';
-      const tw = span.offsetWidth;
-      if (tw > headerWidth) headerWidth = tw;
+      if (span.offsetWidth > maxWidth) maxWidth = span.offsetWidth;
     }
-    maxWidth = headerWidth;
   }
 
-  // 测量 body 所有行
-  const cells = tableEl.querySelectorAll(`tbody tr td:nth-child(${domIndex + 1})`);
-  for (const td of cells) {
-    const computed = getComputedStyle(td);
-    span.style.font = computed.font;
-    span.textContent = td.textContent ?? '';
-    const w = span.offsetWidth;
-    if (w > maxWidth) maxWidth = w;
-  }
+  // 测量 body: 用全量 rows 数据选最宽内容 (截断到上限), 以 body 单元格字体测像素宽
+  const sampleTd = tableEl.querySelector(`tbody tr td:nth-child(${domIndex + 1})`);
+  span.style.font = getComputedStyle(sampleTd ?? th ?? tableEl).font;
+  span.textContent = widestCellSample(rows, colName, MAX_FIT_CHARS);
+  if (span.offsetWidth > maxWidth) maxWidth = span.offsetWidth;
 
   document.body.removeChild(span);
   // 左右 padding + 余量
@@ -432,7 +434,7 @@ function GridTable({
     if (!el || columns.length === 0) return;
     const sizing: Record<string, number> = {};
     for (let i = 0; i < columns.length; i++) {
-      sizing[columns[i].name] = measureColumnFitWidth(el, i);
+      sizing[columns[i].name] = measureColumnFitWidth(el, i, rows, columns[i].name);
     }
     table.setColumnSizing(sizing);
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -474,7 +476,7 @@ function GridTable({
                   onDoubleClick={() => {
                     if (!tableRef.current) return;
                     const colIndex = headerGroup.headers.indexOf(header);
-                    const fitWidth = measureColumnFitWidth(tableRef.current, colIndex);
+                    const fitWidth = measureColumnFitWidth(tableRef.current, colIndex, rows, header.column.id);
                     table.setColumnSizing((prev) => ({
                       ...prev,
                       [header.column.id]: fitWidth,
