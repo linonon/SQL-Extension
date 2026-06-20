@@ -254,6 +254,7 @@ export function QueryResultsGrid({
           editingCell={editingCell}
           setEditingCell={setEditingCell}
           isCellChanged={isCellChanged}
+          hasSaveError={!!saveError}
           getCellValue={getCellValue}
           onCellDoubleClick={handleCellDoubleClick}
           commitEdit={commitEdit}
@@ -292,6 +293,8 @@ interface GridTableProps {
   readonly editingCell: EditingCell | null;
   readonly setEditingCell: React.Dispatch<React.SetStateAction<EditingCell | null>>;
   readonly isCellChanged: (rowIndex: number, columnId: string) => boolean;
+  // 保存失败时, 待存(已改)单元格高亮转红 (batchUpdate 单事务, 失败=整批未落库)
+  readonly hasSaveError: boolean;
   readonly getCellValue: (rowIndex: number, columnId: string, originalValue: unknown) => unknown;
   readonly onCellDoubleClick: (rowIndex: number, columnId: string) => void;
   readonly commitEdit: () => void;
@@ -357,6 +360,7 @@ function GridTable({
   editingCell,
   setEditingCell,
   isCellChanged,
+  hasSaveError,
   getCellValue,
   onCellDoubleClick,
   commitEdit,
@@ -556,7 +560,7 @@ function GridTable({
                 const classNames = [
                   isNull ? 'null-value' : '',
                   isPk ? 'pk-column' : '',
-                  changed ? 'cell-changed' : '',
+                  changed ? (hasSaveError ? 'cell-error' : 'cell-changed') : '',
                 ]
                   .filter(Boolean)
                   .join(' ');
