@@ -44,10 +44,24 @@ export interface MongoExplainSummary {
   readonly isCollScan: boolean;
 }
 
+export type StatementStatus = 'ok' | 'error' | 'skipped';
+
+export interface StatementResult {
+  readonly index: number;
+  readonly sql: string;
+  readonly status: StatementStatus;
+  readonly executionTime?: number;
+  readonly affectedRows?: number;
+  readonly columns?: ColumnInfo[];
+  readonly rows?: Record<string, unknown>[];
+  readonly error?: string;
+}
+
 // Extension -> Webview
 export type ExtensionMessage =
   | { type: 'tableData'; columns: ColumnInfo[]; rows: Record<string, unknown>[]; total: number; offset: number; limit: number }
   | { type: 'queryResult'; columns: ColumnInfo[]; rows: Record<string, unknown>[]; affectedRows: number; executionTime: number; error?: string }
+  | { type: 'queryBatchResult'; statements: StatementResult[] }
   | { type: 'columnsResult'; columns: ColumnInfo[] }
   | { type: 'batchUpdateResult'; success: boolean; error?: string }
   | { type: 'insertRowResult'; success: boolean; error?: string }
