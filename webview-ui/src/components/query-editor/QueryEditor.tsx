@@ -8,8 +8,9 @@ import type { SortState } from '../../utils/sql-builder';
 import { SqlEditor } from '../sql-editor/SqlEditor';
 import { QueryHistory, useQueryHistory } from './QueryHistory';
 import { QueryResultsGrid } from './QueryResultsGrid';
+import { StatementSummaryList } from './StatementSummaryList';
 import type { ColumnInfo } from '../../types/database';
-import type { ExtensionMessage } from '../../types/messages';
+import type { ExtensionMessage, StatementResult } from '../../types/messages';
 import '../../styles/query-editor.css';
 import '../../styles/data-grid.css';
 
@@ -30,6 +31,34 @@ interface ResultState {
   readonly error?: string;
 }
 
+function lastResultSetFromBatch(statements: readonly StatementResult[]): ResultState | null {
+  for (let i = statements.length - 1; i >= 0; i--) {
+    const s = statements[i];
+    if (s.status === 'ok' && (s.columns?.length ?? 0) > 0) {
+      return {
+        columns: s.columns ?? [],
+        rows: s.rows ?? [],
+        affectedRows: s.affectedRows ?? 0,
+        executionTime: s.executionTime ?? 0,
+      };
+    }
+  }
+  const lastOk = [...statements].reverse().find((s) => s.status === 'ok');
+  if (lastOk) {
+    return {
+      columns: [],
+      rows: [],
+      affectedRows: lastOk.affectedRows ?? 0,
+      executionTime: lastOk.executionTime ?? 0,
+    };
+  }
+  const err = statements.find((s) => s.status === 'error');
+  if (err) {
+    return { columns: [], rows: [], affectedRows: 0, executionTime: 0, error: err.error };
+  }
+  return null;
+}
+
 export function QueryEditor({ database, driverType, initialSql, autoExecute, table }: QueryEditorProps) {
   const [sqlText, setSqlText] = useState(initialSql ?? '');
   const [executing, setExecuting] = useState(false);
@@ -40,6 +69,8 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
   const [saving, setSaving] = useState(false);
   // 保存(批量更新/插入)失败的错误: 单独存, 不并入 result.error, 以免覆盖整个结果表丢失数据+未保存编辑
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [selectedText, setSelectedText] = useState('');
+  const [batchStatements, setBatchStatements] = useState<StatementResult[] | null>(null);
   const [sortState, setSortState] = useState<SortState | null>(null);
   const postMessage = usePostMessage();
   const { entries: historyEntries, addEntry: addHistoryEntry } = useQueryHistory();
@@ -49,7 +80,14 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
   const resizingRef = useRef(false);
 
   const handleMessage = useCallback((message: ExtensionMessage) => {
+    if (message.type === 'queryBatchResult') {
+      setBatchStatements(message.statements);
+      const derived = lastResultSetFromBatch(message.statements);
+      setResult(derived);
+      setExecuting(false);
+    }
     if (message.type === 'queryResult') {
+      setBatchStatements(null);
       setResult({
         columns: message.columns,
         rows: message.rows,
@@ -125,15 +163,22 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const resolveSql = useCallback(() => {
+    const trimmedSelection = selectedText.trim();
+    if (trimmedSelection) return trimmedSelection;
+    return sqlText.trim();
+  }, [selectedText, sqlText]);
+
   const executeQuery = useCallback(() => {
-    const trimmed = sqlText.trim();
+    const trimmed = resolveSql();
     if (!trimmed) return;
     setExecuting(true);
     setSaveError(null);
     setResult(null);
+    setBatchStatements(null);
     lastSqlRef.current = trimmed;
     postMessage({ type: 'executeQuery', database, sql: trimmed });
-  }, [sqlText, database, postMessage]);
+  }, [resolveSql, database, postMessage]);
 
   const cancelQuery = useCallback(() => {
     postMessage({ type: 'cancelQuery' });
@@ -254,6 +299,7 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
           warnings={warnings}
           onExecute={executeQuery}
           onFormat={handleFormat}
+          onSelectionChange={setSelectedText}
         />
         <div className="query-editor-toolbar">
           {executing ? (
@@ -272,6 +318,7 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
           <button onClick={refreshSchema} title="Refresh schema for autocomplete">
             Refresh Schema
           </button>
+          <span className="db-badge" title={`Current database: ${database}`}>{database}</span>
           <span className="hint">Ctrl+Enter to execute</span>
         </div>
       </div>
@@ -285,6 +332,9 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
         <div className="query-loading">
           <div className="query-loading-spinner" />
         </div>
+      )}
+      {batchStatements && batchStatements.length > 0 && (
+        <StatementSummaryList statements={batchStatements} />
       )}
       {result && (
         <QueryResultsGrid

@@ -20,6 +20,7 @@ interface SqlEditorProps {
   readonly onExecute?: () => void;
   readonly onFormat?: () => void;
   readonly warnings?: readonly SqlWarning[];
+  readonly onSelectionChange?: (selectedText: string) => void;
 }
 
 // 测量 monospace 字符宽度
@@ -52,6 +53,7 @@ export function SqlEditor({
   onExecute,
   onFormat,
   warnings = [],
+  onSelectionChange,
 }: SqlEditorProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const highlightRef = useRef<HTMLPreElement>(null);
@@ -60,6 +62,14 @@ export function SqlEditor({
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [popupPos, setPopupPos] = useState({ top: 0, left: 0 });
   const charWidthRef = useRef<number>(0);
+
+  const reportSelection = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (!textarea || !onSelectionChange) return;
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    onSelectionChange(start === end ? '' : value.slice(start, end));
+  }, [onSelectionChange, value]);
 
   // mount 时测量字符宽度
   useEffect(() => {
@@ -260,6 +270,9 @@ export function SqlEditor({
         />
         <textarea
           ref={textareaRef}
+          onSelect={reportSelection}
+          onKeyUp={reportSelection}
+          onMouseUp={reportSelection}
           className="sql-editor-input"
           value={value}
           onChange={handleChange}
