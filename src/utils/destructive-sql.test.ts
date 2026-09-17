@@ -56,9 +56,10 @@ describe('splitSqlStatements', () => {
     expect(splitSqlStatements('SELECT 1; SELECT 2;')).toEqual(['SELECT 1', 'SELECT 2']);
   });
 
-  it('字符串内分号不切分', () => {
+  it('字符串内分号不切分 (strip 后字符串变空串, 仍为单段)', () => {
+    // stripCommentsAndStrings 把 'a;b' 替换成 '', 分号随之消失, 不会切成两段
     expect(splitSqlStatements("UPDATE t SET note = 'a;b';")).toEqual([
-      "UPDATE t SET note = 'a;b'",
+      "UPDATE t SET note = ''",
     ]);
   });
 
