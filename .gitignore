@@ -7,3 +7,5 @@ webview-ui/node_modules/
 lock.txt
 search.md
 .worktrees/
+
+.superpowers/
