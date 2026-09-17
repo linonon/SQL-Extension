@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isWholeTableWrite } from './destructive-sql';
+import { isWholeTableWrite, splitSqlStatements } from './destructive-sql';
 
 describe('isWholeTableWrite', () => {
   it('DROP / TRUNCATE 总是需要确认', () => {
@@ -47,5 +47,26 @@ describe('isWholeTableWrite', () => {
 
   it('多语句: 每条 DELETE/UPDATE 都带 WHERE 时不打扰', () => {
     expect(isWholeTableWrite('UPDATE t SET x=1 WHERE id=1; DELETE FROM b WHERE id=2')).toBe(false);
+  });
+});
+
+
+describe('splitSqlStatements', () => {
+  it('按分号切分并丢掉空段', () => {
+    expect(splitSqlStatements('SELECT 1; SELECT 2;')).toEqual(['SELECT 1', 'SELECT 2']);
+  });
+
+  it('字符串内分号不切分', () => {
+    expect(splitSqlStatements("UPDATE t SET note = 'a;b';")).toEqual([
+      "UPDATE t SET note = 'a;b'",
+    ]);
+  });
+
+  it('块注释去掉后再按分号切', () => {
+    expect(splitSqlStatements('SELECT 1 /* ; */ ; SELECT 2')).toEqual(['SELECT 1', 'SELECT 2']);
+  });
+
+  it('全空白返回空数组', () => {
+    expect(splitSqlStatements('   ;  ;')).toEqual([]);
   });
 });

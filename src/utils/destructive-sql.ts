@@ -26,8 +26,16 @@ function isDestructiveStatement(stmt: string): boolean {
   return false;
 }
 
+// 去掉注释/字符串后按 ; 切分, 丢掉空段. Execute 多语句与破坏性确认网共用.
+export function splitSqlStatements(sql: string): string[] {
+  return stripCommentsAndStrings(sql)
+    .split(';')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
 // 脚本中任一条语句命中即需确认. 逐条判断, 避免别条的 WHERE/前缀掩盖某条整表操作
 // (PG simple query protocol 单字符串可执行多语句; 去掉字符串/注释后按 ; 切分是安全的).
 export function isWholeTableWrite(sql: string): boolean {
-  return stripCommentsAndStrings(sql).split(';').some(isDestructiveStatement);
+  return splitSqlStatements(sql).some(isDestructiveStatement);
 }
