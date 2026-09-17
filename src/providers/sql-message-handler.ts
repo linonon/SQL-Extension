@@ -5,7 +5,8 @@ import type { IDatabaseDriver } from '../types/driver.js';
 import type { QueryService } from '../services/query-service.js';
 import { buildBatchDelete } from '../utils/sql-builder.js';
 import { buildAlterTableStatements } from '../utils/alter-table-builder.js';
-import { isWholeTableWrite } from '../utils/destructive-sql.js';
+import { isWholeTableWrite, splitSqlStatements } from '../utils/destructive-sql.js';
+import type { StatementResult } from '../types/messages.js';
 import { sanitizeErrorMessage } from '../utils/sanitize-error.js';
 
 // SQL (MySQL/PostgreSQL) CRUD 消息处理. 与 handleMongoMessage / handleRedisMessage 等对齐:
@@ -133,6 +134,8 @@ export async function handleSqlMessage(
 
       case 'executeQuery': {
         // 破坏性操作确认网: DROP/TRUNCATE 及无 WHERE 的整表 DELETE/UPDATE
+        const driver = ctx.getDriver();
+        const isMysql = driver.driverType === 'mysql';
         if (isWholeTableWrite(message.sql)) {
           const confirm = await vscode.window.showWarningMessage(
             'This query contains a destructive operation (DROP/TRUNCATE, or DELETE/UPDATE without WHERE). Continue?',
@@ -140,32 +143,83 @@ export async function handleSqlMessage(
             'Execute'
           );
           if (confirm !== 'Execute') {
-            // 取消: 回空结果, 形状与成功/错误分支一致 (queryResult 字段是 affectedRows/executionTime)
-            ctx.post({ type: 'queryResult', columns: [], rows: [], affectedRows: 0, executionTime: 0 });
+            if (isMysql) {
+              ctx.post({ type: 'queryBatchResult', statements: [] });
+            } else {
+              ctx.post({ type: 'queryResult', columns: [], rows: [], affectedRows: 0, executionTime: 0 });
+            }
             return true;
           }
         }
         const db = ctx.database ?? message.database;
-        const { promise, cancel } = ctx.getDriver().executeCancellable(message.sql, undefined, db);
-        ctx.pendingCancels.set(ctx.panel, cancel);
-        try {
-          const result = await promise;
-          ctx.post({
-            type: 'queryResult',
-            columns: result.columns,
-            rows: result.rows,
-            affectedRows: result.affectedRows,
-            executionTime: result.executionTime,
-          });
-        } catch (err) {
-          ctx.post({
-            type: 'queryResult',
-            columns: [], rows: [], affectedRows: 0, executionTime: 0,
-            error: sanitizeErrorMessage(err),
-          });
-        } finally {
-          ctx.pendingCancels.delete(ctx.panel);
+
+        // 非 MySQL: 保持单次 queryResult
+        if (!isMysql) {
+          const { promise, cancel } = driver.executeCancellable(message.sql, undefined, db);
+          ctx.pendingCancels.set(ctx.panel, cancel);
+          try {
+            const result = await promise;
+            ctx.post({
+              type: 'queryResult',
+              columns: result.columns,
+              rows: result.rows,
+              affectedRows: result.affectedRows,
+              executionTime: result.executionTime,
+            });
+          } catch (err) {
+            ctx.post({
+              type: 'queryResult',
+              columns: [], rows: [], affectedRows: 0, executionTime: 0,
+              error: sanitizeErrorMessage(err),
+            });
+          } finally {
+            ctx.pendingCancels.delete(ctx.panel);
+          }
+          return true;
         }
+
+        // MySQL: 按 ; 切分后顺序执行, 遇错即停, 回 queryBatchResult
+        const stmts = splitSqlStatements(message.sql);
+        if (stmts.length === 0) {
+          ctx.post({ type: 'queryBatchResult', statements: [] });
+          return true;
+        }
+
+        const statements: StatementResult[] = [];
+        let stopped = false;
+        for (let i = 0; i < stmts.length; i++) {
+          const sql = stmts[i];
+          const index = i + 1;
+          if (stopped) {
+            statements.push({ index, sql, status: 'skipped' });
+            continue;
+          }
+          const { promise, cancel } = driver.executeCancellable(sql, undefined, db);
+          ctx.pendingCancels.set(ctx.panel, cancel);
+          try {
+            const result = await promise;
+            statements.push({
+              index,
+              sql,
+              status: 'ok',
+              executionTime: result.executionTime,
+              affectedRows: result.affectedRows,
+              columns: result.columns,
+              rows: result.rows,
+            });
+          } catch (err) {
+            statements.push({
+              index,
+              sql,
+              status: 'error',
+              error: sanitizeErrorMessage(err),
+            });
+            stopped = true;
+          } finally {
+            ctx.pendingCancels.delete(ctx.panel);
+          }
+        }
+        ctx.post({ type: 'queryBatchResult', statements });
         return true;
       }
 
