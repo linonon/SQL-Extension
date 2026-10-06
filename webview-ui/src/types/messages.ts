@@ -75,6 +75,9 @@ export type ExtensionMessage =
   | { type: 'error'; message: string }
   | { type: 'viewInit'; view: ViewType; context?: Record<string, unknown> }
   | { type: 'schemaInfo'; schema: Record<string, string[]> }
+  | { type: 'aiChunk'; id: string; text: string }
+  | { type: 'aiDone'; id: string; model?: string; error?: string }
+  | { type: 'aiModels'; models: { id: string; name: string }[]; selected: string; error?: string }
   | { type: 'tableDetails'; columns: DetailedColumnInfo[]; tableName: string }
   | { type: 'alterTableResult'; success: boolean; error?: string; ddlPreview?: string }
   | { type: 'redisScanResult'; keys: readonly RedisKeyInfo[]; cursor: string; done: boolean }
@@ -112,6 +115,10 @@ export type WebviewMessage =
   | { type: 'deleteRows'; database: string; table: string; primaryKeys: Record<string, unknown>[] }
   | { type: 'executeQuery'; database: string; sql: string }
   | { type: 'cancelQuery' }
+  | { type: 'aiAsk'; id: string; database: string; question: string; sql: string; selection: string }
+  | { type: 'aiCancel' }
+  | { type: 'aiListModels' }
+  | { type: 'aiSetModel'; id: string }
   | { type: 'requestSchema'; database: string }
   | { type: 'refreshSchema'; database: string }
   | { type: 'testConnection'; config: ConnectionFormBase }

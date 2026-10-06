@@ -16,6 +16,7 @@ import { handleMongoMessage, buildExportPipeline } from './mongo-message-handler
 import { getWebviewContent, getWebviewOptions } from './webview-helper.js';
 import { buildDefaultSelectSql } from '../utils/sql-builder.js';
 import { handleSqlMessage, type SqlMessageContext } from './sql-message-handler.js';
+import { cancelAiAsk } from '../services/ai-assist.js';
 import { sanitizeErrorMessage } from '../utils/sanitize-error.js';
 
 function buildSSHConfig(msg: ConnectionFormSSH): SSHTunnelConfig | undefined {
@@ -257,6 +258,7 @@ export class TableViewProvider implements vscode.Disposable {
     panel.onDidDispose(() => {
       this.pendingCancels.delete(panel);
       this.panels.delete(panelKey);
+      cancelAiAsk(panel);
     });
 
     this.panels.set(panelKey, panel);

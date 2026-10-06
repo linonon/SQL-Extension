@@ -19,6 +19,16 @@
   ],
   "main": "./dist/extension.js",
   "contributes": {
+    "configuration": {
+      "title": "Database Explorer",
+      "properties": {
+        "sqlext.ai.model": {
+          "type": "string",
+          "default": "",
+          "description": "Model used by Ask AI in the SQL editor: a Copilot model id, or claude-code:sonnet / claude-code:opus / claude-code:haiku to use your locally logged-in Claude Code subscription. Empty = Claude Code Sonnet when Claude Code is logged in, otherwise the first Copilot model. Pick from the dropdown in the Ask AI bar."
+        }
+      }
+    },
     "mcpServerDefinitionProviders": [
       {
         "id": "sqlext.mcp",

@@ -9,6 +9,7 @@ import { SqlEditor } from '../sql-editor/SqlEditor';
 import { QueryHistory, useQueryHistory } from './QueryHistory';
 import { QueryResultsGrid } from './QueryResultsGrid';
 import { StatementSummaryList } from './StatementSummaryList';
+import { AiAskBar } from './AiAskBar';
 import type { ColumnInfo } from '../../types/database';
 import type { ExtensionMessage, StatementResult } from '../../types/messages';
 import '../../styles/query-editor.css';
@@ -70,8 +71,10 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
   // 保存(批量更新/插入)失败的错误: 单独存, 不并入 result.error, 以免覆盖整个结果表丢失数据+未保存编辑
   const [saveError, setSaveError] = useState<string | null>(null);
   const [selectedText, setSelectedText] = useState('');
+  const [selectionStart, setSelectionStart] = useState(0);
   const [batchStatements, setBatchStatements] = useState<StatementResult[] | null>(null);
   const [sortState, setSortState] = useState<SortState | null>(null);
+  const [showAsk, setShowAsk] = useState(false);
   const postMessage = usePostMessage();
   const { entries: historyEntries, addEntry: addHistoryEntry } = useQueryHistory();
   const lastSqlRef = useRef<string>('');
@@ -164,10 +167,11 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const resolveSql = useCallback(() => {
+    // 格式化 / 历史 / AI 套用等程序改写内容时不触发选区事件, 记下的选区可能已过期: 原位置对不上就执行整段
     const trimmedSelection = selectedText.trim();
-    if (trimmedSelection) return trimmedSelection;
+    if (trimmedSelection && sqlText.startsWith(selectedText, selectionStart)) return trimmedSelection;
     return sqlText.trim();
-  }, [selectedText, sqlText]);
+  }, [selectedText, selectionStart, sqlText]);
 
   const executeQuery = useCallback(() => {
     const trimmed = resolveSql();
@@ -299,7 +303,7 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
           warnings={warnings}
           onExecute={executeQuery}
           onFormat={handleFormat}
-          onSelectionChange={setSelectedText}
+          onSelectionChange={(text, start) => { setSelectedText(text); setSelectionStart(start); }}
         />
         <div className="query-editor-toolbar">
           {executing ? (
@@ -318,10 +322,23 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
           <button onClick={refreshSchema} title="Refresh schema for autocomplete">
             Refresh Schema
           </button>
+          <button onClick={() => setShowAsk(true)} title="Ask Copilot about this query">
+            Ask AI
+          </button>
           <span className="db-badge" title={`Current database: ${database}`}>{database}</span>
           <span className="hint">Ctrl+Enter to execute</span>
         </div>
       </div>
+      {showAsk && (
+        <AiAskBar
+          database={database}
+          sql={sqlText}
+          selection={selectedText}
+          selectionStart={selectionStart}
+          onApply={setSqlText}
+          onClose={() => setShowAsk(false)}
+        />
+      )}
       <div className="query-editor-resizer" onMouseDown={handleResizerMouseDown} />
       {showHistory && (
         <div className="query-history-panel">
