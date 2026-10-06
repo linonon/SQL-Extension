@@ -9,7 +9,7 @@ import { sortLoadedRows } from '../../utils/sort-rows';
 import { statementAtCaret } from '../../../../src/utils/destructive-sql';
 import type { SortState } from '../../utils/sql-builder';
 import { SqlEditor } from '../sql-editor/SqlEditor';
-import { QueryHistory, useQueryHistory } from './QueryHistory';
+import { QueryHistory } from './QueryHistory';
 import { QueryResultsGrid } from './QueryResultsGrid';
 import { StatementSummaryList } from './StatementSummaryList';
 import { AiAskBar } from './AiAskBar';
@@ -126,12 +126,11 @@ export function QueryEditor({ connectionName, database, driverType, initialSql, 
   // 有未保存编辑时用户要执行的 SQL, 等确认丢弃
   const [discardPrompt, setDiscardPrompt] = useState<string | null>(null);
   const postMessage = usePostMessage();
-  const { entries: historyEntries, addEntry: addHistoryEntry } = useQueryHistory();
   const lastSqlRef = useRef<string>('');
   // 最近一次 executeQuery / listColumns 的 requestId, 回执对不上即是过期回包, 丢弃
   const queryIdRef = useRef(0);
   const columnsIdRef = useRef(0);
-  // 发 Save / Insert 时网格结果所属的 query requestId, 供 refreshAfterWrite 判断网格是否已被新查询替换
+  // 发 Save / Insert / Delete 时网格结果所属的 query requestId, 供 refreshAfterWrite 判断网格是否已被新查询替换
   const saveQueryIdRef = useRef(0);
   const inputRef = useRef<HTMLDivElement>(null);
   const [inputHeight, setInputHeight] = useState<number | undefined>(undefined);
@@ -153,7 +152,7 @@ export function QueryEditor({ connectionName, database, driverType, initialSql, 
     if (pendingEdits === 0) setDiscardPrompt(null);
   }, [pendingEdits, onPendingEditsChange]);
 
-  // Save / Insert 成功后刷新网格: 只重跑产出网格的那条语句; 网格已被新查询替换时不重跑 (那是用户新跑的语句, 可能是写)
+  // Save / Insert / Delete 成功后刷新网格: 只重跑产出网格的那条语句; 网格已被新查询替换时不重跑 (那是用户新跑的语句, 可能是写)
   const resultSqlRef = useRef<string | undefined>(undefined);
   resultSqlRef.current = result?.sql;
   const refreshAfterWrite = useCallback(() => {
@@ -201,7 +200,7 @@ export function QueryEditor({ connectionName, database, driverType, initialSql, 
         setSaveError(message.error);
       }
     }
-    if (message.type === 'insertRowResult') {
+    if (message.type === 'insertRowResult' || message.type === 'deleteRowsResult') {
       if (message.success) {
         setSaveError(null);
         refreshAfterWrite();
@@ -218,13 +217,6 @@ export function QueryEditor({ connectionName, database, driverType, initialSql, 
   }, [refreshAfterWrite]);
 
   useVSCodeMessage(handleMessage);
-
-  // 查询成功后存入历史
-  useEffect(() => {
-    if (result && !result.error && lastSqlRef.current) {
-      addHistoryEntry(lastSqlRef.current, result.executionTime);
-    }
-  }, [result, addHistoryEntry]);
 
   // mount 时请求 schema 信息
   useEffect(() => {
@@ -344,6 +336,17 @@ export function QueryEditor({ connectionName, database, driverType, initialSql, 
     [table, database, postMessage]
   );
 
+  // 宿主先弹确认框, 取消时回执 cancelled, 不刷新也不报错
+  const handleDeleteRows = useCallback(
+    (primaryKeys: Record<string, unknown>[]) => {
+      if (!table || primaryKeys.length === 0) return;
+      setSaveError(null);
+      saveQueryIdRef.current = queryIdRef.current;
+      postMessage({ type: 'deleteRows', database, table, primaryKeys });
+    },
+    [table, database, postMessage]
+  );
+
   const handleResizerMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     const startY = e.clientY;
@@ -411,13 +414,13 @@ export function QueryEditor({ connectionName, database, driverType, initialSql, 
     [result, clientSort, sortState]
   );
 
-  // 合并 fullColumns 的元信息到 result.columns
+  // 合并 fullColumns 的元信息到 result.columns; source 保留结果列自己的 (Copy as INSERT 按它找来源表)
   const displayColumns = useMemo(() => {
     if (!result || result.columns.length === 0) return [];
     if (fullColumns.length === 0) return result.columns;
     return result.columns.map((rc) => {
       const full = fullColumns.find((fc) => fc.name === rc.name);
-      return full ?? rc;
+      return full ? { ...full, source: rc.source } : rc;
     });
   }, [result, fullColumns]);
 
@@ -480,7 +483,7 @@ export function QueryEditor({ connectionName, database, driverType, initialSql, 
       )}
       {showHistory && (
         <div className="query-history-panel">
-          <QueryHistory entries={historyEntries} onSelect={handleHistorySelect} />
+          <QueryHistory onSelect={handleHistorySelect} />
         </div>
       )}
       {executing && !result && (
@@ -511,6 +514,10 @@ export function QueryEditor({ connectionName, database, driverType, initialSql, 
           truncated={result.truncated}
           onExportCsv={handleExportCsv}
           onInsertRow={canInsert ? handleInsertRow : undefined}
+          onDeleteRows={editable ? handleDeleteRows : undefined}
+          driverType={driverType}
+          // 只有结果确定是 panel 表的行 (可编辑) 才指定表名, 否则由网格按结果列来源判断
+          table={editable ? table : undefined}
           tableColumns={fullColumns}
           onPendingCountChange={setPendingEdits}
         />

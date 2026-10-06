@@ -18,7 +18,7 @@ import { sanitizeErrorMessage } from '../utils/sanitize-error.js';
 
 // 不碰数据库的消息: 连接掉线时不为它们重连
 const OFFLINE_MESSAGES: ReadonlySet<WebviewMessage['type']> = new Set([
-  'cancelQuery', 'aiCancel', 'aiListModels', 'aiSetModel', 'exportCsv',
+  'cancelQuery', 'aiCancel', 'aiListModels', 'aiSetModel', 'exportCsv', 'listQueryHistory',
 ]);
 
 function buildSSHConfig(msg: ConnectionFormSSH): SSHTunnelConfig | undefined {
@@ -159,9 +159,11 @@ export class TableViewProvider implements vscode.Disposable {
       light: vscode.Uri.joinPath(this.extensionUri, 'resources', `${driverType}-connected-light.svg`),
       dark: vscode.Uri.joinPath(this.extensionUri, 'resources', `${driverType}-connected-dark.svg`),
     };
+    // defaultDatabase: 连接表单里填的 Database, 浏览器默认只列这个库
     this.openBrowser(`db-browser:${connectionId}`, `[${driverType.toUpperCase()}]${connectionName}`, 'db-browser', {
       connectionId,
       driverType,
+      defaultDatabase: this.connectionConfig(connectionId)?.database || undefined,
     }, iconPath);
   }
 
@@ -293,6 +295,10 @@ export class TableViewProvider implements vscode.Disposable {
       database: context.database as string | undefined,
       getSchema: (database, forceRefresh) => this.getCachedSchema(connectionId!, database, forceRefresh),
       readOnly: blocked !== undefined,
+      queryHistory: {
+        list: () => this.connectionManager.getQueryHistory(connectionId!),
+        add: (entry) => this.connectionManager.addQueryHistory(connectionId!, entry),
+      },
     };
     if (await handleSqlMessage(message, sqlCtx)) { return; }
 

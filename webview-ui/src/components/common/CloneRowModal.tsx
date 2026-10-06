@@ -4,13 +4,15 @@ import { isAutoFilledColumn } from '../../utils/insert-row';
 import { validateRow } from '../../utils/cell-value-validator';
 
 interface CloneRowModalProps {
+  // Insert New Row / Clone as New Row
+  readonly title: string;
   readonly row: Record<string, unknown>;
   readonly columns: ColumnInfo[];
   readonly onSubmit: (row: Record<string, unknown>) => void;
   readonly onClose: () => void;
 }
 
-export function CloneRowModal({ row, columns, onSubmit, onClose }: CloneRowModalProps) {
+export function CloneRowModal({ title, row, columns, onSubmit, onClose }: CloneRowModalProps) {
   // 自动填充列 (MySQL auto_increment / PG serial-nextval / identity) 克隆时清空, 让 DB 自增
   const autoIncrementCols = useMemo(() => {
     const set = new Set<string>();
@@ -100,7 +102,7 @@ export function CloneRowModal({ row, columns, onSubmit, onClose }: CloneRowModal
   return (
     <div className="clone-row-overlay" ref={overlayRef} onClick={handleOverlayClick}>
       <div className="clone-row-modal">
-        <div className="clone-row-header">Clone as New Row</div>
+        <div className="clone-row-header">{title}</div>
         <div className="clone-row-body">
           {columns.map((col) => {
             const isAutoInc = autoIncrementCols.has(col.name);
@@ -116,8 +118,9 @@ export function CloneRowModal({ row, columns, onSubmit, onClose }: CloneRowModal
                   </span>
                 </div>
                 <div className="clone-row-field-input">
-                  <input
-                    type="text"
+                  <textarea
+                    rows={1}
+                    spellCheck={false}
                     value={isNull ? '' : values[col.name]}
                     placeholder={isAutoInc ? 'AUTO' : col.nullable ? 'NULL' : ''}
                     disabled={isNull}

@@ -399,6 +399,28 @@
   color: var(--vscode-errorForeground);
 }
 
+/* hash value / list item 编辑框: 收起时单行, 展开后随内容长高 */
+.redis-hash-editor .hash-item textarea.value,
+.redis-list-editor .list-item textarea.value {
+  white-space: pre;
+  resize: none;
+}
+
+.redis-hash-editor .hash-item textarea.value.expanded,
+.redis-list-editor .list-item textarea.value.expanded {
+  white-space: pre-wrap;
+  word-break: break-all;
+  field-sizing: content;
+  min-height: calc(4lh + 10px);
+  max-height: calc(20lh + 10px);
+  overflow: auto;
+  resize: vertical;
+}
+
+.btn-icon.value-expand:hover {
+  color: var(--vscode-foreground);
+}
+
 /* Small inline buttons (Save/Cancel in edit mode) */
 .btn-small {
   padding: 2px 8px;

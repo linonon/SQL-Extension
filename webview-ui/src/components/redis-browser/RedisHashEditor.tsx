@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { RedisLoadMore } from './RedisLoadMore';
 import { useReadOnly } from '../../hooks/useReadOnly';
+import { RedisValueInput } from './RedisValueInput';
 
 interface RedisHashEditorProps {
   readonly value: Record<string, string>;
@@ -124,11 +125,11 @@ export function RedisHashEditor({ value, onBatchEdit, onDeleteField, hashDone, o
               onChange={(e) => handleFieldChange(origField, e.target.value)}
               readOnly={readOnly}
             />
-            <input
-              className={`value${isDirty ? ' editing-dirty' : ''}`}
+            <RedisValueInput
               value={currentValue}
-              onChange={(e) => handleValueChange(origField, e.target.value)}
+              dirty={isDirty}
               readOnly={readOnly}
+              onChange={(v) => handleValueChange(origField, v)}
             />
             {!readOnly && (
               <button

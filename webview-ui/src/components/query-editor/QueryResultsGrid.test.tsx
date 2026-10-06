@@ -141,8 +141,23 @@ describe('QueryResultsGrid 空结果 / Insert / CSV', () => {
     expect(screen.getByText(/^0 rows in/)).toBeInTheDocument();
     fireEvent.contextMenu(screen.getByRole('table').parentElement!);
     fireEvent.click(screen.getByText('Insert New Row'));
-    const level = screen.getByText('level').closest('.clone-row-field')!.querySelector('input[type="text"]') as HTMLInputElement;
+    expect(document.querySelector('.clone-row-header')).toHaveTextContent('Insert New Row');
+    const level = screen.getByText('level').closest('.clone-row-field')!.querySelector('textarea') as HTMLTextAreaElement;
     expect(level.disabled).toBe(false);
+  });
+
+  it('Clone 表单: 标题按模式, 多行值原样带过去不丢换行', () => {
+    const onInsertRow = vi.fn();
+    render(<QueryResultsGrid {...baseProps} columns={[c('id', { dataType: 'int', nullable: false, isPrimaryKey: true, extra: 'auto_increment' }), c('name')]}
+      rows={[{ id: 1, name: 'a\nb' }]} tableColumns={tableColumns} onInsertRow={onInsertRow} />);
+    fireEvent.contextMenu(document.querySelector('td[data-col="name"]')!);
+    fireEvent.click(screen.getByText('Clone as New Row'));
+    expect(document.querySelector('.clone-row-header')).toHaveTextContent('Clone as New Row');
+    const name = screen.getByText('name', { selector: '.clone-row-field-name' }).closest('.clone-row-field')!.querySelector('textarea')!;
+    expect(name.value).toBe('a\nb');
+    fireEvent.change(screen.getByText('level').closest('.clone-row-field')!.querySelector('textarea')!, { target: { value: '3' } });
+    fireEvent.click(screen.getByText('Insert'));
+    expect(onInsertRow).toHaveBeenCalledWith({ name: 'a\nb', level: '3' });
   });
 
   it('没勾选时导出全部行 (菜单写明), 勾选时只导出勾选行', () => {
@@ -164,5 +179,78 @@ describe('QueryResultsGrid 空结果 / Insert / CSV', () => {
     fireEvent.contextMenu(screen.getByRole('table').parentElement!);
     fireEvent.mouseEnter(screen.getByText('Export'));
     expect(screen.getByText('CSV (first 1 loaded rows)')).toBeInTheDocument();
+  });
+});
+
+describe('QueryResultsGrid 查看值 / 复制 / 删行', () => {
+  const cols = [c('id', { dataType: 'int', nullable: false, isPrimaryKey: true }), c('cfg', { dataType: 'text' })];
+  const data = [{ id: 1, cfg: '{"uid":1234567890123456789,"n":1.50}' }, { id: 2, cfg: "it's" }];
+  const cell = (col: string, row = 0) => document.querySelectorAll(`td[data-col="${col}"]`)[row];
+  const menu = (target: Element, item: string, sub?: string) => {
+    fireEvent.contextMenu(target);
+    if (sub) fireEvent.mouseEnter(screen.getByText(sub));
+    fireEvent.click(screen.getByText(item));
+  };
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  beforeAll(() => { Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true }); });
+
+  it('只读网格双击打开完整值: JSON 无损格式化, 可切原文, 无 Apply', () => {
+    render(<QueryResultsGrid {...baseProps} editable={false} columns={cols} rows={data} />);
+    fireEvent.doubleClick(cell('cfg'));
+    const text = document.querySelector('.cell-value-text') as HTMLTextAreaElement;
+    expect(text.readOnly).toBe(true);
+    expect(text.value).toBe('{\n  "uid": 1234567890123456789,\n  "n": 1.50\n}');
+    fireEvent.click(screen.getByText('Raw'));
+    expect(text.value).toBe(data[0].cfg);
+    expect(screen.queryByText('Apply')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText('Close'));
+    expect(document.querySelector('.cell-value-text')).toBeNull();
+  });
+
+  it('可编辑网格右键 View Value 改值走待保存编辑; 可空列能 Set NULL', () => {
+    const onSave = vi.fn();
+    render(<QueryResultsGrid {...baseProps} onSave={onSave} columns={cols} rows={data} />);
+    menu(cell('cfg', 1), 'View Value');
+    fireEvent.change(document.querySelector('.cell-value-text')!, { target: { value: 'line1\nline2' } });
+    fireEvent.click(screen.getByText('Apply'));
+    menu(cell('cfg'), 'View Value');
+    // 可编辑时 JSON 默认原文: 改一处不会把整段存成格式化后的文本
+    expect((document.querySelector('.cell-value-text') as HTMLTextAreaElement).value).toBe(data[0].cfg);
+    expect(screen.getByText('Format')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Set NULL'));
+    fireEvent.keyDown(window, { key: 's', metaKey: true });
+    expect(onSave).toHaveBeenCalledWith([
+      { primaryKeys: { id: 2 }, changes: { cfg: 'line1\nline2' } },
+      { primaryKeys: { id: 1 }, changes: { cfg: null } },
+    ]);
+  });
+
+  it('Copy Cell / Copy Rows (TSV, 勾选行) / Copy as INSERT (没勾选取点中的行)', () => {
+    render(<QueryResultsGrid {...baseProps} columns={cols} rows={data} driverType="mysql" table="t" />);
+    menu(cell('cfg', 1), 'Copy Cell', 'Copy');
+    expect(writeText).toHaveBeenLastCalledWith("it's");
+    menu(cell('cfg', 1), 'Copy as INSERT', 'Copy');
+    expect(writeText).toHaveBeenLastCalledWith("INSERT INTO `t` (`id`, `cfg`) VALUES (2, 'it''s');");
+    fireEvent.click(screen.getAllByRole('checkbox')[1]);
+    fireEvent.click(screen.getAllByRole('checkbox')[2]);
+    menu(cell('id'), 'Copy Rows (2 selected)', 'Copy');
+    expect(writeText).toHaveBeenLastCalledWith(`id\tcfg\n1\t"${data[0].cfg.replace(/"/g, '""')}"\n2\tit's`);
+  });
+
+  it('Delete: 勾选行按主键交给宿主, 没勾选删点中的行, 有未保存编辑先拦; 没传 onDeleteRows 不出现', () => {
+    const onDeleteRows = vi.fn();
+    const { rerender } = render(<QueryResultsGrid {...baseProps} columns={cols} rows={data} onDeleteRows={onDeleteRows} />);
+    menu(cell('cfg', 1), 'Delete Row');
+    expect(onDeleteRows).toHaveBeenLastCalledWith([{ id: 2 }]);
+    fireEvent.click(screen.getAllByRole('checkbox')[0]);
+    menu(cell('id'), 'Delete Selected Rows (2 selected)');
+    expect(onDeleteRows).toHaveBeenLastCalledWith([{ id: 1 }, { id: 2 }]);
+    menu(cell('cfg'), 'Set NULL');
+    menu(cell('id'), 'Delete Selected Rows (2 selected)');
+    expect(onDeleteRows).toHaveBeenCalledTimes(2);
+    expect(screen.getByText(/未保存编辑.*再删除/)).toBeInTheDocument();
+    rerender(<QueryResultsGrid {...baseProps} columns={cols} rows={data} />);
+    fireEvent.contextMenu(cell('id'));
+    expect(screen.queryByText(/^Delete/)).not.toBeInTheDocument();
   });
 });

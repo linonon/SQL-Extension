@@ -440,8 +440,13 @@
   gap: 8px;
 }
 
-.clone-row-field-input input[type="text"] {
+/* 多行值原样编辑: 随内容长高, 最多 10 行后出滚动条 */
+.clone-row-field-input textarea {
   flex: 1;
+  field-sizing: content;
+  min-height: calc(1lh + 10px);
+  max-height: calc(10lh + 10px);
+  resize: vertical;
   padding: 4px 8px;
   font-size: 13px;
   background-color: var(--vscode-input-background);
@@ -451,12 +456,12 @@
   font-family: var(--vscode-editor-font-family);
 }
 
-.clone-row-field-input input[type="text"]:focus {
+.clone-row-field-input textarea:focus {
   outline: none;
   border-color: var(--vscode-focusBorder);
 }
 
-.clone-row-field-input input[type="text"]:disabled {
+.clone-row-field-input textarea:disabled {
   opacity: 0.5;
 }
 
@@ -504,4 +509,35 @@
 
 .clone-row-btn-insert:hover {
   background-color: var(--vscode-button-hoverBackground);
+}
+
+/* --- Cell Value Modal (复用 Clone Row Modal 的弹层) --- */
+
+.cell-value-modal {
+  width: min(760px, 90vw);
+}
+
+.cell-value-modal .clone-row-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.cell-value-text {
+  width: 100%;
+  min-height: 280px;
+  resize: vertical;
+  padding: 6px 8px;
+  font-family: var(--vscode-editor-font-family);
+  font-size: var(--vscode-editor-font-size, 13px);
+  white-space: pre;
+  background-color: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+}
+
+.cell-value-tools {
+  display: flex;
+  gap: 8px;
+  margin-right: auto;
 }

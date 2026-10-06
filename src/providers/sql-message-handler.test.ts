@@ -50,6 +50,7 @@ function createCtx(driver: IDatabaseDriver, posts: unknown[]): SqlMessageContext
     database: 'AGENT_NEW',
     getSchema: async () => ({}),
     readOnly: false,
+    queryHistory: { list: () => [], add: vi.fn().mockResolvedValue(undefined) },
   };
 }
 
@@ -96,6 +97,24 @@ describe('handleSqlMessage executeQuery mysql batch', () => {
     expect(batch.statements).toHaveLength(2);
     expect(batch.statements.every((s) => s.status === 'ok')).toBe(true);
     expect(driver.executeBatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('每次执行记一条历史 (成功 / 失败), 破坏性确认取消时没执行不记; listQueryHistory 读出', async () => {
+    const driver = createMysqlDriver([{ columns: [], rows: [], affectedRows: 0, executionTime: 1 }, new Error('boom')]);
+    const ctx = createCtx(driver, []);
+    const add = ctx.queryHistory.add as ReturnType<typeof vi.fn>;
+    await handleSqlMessage({ type: 'executeQuery', requestId: 1, database: 'db', sql: 'SELECT 1' }, ctx);
+    await handleSqlMessage({ type: 'executeQuery', requestId: 2, database: 'db', sql: 'SELECT x' }, ctx);
+    await handleSqlMessage({ type: 'executeQuery', requestId: 3, database: 'db', sql: 'DROP TABLE t' }, ctx);
+    expect(add.mock.calls.map(([e]) => [e.sql, e.database, e.ok])).toEqual([
+      ['SELECT 1', 'AGENT_NEW', true],
+      ['SELECT x', 'AGENT_NEW', false],
+    ]);
+
+    const posts: unknown[] = [];
+    const entries = [{ sql: 'SELECT 1', database: 'AGENT_NEW', ts: 1, ok: true }];
+    await handleSqlMessage({ type: 'listQueryHistory' }, { ...createCtx(driver, posts), queryHistory: { ...ctx.queryHistory, list: () => entries } });
+    expect(posts).toEqual([{ type: 'queryHistory', entries }]);
   });
 
   it('第二条失败则后续 skipped', async () => {
@@ -336,6 +355,23 @@ describe('handleSqlMessage listDatabasesAndTables', () => {
     const posts: unknown[] = [];
     await handleSqlMessage({ type: 'refreshDatabases' } as WebviewMessage, createCtx(driver, posts));
     expect(posts).toEqual([{ type: 'databaseTableList', databases: [], error: 'Connection terminated' }]);
+  });
+});
+
+describe('handleSqlMessage deleteRows', () => {
+  it('确认后删除; 实际删除行数少于请求时提示, 仍回成功让网格刷新', async () => {
+    const warn = vi.spyOn(vscode.window, 'showWarningMessage').mockClear()
+      .mockResolvedValueOnce('Delete' as never).mockResolvedValue(undefined as never);
+    const driver = createMysqlDriver([]);
+    vi.mocked(driver.execute).mockResolvedValue({ columns: [], rows: [], affectedRows: 1, executionTime: 0 });
+    const posts: unknown[] = [];
+    await handleSqlMessage(
+      { type: 'deleteRows', database: 'db', table: 't', primaryKeys: [{ id: 1 }, { id: 2 }] } as WebviewMessage,
+      createCtx(driver, posts)
+    );
+    expect(warn.mock.calls[0][0]).toBe('Delete 2 row(s) from db.t?');
+    expect(warn.mock.calls[1][0]).toBe('Deleted 1 of 2 row(s); the others no longer exist');
+    expect(posts).toEqual([{ type: 'deleteRowsResult', success: true }]);
   });
 });
 

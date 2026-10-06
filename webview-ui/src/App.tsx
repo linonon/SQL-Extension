@@ -93,6 +93,7 @@ function renderView(view: ViewType, viewContext: Record<string, unknown>) {
         <DatabaseBrowser
           connectionId={viewContext.connectionId as string}
           driverType={viewContext.driverType as string}
+          defaultDatabase={viewContext.defaultDatabase as string | undefined}
         />
       );
     case 'mongo-browser':

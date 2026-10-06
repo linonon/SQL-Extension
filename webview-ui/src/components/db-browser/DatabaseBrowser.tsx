@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useVSCodeMessage } from '../../hooks/useVSCodeMessage';
 import { usePostMessage } from '../../hooks/usePostMessage';
 import type { ExtensionMessage } from '../../types/messages';
@@ -11,6 +11,27 @@ import '../../styles/db-browser.css';
 interface DatabaseBrowserProps {
   readonly connectionId: string;
   readonly driverType: string;
+  // 连接表单里填的 Database: 列表默认只列它
+  readonly defaultDatabase?: string;
+}
+
+// 系统库: 默认不列. PG 的模板库宿主已排除, 没有要藏的
+const SYSTEM_DATABASES: Readonly<Record<string, ReadonlySet<string>>> = {
+  mysql: new Set(['mysql', 'information_schema', 'performance_schema', 'sys']),
+};
+
+// 左侧列表显示哪些库: 连接配了 Database 且它在列表里时只列它 (showAll 关闭时); 否则隐藏系统库 (showSystem 关闭时)
+export function visibleDatabases(
+  databases: readonly DatabaseInfo[],
+  driverType: string,
+  scope: { readonly defaultDatabase?: string; readonly showAll: boolean; readonly showSystem: boolean },
+): readonly DatabaseInfo[] {
+  if (!scope.showAll && scope.defaultDatabase) {
+    const only = databases.filter((d) => d.name === scope.defaultDatabase);
+    if (only.length > 0) return only;
+  }
+  const system = SYSTEM_DATABASES[driverType];
+  return scope.showSystem || !system ? databases : databases.filter((d) => !system.has(d.name.toLowerCase()));
 }
 
 interface SelectedTable {
@@ -18,8 +39,10 @@ interface SelectedTable {
   readonly table: string;
 }
 
-export function DatabaseBrowser({ connectionId, driverType }: DatabaseBrowserProps) {
+export function DatabaseBrowser({ connectionId, driverType, defaultDatabase }: DatabaseBrowserProps) {
   const [databases, setDatabases] = useState<readonly DatabaseInfo[]>([]);
+  const [showAll, setShowAll] = useState(false);
+  const [showSystem, setShowSystem] = useState(false);
   const [selected, setSelected] = useState<SelectedTable | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -132,11 +155,28 @@ export function DatabaseBrowser({ connectionId, driverType }: DatabaseBrowserPro
   }, [panelWidth]);
 
   const initialSql = selected ? buildSelectSql(driverType, selected.table, undefined, null) : '';
+  const shown = useMemo(
+    () => visibleDatabases(databases, driverType, { defaultDatabase, showAll, showSystem }),
+    [databases, driverType, defaultDatabase, showAll, showSystem]
+  );
+  const canScope = !!defaultDatabase && databases.some((d) => d.name === defaultDatabase);
 
   return (
     <div className="db-browser">
       <div className="db-browser-toolbar">
         <button className="db-refresh-btn" onClick={handleRefresh} title="Refresh">Refresh</button>
+        {canScope && (
+          <label className="db-scope-toggle" title={`Connection database: ${defaultDatabase}`}>
+            <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} />
+            Show all databases
+          </label>
+        )}
+        {SYSTEM_DATABASES[driverType] && (!canScope || showAll) && (
+          <label className="db-scope-toggle">
+            <input type="checkbox" checked={showSystem} onChange={(e) => setShowSystem(e.target.checked)} />
+            Show system databases
+          </label>
+        )}
       </div>
       <div className="db-browser-body">
         <div className="db-left-panel" style={{ width: panelWidth }}>
@@ -147,7 +187,7 @@ export function DatabaseBrowser({ connectionId, driverType }: DatabaseBrowserPro
             </div>
           ) : (
             <DatabaseObjectList
-              databases={databases}
+              databases={shown}
               selected={selected}
               loading={loading}
               onSelectTable={handleSelectTable}

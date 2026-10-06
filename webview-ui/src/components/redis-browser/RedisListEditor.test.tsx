@@ -59,4 +59,20 @@ describe('RedisListEditor', () => {
     expect(screen.queryByText(/discards/)).not.toBeInTheDocument();
     expect(screen.getByText('Load More')).toBeInTheDocument();
   });
+
+  it('值框不吞换行; 展开后可无损格式化 JSON, 保存写回框里的原文', () => {
+    const p = { ...props(), value: ['l1\nl2', '{"uid":1234567890123456789}'] };
+    render(<RedisListEditor {...p} />);
+    const first = document.querySelector('textarea.value') as HTMLTextAreaElement;
+    expect(first.value).toBe('l1\nl2');
+    fireEvent.change(first, { target: { value: 'l1\nl2\nl3' } });
+
+    fireEvent.click(screen.getAllByTitle('Expand value')[1]);
+    fireEvent.click(screen.getByText('Format JSON'));
+    fireEvent.click(screen.getByText('Save All (2)'));
+    expect(p.onBatchSet).toHaveBeenCalledWith([
+      { index: 100, value: 'l1\nl2\nl3' },
+      { index: 101, value: '{\n  "uid": 1234567890123456789\n}' },
+    ]);
+  });
 });

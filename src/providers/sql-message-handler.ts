@@ -6,7 +6,7 @@ import type { QueryService } from '../services/query-service.js';
 import { buildBatchDelete } from '../utils/sql-builder.js';
 import { buildAlterTableStatements } from '../utils/alter-table-builder.js';
 import { isWholeTableWrite, splitSqlStatements } from '../utils/destructive-sql.js';
-import type { StatementResult } from '../types/messages.js';
+import type { QueryHistoryEntry, StatementResult } from '../types/messages.js';
 import type { SchemaColumn } from '../types/query.js';
 import { sanitizeErrorMessage } from '../utils/sanitize-error.js';
 import { cancelAiAsk, listAiModels, runAiAsk, setAiModel } from '../services/ai-assist.js';
@@ -26,6 +26,11 @@ export interface SqlMessageContext {
   readonly getSchema: (database: string, forceRefresh: boolean) => Promise<Record<string, SchemaColumn[]>>;
   // 只读连接: executeQuery 在只读会话里执行 (写消息已由 provider 在进入这里之前拒绝)
   readonly readOnly: boolean;
+  // 本连接的查询历史 (跨会话保留): executeQuery 每次执行记一条, listQueryHistory 读出
+  readonly queryHistory: {
+    readonly list: () => readonly QueryHistoryEntry[];
+    readonly add: (entry: QueryHistoryEntry) => Promise<void>;
+  };
 }
 
 export async function handleSqlMessage(
@@ -42,7 +47,7 @@ export async function handleSqlMessage(
           ctx.post({
             type: 'insertRowResult',
             success: false,
-            error: err instanceof Error ? err.message : String(err),
+            error: sanitizeErrorMessage(err),
           });
         }
         return true;
@@ -51,7 +56,7 @@ export async function handleSqlMessage(
       case 'deleteRows': {
         const count = message.primaryKeys.length;
         const confirmDelete = await vscode.window.showWarningMessage(
-          `Delete ${count} row(s)?`, { modal: true }, 'Delete'
+          `Delete ${count} row(s) from ${message.database}.${message.table}?`, { modal: true }, 'Delete'
         );
         if (confirmDelete !== 'Delete') {
           // 用户取消: 回执 cancelled, 让前端停止等待而不刷新/不报错
@@ -61,15 +66,19 @@ export async function handleSqlMessage(
         try {
           const driver = ctx.getDriver();
           const batchQuery = buildBatchDelete(driver.driverType, message.table, message.primaryKeys, message.database);
-          if (batchQuery.sql) {
-            await driver.execute(batchQuery.sql, batchQuery.params, message.database);
+          const deleted = batchQuery.sql
+            ? (await driver.execute(batchQuery.sql, batchQuery.params, message.database)).affectedRows
+            : 0;
+          // 行可能已被别处删掉: 照常刷新, 但说清实际删了几行
+          if (deleted < count) {
+            void vscode.window.showWarningMessage(`Deleted ${deleted} of ${count} row(s); the others no longer exist`);
           }
           ctx.post({ type: 'deleteRowsResult', success: true });
         } catch (err) {
           ctx.post({
             type: 'deleteRowsResult',
             success: false,
-            error: err instanceof Error ? err.message : String(err),
+            error: sanitizeErrorMessage(err),
           });
         }
         return true;
@@ -99,13 +108,27 @@ export async function handleSqlMessage(
 
       case 'executeQuery': {
         // 回执 (含出错) 一律带回 requestId, webview 只认最近一次请求的回执
+        const database = ctx.database ?? message.database;
         let reply: object;
+        // 执行过就记历史 (成功或失败); 破坏性确认被取消时没执行, 不记
+        let ok: boolean | undefined;
         try {
-          reply = await runQuery(message.sql, ctx.database ?? message.database, ctx);
+          const batch = await runQuery(message.sql, database, ctx);
+          if (batch.statements.length > 0) { ok = batch.statements.every((s) => s.status === 'ok'); }
+          reply = batch;
         } catch (err) {
+          ok = false;
           reply = { type: 'queryResult', columns: [], rows: [], affectedRows: 0, executionTime: 0, error: sanitizeErrorMessage(err) };
         }
+        if (ok !== undefined) {
+          ctx.queryHistory.add({ sql: message.sql, database, ts: Date.now(), ok }).catch(() => { /* 历史写失败不影响查询回执 */ });
+        }
         ctx.post({ ...reply, requestId: message.requestId });
+        return true;
+      }
+
+      case 'listQueryHistory': {
+        ctx.post({ type: 'queryHistory', entries: ctx.queryHistory.list() });
         return true;
       }
 
@@ -344,7 +367,11 @@ export const RESULT_ROW_CAP = 10_000;
 // executeQuery 的执行体, 返回待发的 queryBatchResult (不含 requestId).
 // 整次执行在一条专用连接上跑完 (executeBatch), 编辑器里的 USE / BEGIN 对同一次执行的后续语句生效.
 // cancel 槽位每个 panel 一个: 执行结束只清自己放进去的 cancel, 晚结束的旧执行不能清掉新执行的
-async function runQuery(sql: string, db: string, ctx: SqlMessageContext): Promise<object> {
+async function runQuery(
+  sql: string,
+  db: string,
+  ctx: SqlMessageContext
+): Promise<{ type: 'queryBatchResult'; statements: StatementResult[]; warning?: string }> {
   // 破坏性操作确认网: DROP/TRUNCATE 及无 WHERE 的整表 DELETE/UPDATE
   const driver = ctx.getDriver();
   if (isWholeTableWrite(sql)) {

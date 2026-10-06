@@ -11,7 +11,9 @@ import { QueryResultsToolbar } from './QueryResultsToolbar';
 import { ContextMenu } from '../common/ContextMenu';
 import type { ContextMenuItem } from '../common/ContextMenu';
 import { CloneRowModal } from '../common/CloneRowModal';
-import { generateCsv } from '../../utils/csv';
+import { CellValueModal } from '../common/CellValueModal';
+import { generateCsv, generateTsv } from '../../utils/csv';
+import { buildInsertSql } from '../../utils/insert-sql';
 import { buildInsertRow } from '../../utils/insert-row';
 import { validateCellValue } from '../../utils/cell-value-validator';
 import { widestCellSample, MAX_FIT_CHARS } from '../../utils/column-fit';
@@ -47,6 +49,11 @@ interface QueryResultsGridProps {
   readonly note?: string;
   // 宿主截掉了结果集尾部: rows 不是语句返回的全部行
   readonly truncated?: boolean;
+  // Copy as INSERT 的方言与目标表 (不传表时取结果列的唯一来源表)
+  readonly driverType?: string;
+  readonly table?: string;
+  // 传了才有 Delete 菜单: 按主键删行, 宿主确认后执行
+  readonly onDeleteRows?: (primaryKeys: Record<string, unknown>[]) => void;
 }
 
 interface EditingCell {
@@ -77,21 +84,26 @@ export function QueryResultsGrid({
   onPendingCountChange,
   note,
   truncated,
+  driverType,
+  table,
+  onDeleteRows,
 }: QueryResultsGridProps) {
   const [editingCell, setEditingCell] = useState<EditingCell | null>(null);
   const [rowSelection, setRowSelection] = useState<Record<string, boolean>>({});
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; rowIndex: number | null; columnId: string | null } | null>(null);
-  const [cloneRow, setCloneRow] = useState<Record<string, unknown> | null>(null);
+  const [cloneRow, setCloneRow] = useState<{ readonly title: string; readonly row: Record<string, unknown> } | null>(null);
+  const [viewCell, setViewCell] = useState<{ readonly rowIndex: number; readonly columnId: string } | null>(null);
   const [cellError, setCellError] = useState<string | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const { addChange, isCellChanged, getCellValue, buildUpdates, clearChanges, pendingCount } =
     useBatchEdits();
 
-  // rows 引用变化 (save/insert 成功后 re-query, 或用户重跑查询) -> 清空 pending + selection.
+  // rows 引用变化 (save/insert 成功后 re-query, 或用户重跑查询) -> 清空 pending, selection 和打开的值弹窗 (行下标已失效).
   // 排序在 handleSortGuarded 拦截, 重跑查询 / 切表由上层按 onPendingCountChange 先确认, 避免此处静默丢弃草稿.
   useEffect(() => {
     clearChanges();
     setRowSelection({});
+    setViewCell(null);
   }, [rows, clearChanges]);
 
   useEffect(() => {
@@ -106,9 +118,13 @@ export function QueryResultsGrid({
     onDismissSaveError?.();
   }, [clearChanges, onDismissSaveError]);
 
+  // 可编辑网格双击就地编辑, 只读网格双击打开完整值弹窗
   const handleCellDoubleClick = useCallback(
     (rowIndex: number, columnId: string) => {
-      if (!editable) return;
+      if (!editable) {
+        setViewCell({ rowIndex, columnId });
+        return;
+      }
       const value = getCellValue(rowIndex, columnId, rows[rowIndex]?.[columnId]);
       const text = value === null || value === undefined ? '' : String(value);
       setEditingCell({ rowIndex, columnId, value: text, dirty: false });
@@ -214,16 +230,67 @@ export function QueryResultsGrid({
     setContextMenu(null);
   }, []);
 
+  const copyText = useCallback(async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      setCellError('复制失败: 剪贴板不可用');
+    }
+  }, []);
+
+  // 单元格值弹窗里 Apply / Set NULL: 和就地编辑一样记成待保存的改动
+  const handleViewCellSave = useCallback((value: string | null) => {
+    if (viewCell) addChange(viewCell.rowIndex, viewCell.columnId, rows[viewCell.rowIndex]?.[viewCell.columnId], value);
+    setViewCell(null);
+  }, [viewCell, rows, addChange]);
+
   const formColumns = tableColumns && tableColumns.length > 0 ? tableColumns : columns;
   // 自增/序列/表达式默认值列不预填, 交给 DB 应用默认 (CloneRowModal 仍展示全部列供编辑)
   const emptyRow = useMemo(() => buildInsertRow(formColumns), [formColumns]);
+
+  // Copy as INSERT 的目标表: panel 表, 否则结果列都来自同一张表时取它
+  const sourceTable = columns[0]?.source?.table;
+  const insertTable = table ?? (sourceTable && columns.every((c) => c.source?.table === sourceTable) ? sourceTable : 'table_name');
 
   const contextMenuItems: ContextMenuItem[] = useMemo(() => {
     const rowIndex = contextMenu?.rowIndex ?? null;
     const columnId = contextMenu?.columnId ?? null;
     const cellCol = columnId === null ? undefined : columns.find((c) => c.name === columnId);
     const cellValue = rowIndex === null || columnId === null ? null : getCellValue(rowIndex, columnId, rows[rowIndex]?.[columnId]);
+    // Copy / Delete 的对象: 有勾选行取勾选行, 否则取右键点中的那一行
+    const targets = selectedIndices.length > 0 ? selectedIndices : rowIndex === null ? [] : [rowIndex];
+    const targetNote = selectedIndices.length > 0 ? ` (${selectedIndices.length} selected)` : '';
+    // 复制的是网格上看到的值 (含未保存的编辑)
+    const targetRows = () => targets.map((i) => Object.fromEntries(columns.map((c) => [c.name, getCellValue(i, c.name, rows[i]?.[c.name])])));
+    const pkColumns = columns.filter((c) => c.isPrimaryKey);
     return [
+      {
+        label: 'View Value',
+        disabled: rowIndex === null || columnId === null,
+        action: () => {
+          if (rowIndex !== null && columnId !== null) setViewCell({ rowIndex, columnId });
+        },
+      },
+      {
+        label: 'Copy',
+        children: [
+          {
+            label: 'Copy Cell',
+            disabled: rowIndex === null || columnId === null,
+            action: () => { void copyText(cellValue === null || cellValue === undefined ? 'NULL' : String(cellValue)); },
+          },
+          {
+            label: `Copy Rows${targetNote}`,
+            disabled: targets.length === 0,
+            action: () => { void copyText(generateTsv(columns, targetRows())); },
+          },
+          {
+            label: `Copy as INSERT${targetNote}`,
+            disabled: targets.length === 0 || !driverType,
+            action: () => { void copyText(buildInsertSql(driverType ?? '', insertTable, columns, targetRows())); },
+          },
+        ],
+      },
       {
         label: 'Set NULL',
         disabled: !editable || rowIndex === null || !cellCol?.nullable || cellValue === null || cellValue === undefined,
@@ -237,7 +304,7 @@ export function QueryResultsGrid({
         label: 'Insert New Row',
         disabled: !onInsertRow,
         action: () => {
-          if (!rejectIfPending('插入')) setCloneRow(emptyRow);
+          if (!rejectIfPending('插入')) setCloneRow({ title: 'Insert New Row', row: emptyRow });
         },
       },
       {
@@ -246,10 +313,19 @@ export function QueryResultsGrid({
         action: () => {
           if (rowIndex !== null && !rejectIfPending('插入')) {
             // 结果集里有的列取源行的值, 没选出来的列按插入新行的默认值预填
-            setCloneRow({ ...emptyRow, ...rows[rowIndex] });
+            setCloneRow({ title: 'Clone as New Row', row: { ...emptyRow, ...rows[rowIndex] } });
           }
         },
       },
+      // 父组件只在网格可写回 panel 表时给 onDeleteRows
+      ...(onDeleteRows ? [{
+        label: selectedIndices.length > 0 ? `Delete Selected Rows${targetNote}` : 'Delete Row',
+        disabled: targets.length === 0 || pkColumns.length === 0,
+        action: () => {
+          if (rejectIfPending('删除')) return;
+          onDeleteRows(targets.map((i) => Object.fromEntries(pkColumns.map((pk) => [pk.name, rows[i]?.[pk.name]]))));
+        },
+      }] : []),
       {
         label: 'Export',
         children: [
@@ -262,7 +338,9 @@ export function QueryResultsGrid({
         ],
       },
     ];
-  }, [contextMenu?.rowIndex, contextMenu?.columnId, columns, editable, getCellValue, addChange, onInsertRow, rejectIfPending, emptyRow, rows, selectedIndices.length, onExportCsv, handleExportCsv, truncated]);
+  }, [contextMenu?.rowIndex, contextMenu?.columnId, columns, editable, getCellValue, addChange, onInsertRow, rejectIfPending, emptyRow, rows, selectedIndices, onExportCsv, handleExportCsv, truncated, copyText, driverType, insertTable, onDeleteRows]);
+
+  const viewCellColumn = viewCell ? columns.find((c) => c.name === viewCell.columnId) : undefined;
 
   if (error) {
     return <div className="query-results-error">{error}</div>;
@@ -308,7 +386,6 @@ export function QueryResultsGrid({
         <GridTable
           columns={columns}
           rows={rows}
-          editable={editable}
           editingCell={editingCell}
           setEditingCell={setEditingCell}
           isCellChanged={isCellChanged}
@@ -332,10 +409,19 @@ export function QueryResultsGrid({
       )}
       {cloneRow && onInsertRow && (
         <CloneRowModal
-          row={cloneRow}
+          title={cloneRow.title}
+          row={cloneRow.row}
           columns={formColumns}
           onSubmit={handleCloneSubmit}
           onClose={() => setCloneRow(null)}
+        />
+      )}
+      {viewCell && viewCellColumn && (
+        <CellValueModal
+          column={viewCellColumn}
+          value={getCellValue(viewCell.rowIndex, viewCell.columnId, rows[viewCell.rowIndex]?.[viewCell.columnId])}
+          onSave={editable ? handleViewCellSave : undefined}
+          onClose={() => setViewCell(null)}
         />
       )}
     </div>
@@ -346,7 +432,6 @@ export function QueryResultsGrid({
 interface GridTableProps {
   readonly columns: ColumnInfo[];
   readonly rows: Record<string, unknown>[];
-  readonly editable: boolean;
   readonly editingCell: EditingCell | null;
   readonly setEditingCell: React.Dispatch<React.SetStateAction<EditingCell | null>>;
   readonly isCellChanged: (rowIndex: number, columnId: string) => boolean;
@@ -412,7 +497,6 @@ function measureColumnFitWidth(
 function GridTable({
   columns,
   rows,
-  editable,
   editingCell,
   setEditingCell,
   isCellChanged,
@@ -632,7 +716,7 @@ function GridTable({
                     data-col={colId}
                     className={classNames}
                     style={{ width: cell.column.getSize() }}
-                    onDoubleClick={() => editable && onCellDoubleClick(rowIndex, colId)}
+                    onDoubleClick={() => onCellDoubleClick(rowIndex, colId)}
                   >
                     {isNull ? 'NULL' : String(displayValue)}
                   </td>

@@ -1,30 +1,8 @@
 import type { IDatabaseDriver } from '../types/driver.js';
 import { pgSequenceOfDefault } from '../utils/sql-builder.js';
+import { sqlLiteral } from '../utils/sql-literal.js';
 
 const PAGE_SIZE = 1000;
-
-// 字面量按方言转义: MySQL 字符串里反斜杠是转义符, 要加倍; PG (standard_conforming_strings, 9.1 起默认 on)
-// 反斜杠是普通字符, 只双写单引号. 二进制输出 hex 字面量, 不按 utf8 硬解
-function escapeValue(value: unknown, mysql: boolean): string {
-  if (value === null || value === undefined) {
-    return 'NULL';
-  }
-  if (typeof value === 'number') {
-    return String(value);
-  }
-  if (typeof value === 'boolean') {
-    return value ? 'TRUE' : 'FALSE';
-  }
-  if (value instanceof Date) {
-    return `'${value.toISOString()}'`;
-  }
-  if (Buffer.isBuffer(value)) {
-    return mysql ? `X'${value.toString('hex')}'` : `'\\x${value.toString('hex')}'::bytea`;
-  }
-  const raw = typeof value === 'object' ? JSON.stringify(value) : String(value);
-  const str = mysql ? raw.replace(/\\/g, '\\\\').replace(/'/g, "''") : raw.replace(/'/g, "''");
-  return `'${str}'`;
-}
 
 export class DumpService {
   async dumpStruct(
@@ -86,7 +64,7 @@ export class DumpService {
       }
 
       const valueRows = result.rows.map((row) => {
-        const values = columns.map((col) => escapeValue(row[col.name], mysql));
+        const values = columns.map((col) => sqlLiteral(row[col.name], mysql));
         return `(${values.join(', ')})`;
       });
 

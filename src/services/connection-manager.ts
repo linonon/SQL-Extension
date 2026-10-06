@@ -13,10 +13,20 @@ import { RabbitMQDriver } from '../drivers/rabbitmq-driver.js';
 import { CredentialStore } from './credential-store.js';
 import { createTunnel, KNOWN_HOSTS_PATH, type TunnelHandle } from './ssh-tunnel.js';
 import { sanitizeErrorMessage } from '../utils/sanitize-error.js';
+import type { QueryHistoryEntry } from '../types/messages.js';
 
 type AnyDriver = IDatabaseDriver | MongoDriver | IRedisDriver | IKafkaDriver | IRabbitMQDriver;
 
 const CONNECTIONS_KEY = 'sqlext.connections';
+const QUERY_HISTORY_MAX = 200;
+// 超长的 SQL (粘贴进来的大脚本) 不进历史: globalState 每次激活整份载入内存; 截断又会在点回时加载出残缺 SQL
+const QUERY_HISTORY_SQL_MAX = 100_000;
+const queryHistoryKey = (connectionId: string) => `sqlext.queryHistory.${connectionId}`;
+
+// 新的在前; 与最近一条 SQL 相同时替换那一条 (连续重复执行不刷屏); 最多 QUERY_HISTORY_MAX 条
+export function prependQueryHistory(list: readonly QueryHistoryEntry[], entry: QueryHistoryEntry): QueryHistoryEntry[] {
+  return [entry, ...(list[0]?.sql === entry.sql ? list.slice(1) : list)].slice(0, QUERY_HISTORY_MAX);
+}
 
 const HEARTBEAT_INTERVAL_MS = 60_000;
 // 半开连接上 ping 可能永不返回, 超时按失败处理
@@ -150,6 +160,15 @@ export class ConnectionManager implements vscode.Disposable {
     return this.globalState.get<ConnectionConfig[]>(CONNECTIONS_KEY, []);
   }
 
+  getQueryHistory(id: string): QueryHistoryEntry[] {
+    return this.globalState.get<QueryHistoryEntry[]>(queryHistoryKey(id), []);
+  }
+
+  async addQueryHistory(id: string, entry: QueryHistoryEntry): Promise<void> {
+    if (entry.sql.length > QUERY_HISTORY_SQL_MAX) return;
+    await this.globalState.update(queryHistoryKey(id), prependQueryHistory(this.getQueryHistory(id), entry));
+  }
+
   getConnectionInfo(): ConnectionInfo[] {
     return this.getConnections().map((config) => ({
       config,
@@ -220,6 +239,7 @@ export class ConnectionManager implements vscode.Disposable {
     await this.disconnect(id);
     const connections = this.getConnections().filter((c) => c.id !== id);
     await this.globalState.update(CONNECTIONS_KEY, connections);
+    await this.globalState.update(queryHistoryKey(id), undefined);
     await this.credentialStore.deletePassword(id);
     await this.credentialStore.deleteSSHPassword(id);
     this._onDidChange.fire();

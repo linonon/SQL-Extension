@@ -165,6 +165,22 @@
   white-space: nowrap;
 }
 
+.query-history-meta.failed {
+  color: var(--vscode-errorForeground);
+}
+
+/* 列表滚动时过滤框留在顶部 */
+.query-history-filter {
+  position: sticky;
+  top: 0;
+  margin: 4px 8px;
+  padding: 3px 6px;
+  font-size: 12px;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+}
+
 .query-results {
   flex: 1;
   overflow: auto;

@@ -40,14 +40,13 @@ vi.mock('../../utils/format-sql', () => ({
 
 // mock QueryHistory
 vi.mock('./QueryHistory', () => ({
-  useQueryHistory: () => ({ entries: [], addEntry: vi.fn() }),
   QueryHistory: () => <div data-testid="query-history" />,
 }));
 
 // mock QueryResultsGrid
 vi.mock('./QueryResultsGrid', () => ({
-  QueryResultsGrid: ({ columns, rows, error, editable, readOnlyReason, onInsertRow, onSave, onSort, note, onPendingCountChange }: {
-    columns: unknown[];
+  QueryResultsGrid: ({ columns, rows, error, editable, readOnlyReason, onInsertRow, onSave, onSort, note, onPendingCountChange, onDeleteRows, table }: {
+    columns: ColumnInfo[];
     rows: unknown[];
     error?: string;
     editable: boolean;
@@ -57,6 +56,8 @@ vi.mock('./QueryResultsGrid', () => ({
     onSort?: (column: string) => void;
     note?: string;
     onPendingCountChange?: (count: number) => void;
+    onDeleteRows?: (primaryKeys: Record<string, unknown>[]) => void;
+    table?: string;
   }) => (
     <div
       data-testid="query-results"
@@ -65,10 +66,13 @@ vi.mock('./QueryResultsGrid', () => ({
       data-can-insert={String(!!onInsertRow)}
       data-rows={JSON.stringify(rows)}
       data-note={note ?? ''}
+      data-table={table ?? ''}
+      data-sources={columns.map((c) => c.source?.table ?? '').join(',')}
     >
       <button data-testid="save" onClick={() => onSave?.([{ primaryKeys: { id: 1 }, changes: { name: 'x' } }])} />
       <button data-testid="sort-v" onClick={() => onSort?.('v')} />
       <button data-testid="edit" onClick={() => onPendingCountChange?.(2)} />
+      {onDeleteRows && <button data-testid="delete" onClick={() => onDeleteRows([{ id: 1 }])} />}
       {error ? (
         <div data-testid="error">{error}</div>
       ) : (
@@ -415,6 +419,7 @@ describe('QueryEditor', () => {
       columns: [col('id', { source: src }), col('uid', { source: src })], rows: [{ id: 2, uid: 9 }], affectedRows: 0, executionTime: 1,
     });
     expect(screen.getByTestId('query-results')).toHaveAttribute('data-editable', 'true');
+    expect(screen.getByTestId('query-results')).toHaveAttribute('data-table', 'b');
   });
 
   it('db-browser 切表卸载编辑器: 查询还在跑就发 cancelQuery, 已结束则不发', () => {
@@ -454,6 +459,9 @@ describe('QueryEditor', () => {
     expect(grid).toHaveAttribute('data-editable', 'false');
     expect(grid).toHaveAttribute('data-readonly', 'Read-only: result is not a plain selection from users');
     expect(grid).toHaveAttribute('data-can-insert', 'true');
+    // Copy as INSERT 不能拿 panel 表名配 orders 的行; 同名列合并表结构后仍保留结果列的来源
+    expect(grid).toHaveAttribute('data-table', '');
+    expect(grid).toHaveAttribute('data-sources', 'orders,orders');
   });
 
   it('只读连接: 本表的结果也不可编辑 / 插入, badge 标出 (read-only)', () => {
@@ -499,6 +507,25 @@ describe('QueryEditor', () => {
     send({ type: 'batchUpdateResult', success: true });
     expect(executed()).toEqual(['SELECT * FROM t', 'SELECT * FROM t', 'UPDATE t SET n = n + 1 WHERE id = 5']);
   });
+  it('删行: 发 deleteRows 给宿主, 成功后重跑产出网格的语句, 取消不重跑; 不可编辑的网格没有删除', () => {
+    render(<QueryEditor connectionId="c" database="db" table="t" initialSql="SELECT * FROM t" autoExecute />);
+    const src = { schema: 'db', table: 't' };
+    const executed = () => mockPostMessage.mock.calls.filter(([m]) => m.type === 'executeQuery').map(([m]) => m.sql);
+    send({ type: 'columnsResult', requestId: lastId('listColumns'), columns: [col('id', { isPrimaryKey: true }), col('name')] });
+    send({ type: 'queryResult', requestId: lastId('executeQuery'), columns: [col('id', { source: src })], rows: [{ id: 1 }], affectedRows: 0, executionTime: 1 });
+
+    fireEvent.click(screen.getByTestId('delete'));
+    expect(mockPostMessage).toHaveBeenLastCalledWith({ type: 'deleteRows', database: 'db', table: 't', primaryKeys: [{ id: 1 }] });
+    send({ type: 'deleteRowsResult', success: false, cancelled: true });
+    expect(executed()).toHaveLength(1);
+    fireEvent.click(screen.getByTestId('delete'));
+    send({ type: 'deleteRowsResult', success: true });
+    expect(executed()).toEqual(['SELECT * FROM t', 'SELECT * FROM t']);
+
+    send({ type: 'queryResult', requestId: lastId('executeQuery'), columns: [col('x')], rows: [{ x: 1 }], affectedRows: 0, executionTime: 1 });
+    expect(screen.queryByTestId('delete')).not.toBeInTheDocument();
+  });
+
   it('Save 成功后只重跑产出网格的那条语句, 不重跑同批的写语句', () => {
     render(<QueryEditor connectionId="c" database="db" table="t" initialSql="UPDATE t SET v = 10 WHERE id = 1; SELECT * FROM t" autoExecute />);
     const src = { schema: 'db', table: 't' };

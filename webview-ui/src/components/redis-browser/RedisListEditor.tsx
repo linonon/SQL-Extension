@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { RedisLoadMore } from './RedisLoadMore';
 import { useReadOnly } from '../../hooks/useReadOnly';
+import { RedisValueInput } from './RedisValueInput';
 
 interface RedisListEditorProps {
   readonly value: readonly string[];
@@ -79,11 +80,11 @@ export function RedisListEditor({
         return (
           <div key={index} className="list-item">
             <span className="index">[{start + index}]</span>
-            <input
-              className={`value${isDirty ? ' editing-dirty' : ''}`}
+            <RedisValueInput
               value={currentValue}
-              onChange={(e) => handleEditChange(index, item, e.target.value)}
+              dirty={isDirty}
               readOnly={readOnly}
+              onChange={(v) => handleEditChange(index, item, v)}
             />
             {!readOnly && (
               <button

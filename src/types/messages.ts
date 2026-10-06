@@ -41,6 +41,14 @@ export interface MongoExplainSummary {
   readonly isCollScan: boolean;
 }
 
+// 查询历史的一条: 编辑器每次执行 (成功或失败) 由宿主按连接记在 globalState
+export interface QueryHistoryEntry {
+  readonly sql: string;
+  readonly database: string;
+  readonly ts: number;
+  readonly ok: boolean;
+}
+
 export type StatementStatus = 'ok' | 'error' | 'skipped';
 
 export interface StatementResult {
@@ -64,6 +72,10 @@ export type ExtensionMessage =
   | { type: 'columnsResult'; requestId: number; columns: ColumnInfo[] }
   | { type: 'batchUpdateResult'; success: boolean; error?: string }
   | { type: 'insertRowResult'; success: boolean; error?: string }
+  // cancelled: 用户在确认框里取消, 没有删
+  | { type: 'deleteRowsResult'; success: boolean; error?: string; cancelled?: boolean }
+  // 本连接的查询历史, 新的在前
+  | { type: 'queryHistory'; entries: readonly QueryHistoryEntry[] }
   | { type: 'connectionTestResult'; success: boolean; error?: string }
   | { type: 'connectionList'; connections: ConnectionConfig[] }
   | { type: 'error'; message: string }
@@ -110,6 +122,7 @@ export type WebviewMessage =
   | { type: 'deleteRows'; database: string; table: string; primaryKeys: Record<string, unknown>[] }
   | { type: 'executeQuery'; requestId: number; database: string; sql: string }
   | { type: 'cancelQuery' }
+  | { type: 'listQueryHistory' }
   // lastError: 编辑器上一次执行失败时的报错
   | { type: 'aiAsk'; id: string; database: string; question: string; sql: string; selection: string; lastError?: string }
   | { type: 'aiCancel' }

@@ -36,7 +36,7 @@ vi.mock('vscode', async () => {
 });
 
 // 在 mock 之后导入
-import { ConnectionManager, openDriver } from './connection-manager';
+import { ConnectionManager, openDriver, prependQueryHistory } from './connection-manager';
 import { CredentialStore } from './credential-store';
 
 // Mock drivers
@@ -282,6 +282,30 @@ describe('ConnectionManager', () => {
       await manager.updateConnection('c1', { ...base, ssh: undefined }, undefined, 'ignored');
       expect(mockSecrets.delete).toHaveBeenCalledWith('sqlext.sshPassword.c1');
       expect(mockSecrets.store).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('query history', () => {
+    const entry = (sql: string, ts: number) => ({ sql, database: 'db', ts, ok: true });
+
+    it('新的在前, 连续相同 SQL 只留最新一条, 最多 200 条', () => {
+      let list = prependQueryHistory([], entry('a', 1));
+      list = prependQueryHistory(list, entry('b', 2));
+      list = prependQueryHistory(list, entry('b', 3));
+      list = prependQueryHistory(list, entry('a', 4));
+      expect(list.map((e) => [e.sql, e.ts])).toEqual([['a', 4], ['b', 3], ['a', 1]]);
+      for (let i = 0; i < 300; i++) { list = prependQueryHistory(list, entry(`q${i}`, i)); }
+      expect(list).toHaveLength(200);
+      expect(list[0].sql).toBe('q299');
+    });
+
+    it('按连接分 key 存, 删连接时一并删掉; 超长 SQL 不记', async () => {
+      await manager.addQueryHistory('conn1', entry('x'.repeat(100_001), 0));
+      expect(mockGlobalState.update).not.toHaveBeenCalled();
+      await manager.addQueryHistory('conn1', entry('a', 1));
+      expect(mockGlobalState.update).toHaveBeenCalledWith('sqlext.queryHistory.conn1', [entry('a', 1)]);
+      await manager.removeConnection('conn1');
+      expect(mockGlobalState.update).toHaveBeenCalledWith('sqlext.queryHistory.conn1', undefined);
     });
   });
 

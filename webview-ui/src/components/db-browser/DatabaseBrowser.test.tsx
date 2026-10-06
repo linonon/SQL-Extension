@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import { DatabaseBrowser } from './DatabaseBrowser';
+import { DatabaseBrowser, visibleDatabases } from './DatabaseBrowser';
 import { mockPostMessage } from '../../__test__/setup';
 import type { ExtensionMessage } from '../../types/messages';
 
@@ -39,5 +39,30 @@ describe('DatabaseBrowser', () => {
     expect(screen.getByTestId('editor')).toHaveTextContent('a');
     fireEvent.click(screen.getByText('Discard and Open b'));
     expect(screen.getByTestId('editor')).toHaveTextContent('b');
+  });
+
+  it('系统库默认隐藏可切出; 配了 Database 只列它, 可切到全部; 库分组可折叠, 有过滤词时展开', () => {
+    const db = (name: string) => ({ name, tables: [{ name: `${name}_t`, rowCount: 1 }] });
+    const all = [db('game'), db('mysql'), db('sys'), db('shop')];
+    expect(visibleDatabases(all, 'mysql', { showAll: false, showSystem: false }).map((d) => d.name)).toEqual(['game', 'shop']);
+    expect(visibleDatabases(all, 'mysql', { showAll: false, showSystem: true })).toBe(all);
+    expect(visibleDatabases(all, 'postgresql', { showAll: false, showSystem: false })).toBe(all);
+    // 配的库不在列表里 (没权限 / 写错) 时不藏成空表
+    expect(visibleDatabases(all, 'mysql', { defaultDatabase: 'nope', showAll: false, showSystem: false })).toHaveLength(2);
+
+    render(<DatabaseBrowser connectionId="c" driverType="mysql" defaultDatabase="game" />);
+    send({ type: 'databaseTableList', databases: all });
+    expect(screen.queryByText('shop')).not.toBeInTheDocument();
+    expect(screen.queryByText('Show system databases')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText('Show all databases'));
+    expect(screen.getByText('shop')).toBeInTheDocument();
+    expect(screen.queryByText('mysql')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText('Show system databases'));
+    expect(screen.getByText('mysql')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('shop'));
+    expect(screen.queryByText('shop_t')).not.toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText(/Filter db or table/), { target: { value: 'shop' } });
+    expect(screen.getByText('shop_t')).toBeInTheDocument();
   });
 });
