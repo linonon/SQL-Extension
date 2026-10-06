@@ -1,13 +1,9 @@
-import { format } from 'sql-formatter';
+import { formatDialect, mysql, postgresql } from 'sql-formatter';
 
-const dialectMap: Record<string, 'mysql' | 'postgresql'> = {
-  mysql: 'mysql',
-  postgresql: 'postgresql',
-};
-
+// 只引编辑器用到的两种方言: format() 按名字查方言, 会把全部方言打进 bundle
 export function formatSql(sql: string, driverType?: string): string {
-  return format(sql, {
-    language: dialectMap[driverType ?? ''] ?? 'sql',
+  return formatDialect(sql, {
+    dialect: driverType === 'postgresql' ? postgresql : mysql,
     tabWidth: 2,
     keywordCase: 'upper',
   });

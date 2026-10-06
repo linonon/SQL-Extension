@@ -1,4 +1,4 @@
-import type { MongoExplainSummary } from '../../types/messages';
+import type { MongoExplainSummary } from '../../../../src/types/messages';
 
 interface MongoExplainPanelProps {
   readonly summary?: MongoExplainSummary;

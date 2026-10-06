@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
+import * as vscode from 'vscode';
 import { handleRedisMessage, parseCommandArgs, exportRedisKeys, importRedisKeys, validateTtlInput } from './redis-message-handler';
 import type { IRedisDriver } from '../types/redis-driver';
 import type { WebviewMessage } from '../types/messages';
@@ -83,6 +84,20 @@ describe('handleRedisMessage', () => {
   beforeEach(() => {
     driver = createMockDriver();
     postMessage = vi.fn();
+    // 确认框默认点确认按钮
+    vi.spyOn(vscode.window, 'showWarningMessage').mockImplementation((async (_m: string, _o: object, action: string) => action) as never);
+  });
+
+  it('删除与清库先在宿主确认: 取消则不执行, 清库的取消写进命令输出', async () => {
+    vi.mocked(vscode.window.showWarningMessage).mockResolvedValue(undefined as never);
+    await handleRedisMessage({ type: 'redisDeleteKeys', keys: ['a'], database: 0 }, driver, postMessage);
+    await handleRedisMessage({ type: 'redisHashDelete', key: 'h', field: 'f', database: 0 }, driver, postMessage);
+    await handleRedisMessage({ type: 'redisExecuteCommand', command: 'flushdb async', database: 2 }, driver, postMessage);
+
+    expect(driver.deleteKey).not.toHaveBeenCalled();
+    expect(driver.deleteHashField).not.toHaveBeenCalled();
+    expect(driver.executeCommandInDb).not.toHaveBeenCalled();
+    expect(postMessage.mock.calls).toEqual([[{ type: 'redisCommandResult', output: 'FLUSHDB cancelled' }]]);
   });
 
   it('非 redis 消息返回 false', async () => {

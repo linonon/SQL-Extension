@@ -372,7 +372,7 @@ export class PgDriver implements IDatabaseDriver {
           // 一次往返返回全部结果, 各条只能记整段耗时
           const elapsed = Date.now() - start;
           const parts = Array.isArray(raw) ? raw : [raw];
-          const labels = parts.length > 1 ? splitSqlStatements(text) : [text];
+          const labels = parts.length > 1 ? splitSqlStatements(text, 'postgresql') : [text];
           for (let i = 0; i < parts.length; i++) {
             const command = parts[i].command;
             if (command === 'BEGIN' || command === 'START') { open = true; }

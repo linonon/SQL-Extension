@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import { usePostMessage } from './usePostMessage';
 import { mockPostMessage } from '../__test__/setup';
-import type { WebviewMessage } from '../types/messages';
+import type { WebviewMessage } from '../../../src/types/messages';
 
 describe('usePostMessage', () => {
   it('应该返回一个稳定的 postMessage 函数', () => {

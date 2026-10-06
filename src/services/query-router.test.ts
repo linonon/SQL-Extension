@@ -22,10 +22,6 @@ describe('query tool - SQL validation integration', () => {
     expect(isReadonlySQL('DROP TABLE users')).toBe(false);
   });
 
-  it('should reject multi-statement injection', () => {
-    expect(isReadonlySQL('SELECT 1; DROP TABLE users;')).toBe(false);
-  });
-
   it('should allow SELECT and enforce LIMIT', () => {
     expect(isReadonlySQL('SELECT * FROM users')).toBe(true);
     const limited = enforceLimit('SELECT * FROM users');
@@ -76,6 +72,22 @@ describe('routeByDriver SQL guards', () => {
     const r = await routeByDriver('read', 'postgresql', 'c', 'DELETE FROM t', undefined, src);
     expect(isErr(r)).toBe(true);
     expect(driver.executeReadOnly).not.toHaveBeenCalled();
+  });
+
+  it('rejects multi-statement SQL in both modes before touching the driver (PG 按 standard strings 切分)', async () => {
+    const { driver, src } = source();
+    expect(isErr(await routeByDriver('read', 'mysql', 'c', 'SELECT 1; DROP TABLE users;', 'db1', src))).toBe(true);
+    expect(isErr(await routeByDriver('execute', 'postgresql', 'c', "SELECT 'a\\'; DROP TABLE t; --'", undefined, src))).toBe(true);
+    expect(driver.executeReadOnly).not.toHaveBeenCalled();
+    expect(driver.executeBatch).not.toHaveBeenCalled();
+  });
+
+  it('末尾 ; 之后只有注释仍是一条语句: 去掉 ; 与注释再追加 LIMIT, 不拼出第二条语句', async () => {
+    const { driver, src } = source();
+    expect(isErr(await routeByDriver('read', 'mysql', 'c', 'SELECT 1; -- note', 'db1', src))).toBe(false);
+    expect(driver.executeReadOnly).toHaveBeenCalledWith('SELECT 1\nLIMIT 500', 'db1');
+    await routeByDriver('read', 'postgresql', 'c', 'SELECT /* a; b */ 1;\n-- tail; x', undefined, src);
+    expect(driver.executeReadOnly).toHaveBeenLastCalledWith('SELECT /* a; b */ 1\nLIMIT 500', undefined);
   });
 
   it('requires a database for MySQL execute', async () => {
@@ -203,6 +215,8 @@ describe('isDestructiveRequest (db_execute 执行前确认)', () => {
     ['mysql', 'INSERT INTO t VALUES (1)', false],
     // 多语句由路由直接拒绝, 不先问
     ['mysql', 'DROP TABLE a; DROP TABLE b', false],
+    ['postgresql', 'DO $$ BEGIN PERFORM 1; DELETE FROM users; END $$', true],
+    ['mysql', 'DO SLEEP(1)', false],
     ['redis', 'FLUSHDB', true],
     ['redis', 'flushall ASYNC', true],
     ['redis', 'DEL k', false],

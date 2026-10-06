@@ -2,16 +2,6 @@
 // 目标: 在执行前提示用户确认 DROP/TRUNCATE, 以及无 WHERE 的整表 DELETE/UPDATE.
 // 注意: 这是 UX 防误删/误改护栏, 不是安全边界 (用户本就能自由写 SQL).
 
-// 去掉注释与字符串常量, 避免其中的 WHERE/分号/关键字干扰判断.
-function stripCommentsAndStrings(sql: string): string {
-  return sql
-    .replace(/\/\*[\s\S]*?\*\//g, ' ')   // 块注释
-    .replace(/--[^\n]*/g, ' ')           // 行注释
-    .replace(/'(?:[^']|'')*'/g, "''")    // 单引号字符串
-    .replace(/"(?:[^"]|"")*"/g, '""')    // 双引号 (PG 标识符 / 字符串)
-    .trim();
-}
-
 // 单条语句是否为需要确认的破坏性写操作:
 // - DROP / TRUNCATE: 总是
 // - DELETE FROM / UPDATE: 仅当本语句无 WHERE 子句 (整表操作) 时
@@ -26,11 +16,13 @@ function isDestructiveStatement(stmt: string): boolean {
   return false;
 }
 
-// 从引号起点 i 跳到配对的收尾引号之后; 认 '' 双写与反斜杠转义 (MySQL 默认), 反引号标识符只认双写
-function skipQuoted(sql: string, i: number, quote: string): number {
+export type SqlDialect = 'mysql' | 'postgresql';
+
+// 从引号起点 i 跳到配对的收尾引号之后: 认双写转义, backslash 为 true 时也认反斜杠转义
+function skipQuoted(sql: string, i: number, quote: string, backslash: boolean): number {
   let j = i + 1;
   while (j < sql.length) {
-    if (sql[j] === '\\' && quote !== '`') { j += 2; continue; }
+    if (backslash && sql[j] === '\\') { j += 2; continue; }
     if (sql[j] === quote) {
       if (sql[j + 1] === quote) { j += 2; continue; }
       return j + 1;
@@ -40,58 +32,135 @@ function skipQuoted(sql: string, i: number, quote: string): number {
   return sql.length;
 }
 
-// 按引号 / 注释之外的 ; 切分, 返回每条语句在原文中的 [start, end) 区间 (去掉首尾空白, 不含 ;);
-// 丢掉只剩空白或注释的段. Execute 多语句, 破坏性确认网与 webview 的光标所在语句共用.
-function splitSqlStatementRanges(sql: string): Array<[number, number]> {
-  const ranges: Array<[number, number]> = [];
-  const push = (from: number, to: number) => {
-    const part = sql.slice(from, to);
-    const start = from + part.length - part.trimStart().length;
-    const end = to - (part.length - part.trimEnd().length);
-    if (stripCommentsAndStrings(sql.slice(start, end)).length > 0) ranges.push([start, end]);
-  };
+// 从块注释起点 i 跳到它的 */ 之后; nested (PG) 时内层 /* */ 成对计数
+function skipBlockComment(sql: string, i: number, nested: boolean): number {
+  let depth = 1;
+  let j = i + 2;
+  while (j < sql.length) {
+    if (nested && sql[j] === '/' && sql[j + 1] === '*') { depth++; j += 2; }
+    else if (sql[j] === '*' && sql[j + 1] === '/') { j += 2; if (--depth === 0) return j; }
+    else j++;
+  }
+  return sql.length;
+}
+
+// i 处是注释时返回注释之后的位置, 否则原样返回 i. 只有 MySQL 认 # 行注释, PG 的块注释可嵌套
+function skipComment(sql: string, i: number, dialect: SqlDialect): number {
+  if ((sql[i] === '-' && sql[i + 1] === '-') || (sql[i] === '#' && dialect === 'mysql')) {
+    const nl = sql.indexOf('\n', i);
+    return nl < 0 ? sql.length : nl;
+  }
+  if (sql[i] === '/' && sql[i + 1] === '*') return skipBlockComment(sql, i, dialect === 'postgresql');
+  return i;
+}
+
+// 标识符 / 关键字整段吃掉: PG 标识符里的 $ 不是 dollar quote 的开头 (a$b$ 是一个标识符)
+const IDENTIFIER = /[A-Za-z_\u0080-\uffff][\w$\u0080-\uffff]*/y;
+// PG dollar quote 的开头 $tag$ (tag 可空, 不以数字开头)
+const DOLLAR_TAG = /\$(?:[A-Za-z_\u0080-\uffff][\w\u0080-\uffff]*)?\$/y;
+
+// 从 i 跳过一个代码 token (字符串 / 带引号的标识符 / dollar quote / 标识符 / 单个字符), 返回它之后的位置.
+// MySQL: '..' 与 ".." 是字符串, 认反斜杠转义; `..` 是标识符.
+// PG (standard_conforming_strings, 9.1 起默认开): 只有 E'..' 认反斜杠; ".." 是标识符; $tag$..$tag$ 是字符串
+function skipToken(sql: string, i: number, dialect: SqlDialect): number {
+  const c = sql[i];
+  const pg = dialect === 'postgresql';
+  if (c === "'" || c === '"') return skipQuoted(sql, i, c, !pg);
+  if (c === '`' && !pg) return skipQuoted(sql, i, c, false);
+  if (c === '$' && pg) {
+    DOLLAR_TAG.lastIndex = i;
+    const tag = DOLLAR_TAG.exec(sql)?.[0];
+    if (tag) {
+      const close = sql.indexOf(tag, i + tag.length);
+      return close < 0 ? sql.length : close + tag.length;
+    }
+  }
+  IDENTIFIER.lastIndex = i;
+  const word = IDENTIFIER.exec(sql)?.[0];
+  if (word) {
+    const j = i + word.length;
+    if (pg && (word === 'E' || word === 'e') && sql[j] === "'") return skipQuoted(sql, j, "'", true);
+    return j;
+  }
+  return i + 1;
+}
+
+interface StatementRange {
+  // [start, end): 语句原文去掉首尾空白, 不含 ;
+  readonly start: number;
+  readonly end: number;
+  // 第一个代码字符 (跳过开头的注释)
+  readonly code: number;
+}
+
+// 按引号 / 注释 / dollar quote 之外的 ; 切分, 丢掉只剩空白或注释的段.
+// Execute 多语句, 破坏性确认网, MCP 单语句校验与 webview 的光标所在语句共用
+function statementRanges(sql: string, dialect: SqlDialect): StatementRange[] {
+  const ranges: StatementRange[] = [];
   let start = 0;
+  let code = -1;
+  const close = (to: number) => {
+    if (code < 0) return;
+    let end = to;
+    while (/\s/.test(sql[end - 1])) end--;
+    ranges.push({ start: start + sql.slice(start, code + 1).search(/\S/), end, code });
+  };
   let i = 0;
   while (i < sql.length) {
     const c = sql[i];
-    if (c === "'" || c === '"' || c === '`') {
-      i = skipQuoted(sql, i, c);
-    } else if (c === '-' && sql[i + 1] === '-') {
-      const nl = sql.indexOf('\n', i);
-      i = nl < 0 ? sql.length : nl;
-    } else if (c === '/' && sql[i + 1] === '*') {
-      const end = sql.indexOf('*/', i + 2);
-      i = end < 0 ? sql.length : end + 2;
+    const afterComment = skipComment(sql, i, dialect);
+    if (afterComment > i) {
+      i = afterComment;
     } else if (c === ';') {
-      push(start, i);
+      close(i);
       start = ++i;
-    } else {
+      code = -1;
+    } else if (/\s/.test(c)) {
       i++;
+    } else {
+      if (code < 0) code = i;
+      i = skipToken(sql, i, dialect);
     }
   }
-  push(start, sql.length);
+  close(sql.length);
   return ranges;
 }
 
-// 按引号 / 注释之外的 ; 切分, 返回原文片段 (要拿去执行, 不能是去掉字符串后的文本)
-export function splitSqlStatements(sql: string): string[] {
-  return splitSqlStatementRanges(sql).map(([start, end]) => sql.slice(start, end));
+// 语句的代码部分, 与切分同一套词法: 注释换成空格, 字符串 / dollar quote / 带引号的标识符换成 '', 去掉首尾空白.
+// 只用来看开头关键字和有没有 WHERE, 引号与注释里的文字不算数
+function codeOnly(stmt: string, dialect: SqlDialect): string {
+  let out = '';
+  let i = 0;
+  while (i < stmt.length) {
+    const afterComment = skipComment(stmt, i, dialect);
+    if (afterComment > i) {
+      out += ' ';
+      i = afterComment;
+      continue;
+    }
+    const j = skipToken(stmt, i, dialect);
+    const token = stmt.slice(i, j);
+    out += token.length > 1 && /^(?:[Ee]?['"`]|\$)/.test(token) ? "''" : token;
+    i = j;
+  }
+  return out.trim();
 }
 
-// 区间开头的空白与注释 (只用于定位代码起点, 不用于执行)
-const LEADING_BLANK = /^(?:\s|--[^\n]*|\/\*[\s\S]*?\*\/)*/;
+// 切分后的语句原文 (要拿去执行, 不能是去掉字符串后的文本)
+export function splitSqlStatements(sql: string, dialect: SqlDialect): string[] {
+  return statementRanges(sql, dialect).map(({ start, end }) => sql.slice(start, end));
+}
 
 // 光标所在的那条语句 (原文, 去掉首尾空白): 光标在语句内, 或在它的 ; 之后到下一条的第一个代码字符之前
 // (中间的空白和注释) 都算这一条; 落在第一条之前算第一条. 没有语句返回 undefined
-export function statementAtCaret(sql: string, caret: number): string | undefined {
-  const ranges = splitSqlStatementRanges(sql);
-  const codeStarts = ranges.map(([start, end]) => start + LEADING_BLANK.exec(sql.slice(start, end))![0].length);
+export function statementAtCaret(sql: string, caret: number, dialect: SqlDialect): string | undefined {
+  const ranges = statementRanges(sql, dialect);
   let pick = 0;
-  codeStarts.forEach((codeStart, i) => { if (codeStart <= caret) pick = i; });
+  ranges.forEach(({ code }, i) => { if (code <= caret) pick = i; });
   // ; 与下一条之间没有空白时, 光标紧贴 ; 之后仍算前一条
-  if (pick > 0 && codeStarts[pick] === caret && sql[caret - 1] === ';') pick--;
+  if (pick > 0 && ranges[pick].code === caret && sql[caret - 1] === ';') pick--;
   const range = ranges[pick];
-  return range && sql.slice(range[0], range[1]);
+  return range && sql.slice(range.start, range.end);
 }
 
 export const OPEN_TRANSACTION_WARNING =
@@ -104,7 +173,7 @@ export function openTransactionWarning(executed: readonly string[]): string | un
   let open = false;
   let autocommitOff = false;
   for (const stmt of executed) {
-    const s = stripCommentsAndStrings(stmt);
+    const s = codeOnly(stmt, 'mysql');
     const autocommit = /^SET\s+(?:(?:SESSION|LOCAL)\s+|@@(?:(?:SESSION|LOCAL)\.)?)?autocommit\s*:?=\s*(\w+)/i.exec(s);
     if (autocommit) {
       autocommitOff = /^(0|OFF|FALSE)$/i.test(autocommit[1]);
@@ -122,7 +191,7 @@ export function openTransactionWarning(executed: readonly string[]): string | un
 }
 
 // 脚本中任一条语句命中即需确认. 逐条判断, 避免别条的 WHERE/前缀掩盖某条整表操作
-// (PG simple query protocol 单字符串可执行多语句; 去掉字符串/注释后按 ; 切分是安全的).
-export function isWholeTableWrite(sql: string): boolean {
-  return splitSqlStatements(sql).some((stmt) => isDestructiveStatement(stripCommentsAndStrings(stmt)));
+// (PG simple query protocol 单字符串可执行多语句, 按方言切分才能和服务端切得一样).
+export function isWholeTableWrite(sql: string, dialect: SqlDialect): boolean {
+  return splitSqlStatements(sql, dialect).some((stmt) => isDestructiveStatement(codeOnly(stmt, dialect)));
 }

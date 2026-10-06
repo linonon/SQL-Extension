@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
-import type { ColumnInfo } from '../types/database';
+import type { ColumnInfo } from '../../../src/types/query';
 
 interface PendingChange {
   readonly rowIndex: number;

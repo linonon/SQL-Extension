@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useVSCodeMessage } from '../../hooks/useVSCodeMessage';
 import { usePostMessage } from '../../hooks/usePostMessage';
-import type { ExtensionMessage } from '../../types/messages';
+import type { ExtensionMessage } from '../../../../src/types/messages';
 import { DatabaseObjectList, type DatabaseInfo } from './DatabaseObjectList';
 import { QueryEditor } from '../query-editor/QueryEditor';
 import { ConfirmBar } from '../common/ConfirmBar';

@@ -1,10 +1,15 @@
-import type { WebviewMessage } from '../types/messages.js';
+import type { ExtensionMessage, WebviewMessage } from '../types/messages.js';
 import { REDIS_READ_COMMANDS } from '../services/query-router.js';
 import { parseCommandArgs } from './redis-message-handler.js';
 
-type Reply = Record<string, unknown>;
+type Reply = ExtensionMessage;
 
-const failed = (type: string) => (error: string): Reply => ({ type, success: false, error });
+// 回执形如 { type, success: false, error } 的消息类型
+type FailureType = {
+  [K in Reply['type']]: { type: K; success: false; error: string } extends Extract<Reply, { type: K }> ? K : never
+}[Reply['type']];
+
+const failed = (type: FailureType) => (error: string): Reply => ({ type, success: false, error });
 // 宿主侧弹输入框 / 文件框的写消息: webview 不在等回执, 只弹提示
 const noReply = (): null => null;
 

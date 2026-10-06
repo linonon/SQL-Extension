@@ -1,7 +1,8 @@
+import * as vscode from 'vscode';
 import { isUtf8 } from 'node:buffer';
 import type { IRedisDriver } from '../types/redis-driver.js';
 import type { RedisValue, RedisExportBytes, RedisExportData, RedisExportKeyEntry, RedisExportType, RedisRawKey } from '../types/redis.js';
-import type { WebviewMessage } from '../types/messages.js';
+import type { ExtensionMessage, WebviewMessage } from '../types/messages.js';
 
 const HASH_SCAN_COUNT = 100;
 const SET_SCAN_COUNT = 100;
@@ -58,15 +59,60 @@ export function parseCommandArgs(command: string): string[] {
   return args;
 }
 
+// 宿主侧模态确认: 用户点了 action 才返回 true
+async function confirmed(prompt: string, action = 'Delete'): Promise<boolean> {
+  return (await vscode.window.showWarningMessage(prompt, { modal: true }, action)) === action;
+}
+
 /**
  * 处理 redis 相关的 webview message.
  * 返回 true 表示已处理, false 表示不是 redis 消息.
+ * 删除类消息与清库命令的确认在执行它的 case 里; 弹文件框 / 输入框的消息在 try 之外处理,
+ * 它们没接住的错误抛给调用方 (provider 回通用 error).
  */
 export async function handleRedisMessage(
   message: WebviewMessage,
   driver: IRedisDriver,
-  postMessage: (msg: unknown) => void
+  postMessage: (msg: ExtensionMessage) => void
 ): Promise<boolean> {
+  switch (message.type) {
+    case 'redisExportPattern':
+    case 'redisExportKey':
+      await exportToFile(driver, message.database, message.type === 'redisExportKey' ? { key: message.key } : { pattern: message.pattern });
+      return true;
+
+    case 'redisImport':
+      await importFromFile(driver, message.database, postMessage);
+      return true;
+
+    case 'redisAddKeyPrompt': {
+      const key = await vscode.window.showInputBox({
+        prompt: 'Enter new key name',
+        placeHolder: 'e.g. user:1234',
+        validateInput: (v) => v.trim() ? undefined : 'Key name is required',
+      });
+      const name = key?.trim();
+      if (!name) { return true; }
+      if (!(await driver.createStringKey(message.database, name))) {
+        vscode.window.showErrorMessage(`Key already exists: ${name}`);
+        return true;
+      }
+      postMessage({ type: 'redisAddKeyResult', key: name });
+      return true;
+    }
+
+    case 'redisSetTTLPrompt': {
+      const input = await vscode.window.showInputBox({
+        prompt: 'Enter TTL in seconds (-1 to remove)',
+        validateInput: validateTtlInput,
+      });
+      if (input === undefined) { return true; }
+      const ttl = Number(input);
+      const { key, database } = message;
+      return handleRedisMessage(ttl === -1 ? { type: 'redisRemoveTTL', key, database } : { type: 'redisSetTTL', key, ttl, database }, driver, postMessage);
+    }
+  }
+
   try {
     switch (message.type) {
       case 'redisScan': {
@@ -154,6 +200,7 @@ export async function handleRedisMessage(
       }
 
       case 'redisHashDelete': {
+        if (!(await confirmed(`Delete field "${message.field}"?`))) { return true; }
         await driver.deleteHashField(message.database, message.key, message.field);
         postMessage({ type: 'redisOperationResult', success: true });
         return true;
@@ -166,6 +213,7 @@ export async function handleRedisMessage(
       }
 
       case 'redisListRemove': {
+        if (!(await confirmed(`Delete list item at index ${message.index}?`))) { return true; }
         await driver.listRemove(message.database, message.key, message.index);
         postMessage({ type: 'redisOperationResult', success: true });
         return true;
@@ -195,6 +243,7 @@ export async function handleRedisMessage(
       }
 
       case 'redisSetRemove': {
+        if (!(await confirmed(`Remove member "${message.member}"?`))) { return true; }
         await driver.setRemove(message.database, message.key, message.member);
         postMessage({ type: 'redisOperationResult', success: true });
         return true;
@@ -207,6 +256,7 @@ export async function handleRedisMessage(
       }
 
       case 'redisZSetRemove': {
+        if (!(await confirmed(`Remove member "${message.member}"?`))) { return true; }
         await driver.zsetRemove(message.database, message.key, message.member);
         postMessage({ type: 'redisOperationResult', success: true });
         return true;
@@ -271,6 +321,8 @@ export async function handleRedisMessage(
       }
 
       case 'redisDeleteKeys': {
+        const label = message.keys.length === 1 ? `Delete key "${message.keys[0]}"?` : `Delete ${message.keys.length} keys?`;
+        if (!(await confirmed(label))) { return true; }
         for (const key of message.keys) {
           await driver.deleteKey(message.database, key);
         }
@@ -291,7 +343,17 @@ export async function handleRedisMessage(
       }
 
       case 'redisExecuteCommand': {
-        const result = await driver.executeCommandInDb(message.database, parseCommandArgs(message.command));
+        const args = parseCommandArgs(message.command);
+        // 命令栏可执行任意命令; 清库命令 (带不带 ASYNC / SYNC 参数) 先确认
+        const cmd = args[0]?.toUpperCase();
+        if (cmd === 'FLUSHDB' || cmd === 'FLUSHALL') {
+          const scope = cmd === 'FLUSHALL' ? 'EVERY database' : `db ${message.database}`;
+          if (!(await confirmed(`${cmd} deletes all keys in ${scope}. Continue?`, cmd))) {
+            postMessage({ type: 'redisCommandResult', output: `${cmd} cancelled` });
+            return true;
+          }
+        }
+        const result = await driver.executeCommandInDb(message.database, args);
         postMessage({
           type: 'redisCommandResult',
           output: typeof result === 'string' ? result : JSON.stringify(result, null, 2),
@@ -312,6 +374,70 @@ export async function handleRedisMessage(
     const errorMsg = err instanceof Error ? err.message : String(err);
     postMessage({ type: 'redisOperationResult', success: false, error: errorMsg });
     return true;
+  }
+}
+
+// Export JSON: 选保存位置, 带可取消的进度条导出, 结果与跳过 / 出错的 key 用通知报告
+async function exportToFile(
+  driver: IRedisDriver,
+  database: number,
+  target: { readonly pattern: string } | { readonly key: string }
+): Promise<void> {
+  try {
+    const uri = await vscode.window.showSaveDialog({
+      filters: { 'JSON Files': ['json'] },
+      defaultUri: vscode.Uri.file(`redis-export-db${database}.json`),
+    });
+    if (!uri) { return; }
+    const result = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: `Exporting Redis db ${database}`, cancellable: true },
+      (progress, token) => exportRedisKeys(driver, database, target, (done, total) => {
+        if (token.isCancellationRequested) { throw new Error('Export cancelled'); }
+        if (done % 100 === 0 || done === total) { progress.report({ message: `${done}/${total} keys` }); }
+      })
+    );
+    await vscode.workspace.fs.writeFile(uri, Buffer.from(result.json, 'utf-8'));
+    const summary = `Exported ${result.keyCount} key(s) from db ${database} to ${uri.fsPath}`;
+    if (result.skipped) {
+      vscode.window.showWarningMessage(`${summary}; ${result.skipped}`);
+    } else {
+      vscode.window.showInformationMessage(summary);
+    }
+    if (result.errors.length > 0) {
+      vscode.window.showWarningMessage(`Export completed with errors: ${result.errors.join('; ')}`);
+    }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    vscode.window.showErrorMessage(`Export failed: ${msg}`);
+  }
+}
+
+// Import JSON: 选文件导入到 database, 有同名 key 时先确认替换
+async function importFromFile(
+  driver: IRedisDriver,
+  database: number,
+  postMessage: (msg: ExtensionMessage) => void
+): Promise<void> {
+  try {
+    const fileUris = await vscode.window.showOpenDialog({
+      filters: { 'JSON Files': ['json'] },
+      canSelectMany: false,
+    });
+    if (!fileUris || fileUris.length === 0) { return; }
+    const content = Buffer.from(await vscode.workspace.fs.readFile(fileUris[0])).toString('utf-8');
+    // 导入会先删后写同名 key: 有已存在的就在这里确认
+    const result = await importRedisKeys(driver, database, content, (existing) =>
+      confirmed(`${existing} key(s) already exist in db ${database} and will be replaced. Continue?`, 'Replace'));
+    if (!result) { return; }
+    if (result.errors.length > 0) {
+      vscode.window.showWarningMessage(`Import completed with errors: ${result.errors.join('; ')}`);
+    }
+    vscode.window.showInformationMessage(`Imported ${result.importedCount} key(s) into db ${database}`);
+    postMessage({ type: 'redisImportResult', success: true, importedCount: result.importedCount });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    vscode.window.showErrorMessage(`Import failed: ${msg}`);
+    postMessage({ type: 'redisImportResult', success: false, error: msg });
   }
 }
 

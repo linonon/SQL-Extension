@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { KafkaMessage, KafkaPartitionInfo } from '../../types/kafka';
+import type { KafkaMessage, KafkaPartitionInfo } from '../../../../src/types/kafka';
 import { KafkaMessageDetail } from './KafkaMessageDetail';
 import { KafkaProduceForm } from './KafkaProduceForm';
 import { useReadOnly } from '../../hooks/useReadOnly';

@@ -1,4 +1,4 @@
-import type { ColumnInfo } from '../types/database';
+import type { ColumnInfo } from '../../../src/types/query';
 
 // 列由 DB 自动填充 (自增 / 序列 / identity): insert 时必须省略, 透传旧值会撞唯一键或干扰自增.
 // MySQL 走 extra=auto_increment; PostgreSQL 走 default=nextval(...) 或 identity (extra 恒为空).

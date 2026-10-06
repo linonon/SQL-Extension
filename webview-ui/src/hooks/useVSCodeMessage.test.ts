@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { renderHook } from '@testing-library/react';
 import { useVSCodeMessage } from './useVSCodeMessage';
-import type { ExtensionMessage } from '../types/messages';
+import type { ExtensionMessage } from '../../../src/types/messages';
 
 describe('useVSCodeMessage', () => {
   it('应该在组件挂载时注册 message listener', () => {

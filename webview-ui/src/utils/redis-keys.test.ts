@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { buildKeyTree, fuzzyMatch, filterKeysFuzzy } from './redis-keys';
-import type { RedisKeyInfo } from '../types/redis';
+import type { RedisKeyInfo } from '../../../src/types/redis';
 
 const mkKey = (key: string, type = 'string' as const, ttl = -1): RedisKeyInfo => ({ key, type, ttl });
 

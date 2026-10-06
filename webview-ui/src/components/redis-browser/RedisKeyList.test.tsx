@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { RedisKeyList } from './RedisKeyList';
-import type { RedisKeyInfo } from '../../types/redis';
+import type { RedisKeyInfo } from '../../../../src/types/redis';
 
 // mock ContextMenu
 vi.mock('../common/ContextMenu', () => ({

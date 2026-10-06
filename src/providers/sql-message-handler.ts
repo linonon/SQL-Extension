@@ -6,7 +6,7 @@ import type { QueryService } from '../services/query-service.js';
 import { buildBatchDelete } from '../utils/sql-builder.js';
 import { buildAlterTableStatements } from '../utils/alter-table-builder.js';
 import { isWholeTableWrite, splitSqlStatements } from '../utils/destructive-sql.js';
-import type { QueryHistoryEntry, StatementResult } from '../types/messages.js';
+import type { ExtensionMessage, QueryHistoryEntry, StatementResult } from '../types/messages.js';
 import type { SchemaColumn } from '../types/query.js';
 import { sanitizeErrorMessage } from '../utils/sanitize-error.js';
 import { cancelAiAsk, listAiModels, runAiAsk, setAiModel } from '../services/ai-assist.js';
@@ -17,7 +17,7 @@ import { cancelAiAsk, listAiModels, runAiAsk, setAiModel } from '../services/ai-
 export interface SqlMessageContext {
   readonly getDriver: () => IDatabaseDriver;
   readonly queryService: QueryService;
-  readonly post: (msg: unknown) => void;
+  readonly post: (msg: ExtensionMessage) => void;
   readonly panel: vscode.WebviewPanel;
   readonly pendingCancels: Map<vscode.WebviewPanel, () => void>;
   // executeQuery 优先用 panel context 绑定的 database (raw SQL 不自动加前缀)
@@ -109,21 +109,22 @@ export async function handleSqlMessage(
       case 'executeQuery': {
         // 回执 (含出错) 一律带回 requestId, webview 只认最近一次请求的回执
         const database = ctx.database ?? message.database;
-        let reply: object;
+        const { requestId } = message;
+        let reply: ExtensionMessage;
         // 执行过就记历史 (成功或失败); 破坏性确认被取消时没执行, 不记
         let ok: boolean | undefined;
         try {
           const batch = await runQuery(message.sql, database, ctx);
           if (batch.statements.length > 0) { ok = batch.statements.every((s) => s.status === 'ok'); }
-          reply = batch;
+          reply = { ...batch, requestId };
         } catch (err) {
           ok = false;
-          reply = { type: 'queryResult', columns: [], rows: [], affectedRows: 0, executionTime: 0, error: sanitizeErrorMessage(err) };
+          reply = { type: 'queryResult', requestId, columns: [], rows: [], affectedRows: 0, executionTime: 0, error: sanitizeErrorMessage(err) };
         }
         if (ok !== undefined) {
           ctx.queryHistory.add({ sql: message.sql, database, ts: Date.now(), ok }).catch(() => { /* 历史写失败不影响查询回执 */ });
         }
-        ctx.post({ ...reply, requestId: message.requestId });
+        ctx.post(reply);
         return true;
       }
 
@@ -203,7 +204,7 @@ export async function handleSqlMessage(
         const db = ctx.database ?? message.database;
         const { id } = message;
         // panel 关闭后 webview.postMessage 会抛, 回执丢掉即可
-        const send = (msg: unknown) => { try { ctx.post(msg); } catch { /* panel 已关闭 */ } };
+        const send = (msg: ExtensionMessage) => { try { ctx.post(msg); } catch { /* panel 已关闭 */ } };
         try {
           const model = await runAiAsk(ctx.panel, async () => ({
             dialect: ctx.getDriver().driverType === 'postgresql' ? 'PostgreSQL' : 'MySQL',
@@ -313,8 +314,9 @@ export async function handleSqlMessage(
         if (!uris || uris.length === 0) { return true; }
         const fileContent = await vscode.workspace.fs.readFile(uris[0]);
         const sql = Buffer.from(fileContent).toString('utf-8');
+        const driver = ctx.getDriver();
         // 自家 dump 以 DROP TABLE IF EXISTS 开头, 导入到已有的表上会先删表
-        if (isWholeTableWrite(sql)) {
+        if (isWholeTableWrite(sql, driver.driverType)) {
           const confirm = await vscode.window.showWarningMessage(
             'This SQL file contains a destructive operation (DROP/TRUNCATE, or DELETE/UPDATE without WHERE). Import anyway?',
             { modal: true },
@@ -322,7 +324,6 @@ export async function handleSqlMessage(
           );
           if (confirm !== 'Import') { return true; }
         }
-        const driver = ctx.getDriver();
         try {
           const stmts = statementsFor(driver, sql);
           const { results, error, warning } = await driver.executeBatch(stmts, database).promise;
@@ -356,9 +357,9 @@ export async function handleSqlMessage(
 }
 
 // MySQL 在客户端按 ; 切分 (mysql2 未开 multipleStatements); PG 整段交给 simple protocol 由服务端切分,
-// 客户端切不对 dollar-quoted 函数体和 standard_conforming_strings 下以反斜杠结尾的字符串
+// 整段在一个隐式事务里, 出错整段回滚
 function statementsFor(driver: IDatabaseDriver, sql: string): string[] {
-  return driver.driverType === 'mysql' ? splitSqlStatements(sql) : [sql];
+  return driver.driverType === 'mysql' ? splitSqlStatements(sql, 'mysql') : [sql];
 }
 
 // 网格展示的结果集最多发这么多行: 不带 LIMIT 的大查询整包 postMessage 会卡住所有扩展共用的 extension host
@@ -374,7 +375,7 @@ async function runQuery(
 ): Promise<{ type: 'queryBatchResult'; statements: StatementResult[]; warning?: string }> {
   // 破坏性操作确认网: DROP/TRUNCATE 及无 WHERE 的整表 DELETE/UPDATE
   const driver = ctx.getDriver();
-  if (isWholeTableWrite(sql)) {
+  if (isWholeTableWrite(sql, driver.driverType)) {
     const confirm = await vscode.window.showWarningMessage(
       'This query contains a destructive operation (DROP/TRUNCATE, or DELETE/UPDATE without WHERE). Continue?',
       { modal: true },
@@ -400,7 +401,7 @@ async function runQuery(
       status: 'ok',
       executionTime: r.executionTime,
       affectedRows: r.affectedRows,
-      columns: r.columns,
+      columns: [...r.columns],
       ...(r.columns.length > 0 ? { rowCount: r.rows.length } : {}),
       ...(i === shown ? { rows: r.rows.slice(0, RESULT_ROW_CAP), truncated: r.rows.length > RESULT_ROW_CAP } : {}),
     }));

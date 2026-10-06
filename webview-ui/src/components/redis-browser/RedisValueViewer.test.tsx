@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { RedisValueViewer } from './RedisValueViewer';
-import type { RedisValue } from '../../types/redis';
+import type { RedisValue } from '../../../../src/types/redis';
 import { ReadOnlyContext } from '../../hooks/useReadOnly';
 
 // mock 子编辑器

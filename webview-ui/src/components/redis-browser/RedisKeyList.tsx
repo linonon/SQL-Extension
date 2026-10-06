@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { RedisKeyInfo } from '../../types/redis';
+import type { RedisKeyInfo } from '../../../../src/types/redis';
 import { ContextMenu, type ContextMenuItem } from '../common/ContextMenu';
 import { buildKeyTree, filterKeysFuzzy, type KeyTreeNode } from '../../utils/redis-keys';
 import { useReadOnly } from '../../hooks/useReadOnly';

@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useVSCodeMessage } from '../../hooks/useVSCodeMessage';
 import { usePostMessage } from '../../hooks/usePostMessage';
-import type { ExtensionMessage, MongoExplainSummary } from '../../types/messages';
-import type { ColumnInfo } from '../../types/database';
+import type { ExtensionMessage, MongoExplainSummary } from '../../../../src/types/messages';
+import type { ColumnInfo } from '../../../../src/types/query';
 import { convertShellToJson } from '../../utils/mongo-shell-to-json';
 import { MongoCollectionList } from './MongoCollectionList';
 import { MongoDocumentTable } from './MongoDocumentTable';

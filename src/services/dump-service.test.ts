@@ -317,7 +317,7 @@ describe('dump / import 往返', () => {
     const insert = 'INSERT INTO `t` (`id`, `s`, `p`, `n`, `z`, `b`, `j`, `o`) VALUES\n'
       + "(1, 'it''s', 'C:\\\\dir\\\\', 'line1\nline2;', NULL, X'00ff27', '{\"q\":\"it''s\",\"p\":\"a\\\\\\\\b\"}', '{\"k\":1}')";
 
-    const stmts = splitSqlStatements(sql);
+    const stmts = splitSqlStatements(sql, 'mysql');
     expect(stmts).toHaveLength(3);
     expect(stmts[0]).toMatch(/^-- Dump from SQL Extension[\s\S]*\nDROP TABLE IF EXISTS `t`$/);
     expect(stmts[1]).toBe(ddl);

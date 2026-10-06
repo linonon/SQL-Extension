@@ -2,14 +2,14 @@ import * as vscode from 'vscode';
 import { newConnectionId, openDriver, writeBlockedReason, type ConnectionManager } from '../services/connection-manager.js';
 import { QueryService } from '../services/query-service.js';
 import { CredentialStore } from '../services/credential-store.js';
-import type { WebviewMessage, ViewType, SaveConnectionConfig, UpdateConnectionConfig } from '../types/messages.js';
+import type { ExtensionMessage, WebviewMessage, ViewType, SaveConnectionConfig, UpdateConnectionConfig } from '../types/messages.js';
 import type { ConnectionFormSSH } from '../types/messages.js';
 import type { ConnectionConfig, DriverType, SSHTunnelConfig } from '../types/connection.js';
-import type { AlterTableChanges, SchemaColumn } from '../types/query.js';
+import type { SchemaColumn } from '../types/query.js';
 import type { IDatabaseDriver } from '../types/driver.js';
-import { handleRedisMessage, exportRedisKeys, importRedisKeys, validateTtlInput, parseCommandArgs } from './redis-message-handler.js';
+import { handleRedisMessage } from './redis-message-handler.js';
 import { handleKafkaMessage } from './kafka-message-handler.js';
-import { handleMongoMessage, buildExportPipeline } from './mongo-message-handler.js';
+import { handleMongoMessage } from './mongo-message-handler.js';
 import { getWebviewContent, getWebviewOptions } from './webview-helper.js';
 import { handleSqlMessage, type SqlMessageContext } from './sql-message-handler.js';
 import { readOnlyRejection } from './read-only-gate.js';
@@ -238,9 +238,10 @@ export class TableViewProvider implements vscode.Disposable {
     panel.webview.html = getWebviewContent(panel.webview, this.extensionUri);
 
     // 每次 ready 都回 viewInit: Developer: Reload Webviews 后页面重新加载, 会再发一次 ready
+    const viewInit: ExtensionMessage = { type: 'viewInit', view: viewType, context: viewContext };
     const listener = panel.webview.onDidReceiveMessage((message: WebviewMessage) => {
       if (message.type === 'ready') {
-        return panel.webview.postMessage({ type: 'viewInit', view: viewType, context: viewContext });
+        return panel.webview.postMessage(viewInit);
       }
       return this.handleMessage(panel, message, context);
     });
@@ -263,6 +264,7 @@ export class TableViewProvider implements vscode.Disposable {
     context: Record<string, unknown>
   ): Promise<void> {
     const connectionId = context.connectionId as string | undefined;
+    const post = (msg: ExtensionMessage) => panel.webview.postMessage(msg);
 
     // 只读连接的写消息统一在这里拒绝 (每条消息现读配置): 宿主是边界, webview 只是隐藏写控件
     const blocked = connectionId ? writeBlockedReason(this.connectionConfig(connectionId)) : undefined;
@@ -270,7 +272,7 @@ export class TableViewProvider implements vscode.Disposable {
     if (rejection !== undefined) {
       // 命令栏的拒绝写在命令输出里, 其余弹提示
       if (rejection?.type !== 'redisCommandResult') { void vscode.window.showErrorMessage(blocked!); }
-      if (rejection) { panel.webview.postMessage(rejection); }
+      if (rejection) { post(rejection); }
       return;
     }
 
@@ -280,7 +282,7 @@ export class TableViewProvider implements vscode.Disposable {
       try {
         await this.connectionManager.connect(connectionId);
       } catch (err) {
-        panel.webview.postMessage({ type: 'error', message: `Failed to connect: ${sanitizeErrorMessage(err)}` });
+        post({ type: 'error', message: `Failed to connect: ${sanitizeErrorMessage(err)}` });
         return;
       }
     }
@@ -289,7 +291,7 @@ export class TableViewProvider implements vscode.Disposable {
     const sqlCtx: SqlMessageContext = {
       getDriver: () => this.connectionManager.getDriver(connectionId!),
       queryService: this.queryService,
-      post: (msg) => panel.webview.postMessage(msg),
+      post,
       panel,
       pendingCancels: this.pendingCancels,
       database: context.database as string | undefined,
@@ -306,7 +308,7 @@ export class TableViewProvider implements vscode.Disposable {
       switch (message.type) {
         case 'testConnection': {
           // 编辑表单的 panel context 带被编辑连接的 id: 表单里留空的密码用它的已存值
-          await this.testConnection(panel, message.config, (context.editConnection as { id: string } | undefined)?.id);
+          await this.testConnection(post, message.config, (context.editConnection as { id: string } | undefined)?.id);
           break;
         }
 
@@ -342,274 +344,17 @@ export class TableViewProvider implements vscode.Disposable {
           }
 
           if (message.type.startsWith('kafka')) {
-            const kafkaDriver = this.connectionManager.getKafkaDriver(connectionId!);
-            const post = (msg: unknown) => panel.webview.postMessage(msg);
-            await handleKafkaMessage(message, kafkaDriver, post);
+            await handleKafkaMessage(message, this.connectionManager.getKafkaDriver(connectionId!), post);
             return;
           }
 
           if (message.type.startsWith('mongo')) {
-            const mongoDriver = this.connectionManager.getMongoDriver(connectionId!);
-            if (message.type === 'mongoCreateCollection') {
-              const { database } = message as { database: string; collection: string };
-              const input = await vscode.window.showInputBox({
-                prompt: `New collection in "${database}"`,
-                placeHolder: 'collection_name',
-                validateInput: (v) => {
-                  if (!v.trim()) { return 'Collection name is required'; }
-                  if (/[.$]/.test(v)) { return 'Cannot contain . or $'; }
-                  return undefined;
-                },
-              });
-              if (!input) { return; }
-              const post = (msg: unknown) => panel.webview.postMessage(msg);
-              await handleMongoMessage({ ...message, collection: input.trim() } as WebviewMessage, mongoDriver, post);
-              return;
-            }
-
-            if (message.type === 'mongoDropCollection') {
-              const { collection } = message as { database: string; collection: string };
-              const confirm = await vscode.window.showWarningMessage(
-                `Drop collection "${collection}"? This cannot be undone.`,
-                { modal: true },
-                'Drop'
-              );
-              if (confirm !== 'Drop') { return; }
-              // fall through to handleMongoMessage
-            }
-
-            if (message.type === 'mongoDeleteDocument') {
-              // 点名库 / 集合 / _id: 删的是这条消息里的目标, 让用户能核对它是否就是界面上看到的那条
-              const { database, collection, id } = message;
-              const confirmDelete = await vscode.window.showWarningMessage(
-                `Delete document ${JSON.stringify(id)} from ${database}.${collection}?`, { modal: true }, 'Delete'
-              );
-              if (confirmDelete !== 'Delete') { return; }
-            }
-
-            if (message.type === 'mongoExportCollection') {
-              const exportMsg = message as { database: string; collection: string; filter: string; sort: string; projection?: string };
-              const post = (msg: unknown) => panel.webview.postMessage(msg);
-              try {
-                const uri = await vscode.window.showSaveDialog({
-                  filters: { 'JSON Files': ['json'], 'JSONL Files': ['jsonl'] },
-                  defaultUri: vscode.Uri.file(`${exportMsg.collection}.json`),
-                });
-                if (!uri) { return; }
-                const pipeline = buildExportPipeline(exportMsg.filter, exportMsg.sort, exportMsg.projection);
-                const jsonl = uri.path.toLowerCase().endsWith('.jsonl');
-                const { json, count } = await mongoDriver.exportDocuments(exportMsg.database, exportMsg.collection, pipeline, jsonl);
-                await vscode.workspace.fs.writeFile(uri, Buffer.from(json, 'utf-8'));
-                vscode.window.showInformationMessage(`Exported ${count} document(s) to ${uri.fsPath}`);
-                post({ type: 'mongoExportResult', success: true, count });
-              } catch (e) {
-                const errMsg = e instanceof Error ? e.message : String(e);
-                vscode.window.showErrorMessage(`Export failed: ${errMsg}`);
-                panel.webview.postMessage({ type: 'mongoExportResult', success: false, error: errMsg });
-              }
-              return;
-            }
-
-            if (message.type === 'mongoImportCollection') {
-              const importMsg = message as { database: string; collection: string };
-              const post = (msg: unknown) => panel.webview.postMessage(msg);
-              try {
-                const fileUris = await vscode.window.showOpenDialog({
-                  filters: { 'JSON/JSONL Files': ['json', 'jsonl'] },
-                  canSelectMany: false,
-                });
-                if (!fileUris || fileUris.length === 0) { return; }
-                const content = Buffer.from(await vscode.workspace.fs.readFile(fileUris[0])).toString('utf-8');
-                const lineCount = content.trim().startsWith('[')
-                  ? (JSON.parse(content.trim()) as unknown[]).length
-                  : content.trim().split('\n').filter((l) => l.trim()).length;
-                const confirm = await vscode.window.showWarningMessage(
-                  `Import will insert ${lineCount} document(s) into "${importMsg.collection}". Continue?`,
-                  { modal: true },
-                  'Insert'
-                );
-                if (confirm !== 'Insert') { return; }
-                const inserted = await mongoDriver.importDocuments(importMsg.database, importMsg.collection, content);
-                vscode.window.showInformationMessage(`Imported ${inserted} document(s) into "${importMsg.collection}"`);
-                post({ type: 'mongoImportResult', success: true, inserted });
-              } catch (e) {
-                const errMsg = e instanceof Error ? e.message : String(e);
-                vscode.window.showErrorMessage(`Import failed: ${errMsg}`);
-                panel.webview.postMessage({ type: 'mongoImportResult', success: false, error: errMsg });
-              }
-              return;
-            }
-
-            // 文档写操作: 成功的提示在宿主侧, 失败由 webview 行内显示; 回执照常发给 webview
-            const post = (msg: unknown) => {
-              const m = msg as { type?: string; success?: boolean; message?: string };
-              if (m.type === 'mongoOperationResult' && m.success && m.message) { void vscode.window.showInformationMessage(m.message); }
-              return panel.webview.postMessage(msg);
-            };
-            await handleMongoMessage(message, mongoDriver, post);
+            await handleMongoMessage(message, this.connectionManager.getMongoDriver(connectionId!), post);
             return;
           }
 
           if (message.type.startsWith('redis')) {
-            const redisDriver = this.connectionManager.getRedisDriver(connectionId!);
-            const post = (msg: unknown) => panel.webview.postMessage(msg);
-
-            if (message.type === 'redisExportPattern' || message.type === 'redisExportKey') {
-              const { database } = message;
-              const target = message.type === 'redisExportKey' ? { key: message.key } : { pattern: message.pattern };
-              try {
-                const uri = await vscode.window.showSaveDialog({
-                  filters: { 'JSON Files': ['json'] },
-                  defaultUri: vscode.Uri.file(`redis-export-db${database}.json`),
-                });
-                if (!uri) { return; }
-                const result = await vscode.window.withProgress(
-                  { location: vscode.ProgressLocation.Notification, title: `Exporting Redis db ${database}`, cancellable: true },
-                  (progress, token) => exportRedisKeys(redisDriver, database, target, (done, total) => {
-                    if (token.isCancellationRequested) { throw new Error('Export cancelled'); }
-                    if (done % 100 === 0 || done === total) { progress.report({ message: `${done}/${total} keys` }); }
-                  })
-                );
-                await vscode.workspace.fs.writeFile(uri, Buffer.from(result.json, 'utf-8'));
-                const summary = `Exported ${result.keyCount} key(s) from db ${database} to ${uri.fsPath}`;
-                if (result.skipped) {
-                  vscode.window.showWarningMessage(`${summary}; ${result.skipped}`);
-                } else {
-                  vscode.window.showInformationMessage(summary);
-                }
-                if (result.errors.length > 0) {
-                  vscode.window.showWarningMessage(`Export completed with errors: ${result.errors.join('; ')}`);
-                }
-              } catch (e) {
-                const msg = e instanceof Error ? e.message : String(e);
-                vscode.window.showErrorMessage(`Export failed: ${msg}`);
-              }
-              return;
-            }
-
-            if (message.type === 'redisImport') {
-              const { database } = message;
-              try {
-                const fileUris = await vscode.window.showOpenDialog({
-                  filters: { 'JSON Files': ['json'] },
-                  canSelectMany: false,
-                });
-                if (!fileUris || fileUris.length === 0) { return; }
-                const content = Buffer.from(await vscode.workspace.fs.readFile(fileUris[0])).toString('utf-8');
-                // 导入会先删后写同名 key: 有已存在的就在这里确认
-                const result = await importRedisKeys(redisDriver, database, content, async (existing) => {
-                  const confirm = await vscode.window.showWarningMessage(
-                    `${existing} key(s) already exist in db ${database} and will be replaced. Continue?`,
-                    { modal: true },
-                    'Replace'
-                  );
-                  return confirm === 'Replace';
-                });
-                if (!result) { return; }
-                if (result.errors.length > 0) {
-                  vscode.window.showWarningMessage(`Import completed with errors: ${result.errors.join('; ')}`);
-                }
-                vscode.window.showInformationMessage(`Imported ${result.importedCount} key(s) into db ${database}`);
-                post({ type: 'redisImportResult', success: true, importedCount: result.importedCount });
-              } catch (e) {
-                const msg = e instanceof Error ? e.message : String(e);
-                vscode.window.showErrorMessage(`Import failed: ${msg}`);
-                post({ type: 'redisImportResult', success: false, error: msg });
-              }
-              return;
-            }
-
-            if (message.type === 'redisAddKeyPrompt') {
-              const addMsg = message as { database: number };
-              const key = await vscode.window.showInputBox({
-                prompt: 'Enter new key name',
-                placeHolder: 'e.g. user:1234',
-                validateInput: (v) => v.trim() ? undefined : 'Key name is required',
-              });
-              const name = key?.trim();
-              if (!name) { return; }
-              if (!(await redisDriver.createStringKey(addMsg.database, name))) {
-                vscode.window.showErrorMessage(`Key already exists: ${name}`);
-                return;
-              }
-              post({ type: 'redisAddKeyResult', key: name });
-              return;
-            }
-
-            if (message.type === 'redisSetTTLPrompt') {
-              const ttlMsg = message as { key: string; database: number };
-              const input = await vscode.window.showInputBox({
-                prompt: 'Enter TTL in seconds (-1 to remove)',
-                validateInput: validateTtlInput,
-              });
-              if (input === undefined) { return; }
-              const ttl = Number(input);
-              if (ttl === -1) {
-                await handleRedisMessage({ type: 'redisRemoveTTL', key: ttlMsg.key, database: ttlMsg.database }, redisDriver, post);
-              } else {
-                await handleRedisMessage({ type: 'redisSetTTL', key: ttlMsg.key, ttl, database: ttlMsg.database }, redisDriver, post);
-              }
-              return;
-            }
-
-            if (message.type === 'redisExecuteCommand') {
-              // 命令栏可执行任意命令; 清库命令 (带不带 ASYNC / SYNC 参数) 先确认
-              const cmd = parseCommandArgs(message.command)[0]?.toUpperCase();
-              if (cmd === 'FLUSHDB' || cmd === 'FLUSHALL') {
-                const scope = cmd === 'FLUSHALL' ? 'EVERY database' : `db ${message.database}`;
-                const confirm = await vscode.window.showWarningMessage(
-                  `${cmd} deletes all keys in ${scope}. Continue?`, { modal: true }, cmd
-                );
-                if (confirm !== cmd) {
-                  post({ type: 'redisCommandResult', output: `${cmd} cancelled` });
-                  return;
-                }
-              }
-            }
-
-            if (message.type === 'redisDeleteKeys') {
-              const keyList = message.keys;
-              const label = keyList.length === 1
-                ? `Delete key "${keyList[0]}"?`
-                : `Delete ${keyList.length} keys?`;
-              const confirm = await vscode.window.showWarningMessage(label, { modal: true }, 'Delete');
-              if (confirm !== 'Delete') { return; }
-            }
-
-            if (message.type === 'redisHashDelete') {
-              const field = (message as { field: string }).field;
-              const confirm = await vscode.window.showWarningMessage(
-                `Delete field "${field}"?`, { modal: true }, 'Delete'
-              );
-              if (confirm !== 'Delete') { return; }
-            }
-
-            if (message.type === 'redisSetRemove') {
-              const member = (message as { member: string }).member;
-              const confirm = await vscode.window.showWarningMessage(
-                `Remove member "${member}"?`, { modal: true }, 'Delete'
-              );
-              if (confirm !== 'Delete') { return; }
-            }
-
-            if (message.type === 'redisListRemove') {
-              const idx = (message as { index: number }).index;
-              const confirm = await vscode.window.showWarningMessage(
-                `Delete list item at index ${idx}?`,
-                { modal: true }, 'Delete'
-              );
-              if (confirm !== 'Delete') { return; }
-            }
-
-            if (message.type === 'redisZSetRemove') {
-              const member = (message as { member: string }).member;
-              const confirm = await vscode.window.showWarningMessage(
-                `Remove member "${member}"?`, { modal: true }, 'Delete'
-              );
-              if (confirm !== 'Delete') { return; }
-            }
-
-            await handleRedisMessage(message, redisDriver, post);
+            await handleRedisMessage(message, this.connectionManager.getRedisDriver(connectionId!), post);
             return;
           }
           break;
@@ -618,7 +363,7 @@ export class TableViewProvider implements vscode.Disposable {
     } catch (err) {
       // 脱敏: 过滤可能包含凭证的 URL 格式错误消息 (单一实现见 utils/sanitize-error)
       // (SQL 路径的特定回执 queryResult/batchUpdateResult 已在 sql-message-handler 内自管)
-      panel.webview.postMessage({ type: 'error', message: sanitizeErrorMessage(err) });
+      post({ type: 'error', message: sanitizeErrorMessage(err) });
     }
   }
 
@@ -642,7 +387,7 @@ export class TableViewProvider implements vscode.Disposable {
   }
 
   private async testConnection(
-    panel: vscode.WebviewPanel,
+    post: (msg: ExtensionMessage) => void,
     config: { driverType: DriverType; host: string; port: number; username: string; password: string; database: string; authSource?: string } & ConnectionFormSSH,
     editId?: string
   ): Promise<void> {
@@ -665,9 +410,9 @@ export class TableViewProvider implements vscode.Disposable {
         ssh: buildSSHConfig(config),
       }, password, sshPassword);
       await handle.close();
-      panel.webview.postMessage({ type: 'connectionTestResult', success: true });
+      post({ type: 'connectionTestResult', success: true });
     } catch (err) {
-      panel.webview.postMessage({ type: 'connectionTestResult', success: false, error: sanitizeErrorMessage(err) });
+      post({ type: 'connectionTestResult', success: false, error: sanitizeErrorMessage(err) });
     }
   }
 

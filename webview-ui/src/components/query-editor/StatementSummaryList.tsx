@@ -1,4 +1,4 @@
-import type { StatementResult } from '../../types/messages';
+import type { StatementResult } from '../../../../src/types/messages';
 
 interface StatementSummaryListProps {
   readonly statements: readonly StatementResult[];

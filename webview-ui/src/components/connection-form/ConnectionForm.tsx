@@ -1,7 +1,8 @@
 import { useCallback, useState } from 'react';
 import { useVSCodeMessage } from '../../hooks/useVSCodeMessage';
 import { usePostMessage } from '../../hooks/usePostMessage';
-import type { DriverType, SSHAuthType, ExtensionMessage, ConnectionFormSSH } from '../../types/messages';
+import type { ExtensionMessage, ConnectionFormSSH } from '../../../../src/types/messages';
+import type { DriverType, SSHAuthType } from '../../../../src/types/connection';
 import '../../styles/connection-form.css';
 
 interface FormState {

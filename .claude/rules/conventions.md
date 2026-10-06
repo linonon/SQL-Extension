@@ -11,7 +11,7 @@
 
 ## Delete Operations
 
-- **所有删除操作必须有确认步骤**: 确认对话框统一在 extension host 中使用 `vscode.window.showWarningMessage({ modal: true })`, 放在真正执行删除的那个 handler 里, 确认通过后紧接着执行 (如 `sql-message-handler.ts` 的 `deleteRows` / `alterTable`, `table-view-provider.ts` 里 Redis / Mongo 分支的删除消息). **禁止在 webview 中使用 `window.confirm()`** -- `window.confirm()` 在 VS Code webview 中不可靠, 会导致操作静默失败 (消息发不出去).
+- **所有删除操作必须有确认步骤**: 确认对话框统一在 extension host 中使用 `vscode.window.showWarningMessage({ modal: true })`, 放在真正执行删除的那个 handler 里, 确认通过后紧接着执行 (如 `sql-message-handler.ts` 的 `deleteRows` / `alterTable`, `redis-message-handler.ts` / `mongo-message-handler.ts` 里各删除消息的 case). **禁止在 webview 中使用 `window.confirm()`** -- `window.confirm()` 在 VS Code webview 中不可靠, 会导致操作静默失败 (消息发不出去).
 
 ## SSH Tunnel
 

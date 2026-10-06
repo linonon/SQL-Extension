@@ -1,4 +1,4 @@
-import type { ColumnInfo } from '../types/database';
+import type { ColumnInfo } from '../../../src/types/query';
 
 // RFC 4180: 字段包含分隔符, 双引号, 换行时需要用双引号包裹, 内部双引号转义为两个双引号
 function escapeField(value: unknown, separator: string): string {

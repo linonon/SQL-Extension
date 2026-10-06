@@ -1,7 +1,7 @@
-import type { ConnectionConfig, DriverType } from './connection.js';
+import type { DriverType } from './connection.js';
 import type { AlterTableChanges, ColumnInfo, DetailedColumnInfo } from './query.js';
 import type { RedisKeyInfo, RedisKeyType, RedisValue } from './redis.js';
-import type { KafkaTopicInfo, KafkaPartitionInfo, KafkaMessage, KafkaProduceResult } from './kafka.js';
+import type { KafkaTopicInfo, KafkaPartitionInfo, KafkaMessage } from './kafka.js';
 
 export interface ConnectionFormSSH {
   readonly sshEnabled: boolean;
@@ -34,7 +34,6 @@ export interface UpdateConnectionConfig extends SaveConnectionConfig {
   readonly id: string;
 }
 
-// 镜像 webview-ui src/types/messages.ts 的同名 interface (两 package 各一份, 须手动保持同步)
 export interface MongoExplainSummary {
   readonly stage: string;
   readonly indexName?: string;
@@ -57,8 +56,8 @@ export interface StatementResult {
   readonly status: StatementStatus;
   readonly executionTime?: number;
   readonly affectedRows?: number;
-  readonly columns?: readonly ColumnInfo[];
-  readonly rows?: readonly Record<string, unknown>[];
+  readonly columns?: ColumnInfo[];
+  readonly rows?: Record<string, unknown>[];
   readonly error?: string;
   // 结果集语句才有: 语句返回的总行数. rows 只在网格展示的那个结果集上带, 至多 RESULT_ROW_CAP 行, truncated 表示截掉了尾部
   readonly rowCount?: number;
@@ -77,7 +76,6 @@ export type ExtensionMessage =
   // 本连接的查询历史, 新的在前
   | { type: 'queryHistory'; entries: readonly QueryHistoryEntry[] }
   | { type: 'connectionTestResult'; success: boolean; error?: string }
-  | { type: 'connectionList'; connections: ConnectionConfig[] }
   | { type: 'error'; message: string }
   | { type: 'viewInit'; view: ViewType; context?: Record<string, unknown> }
   | { type: 'schemaInfo'; schema: Record<string, string[]> }
@@ -93,7 +91,7 @@ export type ExtensionMessage =
   | { type: 'redisValueResult'; key: string; database: number; keyType: RedisKeyType; value: RedisValue; ttl: number }
   | { type: 'redisOperationResult'; success: boolean; error?: string }
   | { type: 'redisDbList'; databases: readonly { readonly index: number; readonly keyCount: number }[] }
-  | { type: 'redisDeleteKeysResult'; success: boolean; deletedKeys: readonly string[] }
+  | { type: 'redisDeleteKeysResult'; success: boolean; deletedKeys: readonly string[]; error?: string }
   | { type: 'redisCommandResult'; output: string }
   | { type: 'redisHashScanResult'; key: string; database: number; cursor: string; fields: Record<string, string>; done: boolean }
   | { type: 'redisImportResult'; success: boolean; importedCount?: number; error?: string }

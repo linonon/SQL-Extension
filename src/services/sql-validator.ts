@@ -2,7 +2,9 @@
 // 文本检查挡不全 (如带引号的函数名 "pg_terminate_backend"(1), dblink_send_query), 不要靠逐条加黑名单正则来补
 // 只允许 SELECT/SHOW/DESCRIBE/DESC/EXPLAIN/WITH 开头的语句: 挡住 MySQL DDL (DDL 会隐式提交, 只读事务挡不住)
 // 拒绝任何 INTO: 只读事务挡不住 MySQL INTO OUTFILE/DUMPFILE; 在原文上查, 宁可误杀字面量里的 into
-// 拒绝多语句 (去掉字符串常量后检查分号)
+// 多语句由调用方先用 isMultiStatement 拒绝 (db_read 与 db_execute 都要挡)
+
+import { splitSqlStatements, type SqlDialect } from '../utils/destructive-sql.js';
 
 const ALLOWED_PREFIXES = ['SELECT', 'SHOW', 'DESCRIBE', 'DESC', 'EXPLAIN', 'WITH'];
 
@@ -11,10 +13,9 @@ const MAX_LIMIT = 500;
 // 只读事务管不到的会话级 / 跨会话副作用的常见写法: 命名锁, advisory lock, 杀连接, 远程执行 (best-effort, 不是完整清单)
 const SIDE_EFFECT_FUNCS = /\b(get_lock|pg_(try_)?advisory_(xact_)?lock(_shared)?|pg_terminate_backend|pg_cancel_backend|pg_reload_conf|dblink(_exec)?)\s*\(/i;
 
-export function isMultiStatement(sql: string): boolean {
-  const noStrings = sql.replace(/'[^']*'/g, '').replace(/"[^"]*"/g, '');
-  const semiIdx = noStrings.indexOf(';');
-  return semiIdx >= 0 && noStrings.slice(semiIdx + 1).trim().length > 0;
+// 按方言切分后多于一条: 注释与字符串里的 ; 不算; PG 的 'a\' 结束字符串, 其后的 ; 是真分隔符
+export function isMultiStatement(sql: string, dialect: SqlDialect): boolean {
+  return splitSqlStatements(sql, dialect).length > 1;
 }
 
 export function isReadonlySQL(sql: string): boolean {
@@ -22,14 +23,7 @@ export function isReadonlySQL(sql: string): boolean {
   if (!ALLOWED_PREFIXES.some(p => trimmed.startsWith(p))) {
     return false;
   }
-  if (/\bINTO\b/i.test(sql) || SIDE_EFFECT_FUNCS.test(sql)) {
-    return false;
-  }
-  // 拒绝多语句: 去掉字符串常量后检查分号
-  if (isMultiStatement(sql)) {
-    return false;
-  }
-  return true;
+  return !/\bINTO\b/i.test(sql) && !SIDE_EFFECT_FUNCS.test(sql);
 }
 
 // 强制追加或替换 LIMIT, 不超过 MAX_LIMIT

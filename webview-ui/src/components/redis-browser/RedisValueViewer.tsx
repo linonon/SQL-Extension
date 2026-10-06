@@ -1,4 +1,4 @@
-import type { RedisKeyType, RedisValue } from '../../types/redis';
+import type { RedisKeyType, RedisValue } from '../../../../src/types/redis';
 import { RedisStringEditor } from './RedisStringEditor';
 import { RedisHashEditor } from './RedisHashEditor';
 import { RedisListEditor } from './RedisListEditor';

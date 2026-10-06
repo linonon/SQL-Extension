@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { RedisBrowser } from './RedisBrowser';
 import { mockPostMessage } from '../../__test__/setup';
-import type { ExtensionMessage } from '../../types/messages';
+import type { ExtensionMessage } from '../../../../src/types/messages';
 
 vi.mock('./RedisToolbar', () => ({
   RedisToolbar: (props: any) => (

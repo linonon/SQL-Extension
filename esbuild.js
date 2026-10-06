@@ -1,3 +1,4 @@
+const fs = require('fs');
 const esbuild = require('esbuild');
 const { version } = require('./package.json');
 
@@ -32,6 +33,10 @@ const mcpServerOptions = {
 };
 
 async function main() {
+  // 先删本脚本的产物: 正式构建不出 sourcemap, watch 构建留下的旧 .map 与新产物对不上. 只删自己的文件, 不清整个 dist
+  for (const { outfile } of [extensionOptions, mcpServerOptions]) {
+    for (const file of [outfile, `${outfile}.map`]) { fs.rmSync(file, { force: true }); }
+  }
   if (isWatch) {
     const [extCtx, mcpCtx] = await Promise.all([
       esbuild.context(extensionOptions),

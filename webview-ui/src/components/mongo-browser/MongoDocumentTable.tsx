@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ColumnInfo } from '../../types/database';
+import type { ColumnInfo } from '../../../../src/types/query';
 import { extractFieldPaths } from './mongo-autocomplete';
 import { MongoFilterInput } from './MongoFilterInput';
 import { ViewToggle, type MongoView } from './ViewToggle';
@@ -11,7 +11,7 @@ import { useMongoFilterHistory, MongoFilterHistory, type FilterHistoryEntry } fr
 import { MongoFilterBuilder } from './MongoFilterBuilder';
 import { MongoExplainPanel } from './MongoExplainPanel';
 import { capRows } from './mongo-render-cap';
-import type { MongoExplainSummary } from '../../types/messages';
+import type { MongoExplainSummary } from '../../../../src/types/messages';
 import { useReadOnly } from '../../hooks/useReadOnly';
 
 interface MongoDocumentTableProps {

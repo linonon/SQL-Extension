@@ -1,4 +1,4 @@
-import type { ColumnInfo } from '../types/database';
+import type { ColumnInfo } from '../../../src/types/query';
 import { isAutoFilledColumn } from './insert-row';
 
 const NUMERIC_TYPE_RE = /^(tinyint|smallint|mediumint|int|integer|bigint|decimal|numeric|dec|fixed|float|double|real)\b/i;

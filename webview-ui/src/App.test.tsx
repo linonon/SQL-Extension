@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { App } from './App';
 import { mockPostMessage } from './__test__/setup';
-import type { ExtensionMessage } from './types/messages';
+import type { ExtensionMessage } from '../../src/types/messages';
 
 // mock 子组件避免依赖问题
 vi.mock('./components/query-editor/QueryEditor', () => ({

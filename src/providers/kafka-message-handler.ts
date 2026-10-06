@@ -1,4 +1,4 @@
-import type { WebviewMessage } from '../types/messages.js';
+import type { ExtensionMessage, WebviewMessage } from '../types/messages.js';
 import type { IKafkaDriver } from '../types/kafka-driver.js';
 import { sanitizeErrorMessage } from '../utils/sanitize-error.js';
 
@@ -6,7 +6,7 @@ import { sanitizeErrorMessage } from '../utils/sanitize-error.js';
 export async function handleKafkaMessage(
   message: WebviewMessage,
   driver: IKafkaDriver,
-  post: (msg: unknown) => void
+  post: (msg: ExtensionMessage) => void
 ): Promise<boolean> {
   try {
     return await routeKafkaMessage(message, driver, post);
@@ -34,7 +34,7 @@ export async function handleKafkaMessage(
 async function routeKafkaMessage(
   message: WebviewMessage,
   driver: IKafkaDriver,
-  post: (msg: unknown) => void
+  post: (msg: ExtensionMessage) => void
 ): Promise<boolean> {
   switch (message.type) {
     case 'kafkaListTopics': {
@@ -105,7 +105,7 @@ async function routeKafkaMessage(
 
 async function fetchAndPost(
   driver: IKafkaDriver,
-  post: (msg: unknown) => void,
+  post: (msg: ExtensionMessage) => void,
   topic: string,
   partition: number,
   offset: string,

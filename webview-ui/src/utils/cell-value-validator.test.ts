@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { validateCellValue, validateRow } from './cell-value-validator';
-import type { ColumnInfo } from '../types/database';
+import type { ColumnInfo } from '../../../src/types/query';
 
 function col(overrides: Partial<ColumnInfo>): ColumnInfo {
   return {

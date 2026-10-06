@@ -17,7 +17,7 @@ import { buildInsertSql } from '../../utils/insert-sql';
 import { buildInsertRow } from '../../utils/insert-row';
 import { validateCellValue } from '../../utils/cell-value-validator';
 import { widestCellSample, MAX_FIT_CHARS } from '../../utils/column-fit';
-import type { ColumnInfo } from '../../types/database';
+import type { ColumnInfo } from '../../../../src/types/query';
 import type { SortState } from '../../utils/sql-builder';
 
 const ROW_HEIGHT = 32;

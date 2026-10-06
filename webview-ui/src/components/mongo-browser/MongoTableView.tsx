@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import type { ColumnInfo } from '../../types/database';
+import type { ColumnInfo } from '../../../../src/types/query';
 import { buildDisplayColumns, getByPath } from './mongo-table-columns';
 import { coerceToType, isEditableLeaf } from './mongo-field-editor';
 import { idToShell } from './mongo-id';

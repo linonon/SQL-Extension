@@ -8,7 +8,7 @@ import { userFilter, type MongoDriver } from '../drivers/mongo-driver.js';
 import { convertEjsonToBson } from '../utils/mongo-shell-to-json.js';
 import { ErrorCode } from './utils.js';
 import { isReadonlySQL, enforceLimit, isMultiStatement } from './sql-validator.js';
-import { isWholeTableWrite } from '../utils/destructive-sql.js';
+import { isWholeTableWrite, splitSqlStatements, type SqlDialect } from '../utils/destructive-sql.js';
 import { parseRedisCommand } from './parsers/redis-parser.js';
 import { parseMongoQuery, READ_METHODS } from './parsers/mongo-parser.js';
 import { parseKafkaQuery, READ_ACTIONS } from './parsers/kafka-parser.js';
@@ -70,7 +70,9 @@ export function isDestructiveRequest(driverType: string, query: string): boolean
     switch (driverType) {
       case 'mysql':
       case 'postgresql':
-        return !isMultiStatement(query) && isWholeTableWrite(query);
+        // PG 的 DO 匿名块里可以执行任意语句, 无法逐条判断, 一律先问
+        return !isMultiStatement(query, driverType)
+          && (isWholeTableWrite(query, driverType) || (driverType === 'postgresql' && /^\s*DO\b/i.test(query)));
       case 'redis': {
         const cmd = parseRedisCommand(query)[0].toUpperCase();
         return cmd === 'FLUSHDB' || cmd === 'FLUSHALL';
@@ -119,15 +121,18 @@ export async function routeByDriver(
 }
 
 async function routeSQL(
-  mode: RouteMode, driverType: string, connectionId: string, query: string,
+  mode: RouteMode, driverType: SqlDialect, connectionId: string, query: string,
   database: string | undefined, drivers: DriverSource,
 ) {
-  if (isMultiStatement(query)) {
+  const statements = splitSqlStatements(query, driverType);
+  if (statements.length > 1) {
     return makeError(
       'Multiple SQL statements not allowed. Send one statement at a time.',
       ErrorCode.MULTI_STATEMENT,
     );
   }
+  // 只取这条语句的原文: 末尾的 ; 与其后的注释去掉, enforceLimit 追加的 LIMIT 才不会落到 ; 之后成为第二条语句
+  query = statements[0] ?? query;
 
   // db_read 的 LIMIT 被追加或压到 MAX_LIMIT 时, 拿满 MAX_LIMIT 行就说明结果被截断了
   let limitCapped = false;
@@ -138,9 +143,9 @@ async function routeSQL(
         ErrorCode.READONLY_VIOLATION,
       );
     }
+    // query 已无首尾空白与末尾分号, enforceLimit 不改写时原样返回
     const limited = enforceLimit(query, undefined, driverType === 'mysql');
-    // enforceLimit 不改写时原样返回去掉首尾空白与末尾分号的语句
-    limitCapped = limited !== query.trim().replace(/;$/, '');
+    limitCapped = limited !== query;
     query = limited;
   }
 

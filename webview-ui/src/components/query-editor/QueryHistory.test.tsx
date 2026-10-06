@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { QueryHistory } from './QueryHistory';
 import { mockPostMessage } from '../../__test__/setup';
-import type { ExtensionMessage } from '../../types/messages';
+import type { ExtensionMessage } from '../../../../src/types/messages';
 
 const send = (data: ExtensionMessage) =>
   act(() => { window.dispatchEvent(new MessageEvent('message', { data })); });

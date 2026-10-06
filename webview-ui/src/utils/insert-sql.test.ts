@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { buildInsertSql } from './insert-sql';
-import type { ColumnInfo } from '../types/database';
+import type { ColumnInfo } from '../../../src/types/query';
 
 const col = (name: string): ColumnInfo => ({ name, dataType: 'varchar', nullable: true, isPrimaryKey: false, defaultValue: null, extra: '' });
 

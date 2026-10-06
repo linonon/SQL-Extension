@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { DatabaseBrowser, visibleDatabases } from './DatabaseBrowser';
 import { mockPostMessage } from '../../__test__/setup';
-import type { ExtensionMessage } from '../../types/messages';
+import type { ExtensionMessage } from '../../../../src/types/messages';
 
 vi.mock('../query-editor/QueryEditor', () => ({
   QueryEditor: ({ table, onPendingEditsChange }: { table: string; onPendingEditsChange?: (n: number) => void }) => (

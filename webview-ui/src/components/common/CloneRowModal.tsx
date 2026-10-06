@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ColumnInfo } from '../../types/database';
+import type { ColumnInfo } from '../../../../src/types/query';
 import { isAutoFilledColumn } from '../../utils/insert-row';
 import { validateRow } from '../../utils/cell-value-validator';
 

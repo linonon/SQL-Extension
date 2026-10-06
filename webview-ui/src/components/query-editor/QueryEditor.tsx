@@ -14,8 +14,8 @@ import { QueryResultsGrid } from './QueryResultsGrid';
 import { StatementSummaryList } from './StatementSummaryList';
 import { AiAskBar } from './AiAskBar';
 import { ConfirmBar } from '../common/ConfirmBar';
-import type { ColumnInfo } from '../../types/database';
-import type { ExtensionMessage, StatementResult } from '../../types/messages';
+import type { ColumnInfo } from '../../../../src/types/query';
+import type { ExtensionMessage, StatementResult } from '../../../../src/types/messages';
 import '../../styles/query-editor.css';
 import '../../styles/data-grid.css';
 
@@ -250,9 +250,8 @@ export function QueryEditor({ connectionName, database, driverType, initialSql, 
     // 格式化 / 历史 / AI 套用等程序改写内容时不触发选区事件, 记下的选区可能已过期: 原位置对不上就当没有选区
     const trimmedSelection = selectedText.trim();
     if (trimmedSelection && sqlText.startsWith(selectedText, selectionStart)) return trimmedSelection;
-    // 宿主只在 MySQL 上按 ; 切分; 别的库含 dollar quote 或 \' 时客户端切不准 (函数体 / 以反斜杠结尾的字符串), 整段执行
-    if (caret === undefined || (driverType !== 'mysql' && /\$\w*\$|\\'/.test(sqlText))) return sqlText.trim();
-    return statementAtCaret(sqlText, caret) ?? '';
+    if (caret === undefined) return sqlText.trim();
+    return statementAtCaret(sqlText, caret, driverType === 'postgresql' ? 'postgresql' : 'mysql') ?? '';
   }, [selectedText, selectionStart, sqlText, driverType]);
 
   const isBrowseSql = useCallback(

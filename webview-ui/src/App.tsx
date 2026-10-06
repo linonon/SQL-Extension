@@ -9,7 +9,7 @@ import { KafkaBrowser } from './components/kafka-browser/KafkaBrowser';
 import { MongoBrowser } from './components/mongo-browser/MongoBrowser';
 import { DatabaseBrowser } from './components/db-browser/DatabaseBrowser';
 import { ReadOnlyContext } from './hooks/useReadOnly';
-import type { ExtensionMessage, ViewType } from './types/messages';
+import type { ExtensionMessage, ViewType } from '../../src/types/messages';
 
 export function App() {
   const [view, setView] = useState<ViewType | null>(null);

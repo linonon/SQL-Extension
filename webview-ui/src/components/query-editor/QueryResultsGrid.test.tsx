@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { QueryResultsGrid } from './QueryResultsGrid';
-import type { ColumnInfo } from '../../types/database';
+import type { ColumnInfo } from '../../../../src/types/query';
 
 const columns: ColumnInfo[] = [
   { name: 'id', dataType: 'int', nullable: false, isPrimaryKey: true, defaultValue: null, extra: '' },

@@ -1,4 +1,4 @@
-import type { KafkaMessage } from '../../types/kafka';
+import type { KafkaMessage } from '../../../../src/types/kafka';
 import { formatJsonLossless } from '../../utils/json-format';
 
 interface KafkaMessageDetailProps {

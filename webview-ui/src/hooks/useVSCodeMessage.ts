@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import type { ExtensionMessage } from '../types/messages';
+import type { ExtensionMessage } from '../../../src/types/messages';
 
 export function useVSCodeMessage(handler: (message: ExtensionMessage) => void): void {
   useEffect(() => {

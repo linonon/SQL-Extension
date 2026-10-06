@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useVSCodeMessage } from '../../hooks/useVSCodeMessage';
 import { usePostMessage } from '../../hooks/usePostMessage';
-import type { ExtensionMessage } from '../../types/messages';
-import type { DetailedColumnInfo, AlterTableChanges, AddColumnDef, ModifyColumnDef } from '../../types/database';
+import type { ExtensionMessage } from '../../../../src/types/messages';
+import type { DetailedColumnInfo, AlterTableChanges, AddColumnDef, ModifyColumnDef } from '../../../../src/types/query';
 import './edit-table.css';
 
 interface EditableColumn {

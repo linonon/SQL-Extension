@@ -3,8 +3,8 @@ import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { QueryEditor, readOnlyReason } from './QueryEditor';
 import { ReadOnlyContext } from '../../hooks/useReadOnly';
 import { mockPostMessage } from '../../__test__/setup';
-import type { ExtensionMessage } from '../../types/messages';
-import type { ColumnInfo } from '../../types/database';
+import type { ExtensionMessage } from '../../../../src/types/messages';
+import type { ColumnInfo } from '../../../../src/types/query';
 
 // mock SqlEditor: 用 textarea 模拟编辑器行为
 vi.mock('../sql-editor/SqlEditor', () => ({
@@ -376,17 +376,18 @@ describe('QueryEditor', () => {
     expect(executed()).toEqual(['SELECT 1', 'UPDATE t SET a = 1', 'SELECT 1;\nUPDATE t SET a = 1;']);
   });
 
-  it('PG 含 dollar quote 时 Ctrl+Enter 整段执行, 不切开函数体', () => {
+  it('PG 的 Ctrl+Enter 按 dollar quote 切分: 光标在函数体里执行整个 DO 块, 不切开也不带上别的语句', () => {
     render(<QueryEditor connectionId="conn-1" database="test_db" driverType="postgresql" />);
     const textarea = screen.getByPlaceholderText('SELECT * FROM ...') as HTMLTextAreaElement;
-    const text = 'DO $$\nBEGIN\n  UPDATE accounts SET flagged = true WHERE score < 0;\n  DELETE FROM sessions WHERE user_id = 1;\nEND $$;';
+    const block = 'DO $$\nBEGIN\n  UPDATE accounts SET flagged = true WHERE score < 0;\n  DELETE FROM sessions WHERE user_id = 1;\nEND $$';
+    const text = `SELECT 1;\n${block};\nSELECT 2;`;
     fireEvent.change(textarea, { target: { value: text } });
     const caret = text.indexOf('DELETE');
     textarea.setSelectionRange(caret, caret);
     fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter', metaKey: true });
 
     const sent = mockPostMessage.mock.calls.filter(([m]) => m.type === 'executeQuery').map(([m]) => m.sql);
-    expect(sent).toEqual([text]);
+    expect(sent).toEqual([block]);
   });
 
   it('执行中再按 Ctrl+Enter 不发第二条 executeQuery', () => {

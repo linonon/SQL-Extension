@@ -1,15 +1,17 @@
+import * as vscode from 'vscode';
 import type { Document } from 'mongodb';
-import type { WebviewMessage } from '../types/messages.js';
+import type { ExtensionMessage, WebviewMessage } from '../types/messages.js';
 import { userFilter, type MongoDriver } from '../drivers/mongo-driver.js';
 import { convertEjsonToBson, convertShellToJson } from '../utils/mongo-shell-to-json.js';
 import { buildClone, buildUpdate, diffDocuments, isEmptyDiff, type DocumentDiff } from '../utils/mongo-update.js';
 
 const NOT_FOUND = 'document not found (deleted or _id changed)';
 
+// 返回 true 表示已处理, false 表示不是 mongo 消息. 删除 / 删集合 / 导入的确认在执行它的 case 里
 export async function handleMongoMessage(
   message: WebviewMessage,
   mongo: MongoDriver,
-  post: (msg: unknown) => void
+  post: (msg: ExtensionMessage) => void
 ): Promise<boolean> {
   switch (message.type) {
     case 'mongoListAllCollections': {
@@ -39,8 +41,18 @@ export async function handleMongoMessage(
     case 'mongoUpdateDocument':
     case 'mongoCloneDocument':
     case 'mongoDeleteDocument': {
+      if (message.type === 'mongoDeleteDocument') {
+        // 点名库 / 集合 / _id: 删的是这条消息里的目标, 让用户能核对它是否就是界面上看到的那条
+        const confirmDelete = await vscode.window.showWarningMessage(
+          `Delete document ${JSON.stringify(message.id)} from ${message.database}.${message.collection}?`, { modal: true }, 'Delete'
+        );
+        if (confirmDelete !== 'Delete') { return true; }
+      }
       try {
-        post({ type: 'mongoOperationResult', ...await writeDocument(message, mongo) });
+        const outcome = await writeDocument(message, mongo);
+        // 成功的提示在宿主侧, 失败由 webview 行内显示; 回执照常发给 webview
+        if (outcome.success && outcome.message) { void vscode.window.showInformationMessage(outcome.message); }
+        post({ type: 'mongoOperationResult', ...outcome });
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         post({ type: 'mongoOperationResult', success: false, error: errorMsg });
@@ -62,7 +74,18 @@ export async function handleMongoMessage(
     }
 
     case 'mongoCreateCollection': {
-      const { database, collection } = message as { database: string; collection: string };
+      const { database } = message;
+      const input = await vscode.window.showInputBox({
+        prompt: `New collection in "${database}"`,
+        placeHolder: 'collection_name',
+        validateInput: (v) => {
+          if (!v.trim()) { return 'Collection name is required'; }
+          if (/[.$]/.test(v)) { return 'Cannot contain . or $'; }
+          return undefined;
+        },
+      });
+      if (!input) { return true; }
+      const collection = input.trim();
       try {
         await mongo.createCollection(database, collection);
         post({ type: 'mongoCollectionCreated', success: true });
@@ -75,7 +98,13 @@ export async function handleMongoMessage(
     }
 
     case 'mongoDropCollection': {
-      const { database, collection } = message as { database: string; collection: string };
+      const { database, collection } = message;
+      const confirm = await vscode.window.showWarningMessage(
+        `Drop collection "${collection}"? This cannot be undone.`,
+        { modal: true },
+        'Drop'
+      );
+      if (confirm !== 'Drop') { return true; }
       try {
         await mongo.dropCollection(database, collection);
         post({ type: 'mongoCollectionDropped', success: true, database, collection });
@@ -87,6 +116,56 @@ export async function handleMongoMessage(
       return true;
     }
 
+    case 'mongoExportCollection': {
+      const { database, collection, filter, sort, projection } = message;
+      try {
+        const uri = await vscode.window.showSaveDialog({
+          filters: { 'JSON Files': ['json'], 'JSONL Files': ['jsonl'] },
+          defaultUri: vscode.Uri.file(`${collection}.json`),
+        });
+        if (!uri) { return true; }
+        const jsonl = uri.path.toLowerCase().endsWith('.jsonl');
+        const { json, count } = await mongo.exportDocuments(database, collection, buildExportPipeline(filter, sort, projection), jsonl);
+        await vscode.workspace.fs.writeFile(uri, Buffer.from(json, 'utf-8'));
+        vscode.window.showInformationMessage(`Exported ${count} document(s) to ${uri.fsPath}`);
+        post({ type: 'mongoExportResult', success: true, count });
+      } catch (e) {
+        const errMsg = e instanceof Error ? e.message : String(e);
+        vscode.window.showErrorMessage(`Export failed: ${errMsg}`);
+        post({ type: 'mongoExportResult', success: false, error: errMsg });
+      }
+      return true;
+    }
+
+    case 'mongoImportCollection': {
+      const { database, collection } = message;
+      try {
+        const fileUris = await vscode.window.showOpenDialog({
+          filters: { 'JSON/JSONL Files': ['json', 'jsonl'] },
+          canSelectMany: false,
+        });
+        if (!fileUris || fileUris.length === 0) { return true; }
+        const content = Buffer.from(await vscode.workspace.fs.readFile(fileUris[0])).toString('utf-8');
+        const lineCount = content.trim().startsWith('[')
+          ? (JSON.parse(content.trim()) as unknown[]).length
+          : content.trim().split('\n').filter((l) => l.trim()).length;
+        const confirm = await vscode.window.showWarningMessage(
+          `Import will insert ${lineCount} document(s) into "${collection}". Continue?`,
+          { modal: true },
+          'Insert'
+        );
+        if (confirm !== 'Insert') { return true; }
+        const inserted = await mongo.importDocuments(database, collection, content);
+        vscode.window.showInformationMessage(`Imported ${inserted} document(s) into "${collection}"`);
+        post({ type: 'mongoImportResult', success: true, inserted });
+      } catch (e) {
+        const errMsg = e instanceof Error ? e.message : String(e);
+        vscode.window.showErrorMessage(`Import failed: ${errMsg}`);
+        post({ type: 'mongoImportResult', success: false, error: errMsg });
+      }
+      return true;
+    }
+
     default:
       return false;
   }
@@ -94,7 +173,7 @@ export async function handleMongoMessage(
 
 async function postRefreshedCollections(
   mongo: MongoDriver,
-  post: (msg: unknown) => void
+  post: (msg: ExtensionMessage) => void
 ): Promise<void> {
   const databases = await mongo.listDatabases();
   // 并行获取所有 database 的 collections, 总耗时 max(T) 而非 N*T
@@ -174,7 +253,9 @@ function parseShell(text: string): unknown {
   return trimmed ? JSON.parse(convertShellToJson(trimmed)) : {};
 }
 
-export function buildExportPipeline(
+// $match / $sort / $project, 空串与 {} 不生成 stage.
+// $project 在 $sort 后: sort 可能依赖被 projection 排除的字段
+function buildExportPipeline(
   filter: string,
   sort: string,
   projection?: string
@@ -202,6 +283,7 @@ export function buildExportPipeline(
   return pipeline;
 }
 
+// 浏览器的一页: 导出 pipeline 之后接 $skip / $limit
 function buildAggregatePipeline(
   filter: string,
   sort: string,
@@ -209,32 +291,5 @@ function buildAggregatePipeline(
   skip: number,
   limit: number
 ): unknown[] {
-  const pipeline: unknown[] = [];
-
-  const trimmedFilter = filter.trim();
-  if (trimmedFilter && trimmedFilter !== '{}') {
-    const parsed = JSON.parse(convertShellToJson(trimmedFilter));
-    pipeline.push({ $match: parsed });
-  }
-
-  const trimmedSort = sort.trim();
-  if (trimmedSort && trimmedSort !== '{}') {
-    const parsed = JSON.parse(convertShellToJson(trimmedSort));
-    pipeline.push({ $sort: parsed });
-  }
-
-  // $project 在 $sort 后, $skip 前: sort 可能依赖被 projection 排除的字段
-  const trimmedProjection = projection?.trim() ?? '';
-  if (trimmedProjection && trimmedProjection !== '{}') {
-    const parsed = JSON.parse(convertShellToJson(trimmedProjection));
-    pipeline.push({ $project: parsed });
-  }
-
-  if (skip > 0) {
-    pipeline.push({ $skip: skip });
-  }
-
-  pipeline.push({ $limit: limit });
-
-  return pipeline;
+  return [...buildExportPipeline(filter, sort, projection), ...(skip > 0 ? [{ $skip: skip }] : []), { $limit: limit }];
 }

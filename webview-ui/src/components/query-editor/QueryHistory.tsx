@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useVSCodeMessage } from '../../hooks/useVSCodeMessage';
 import { usePostMessage } from '../../hooks/usePostMessage';
-import type { ExtensionMessage, QueryHistoryEntry } from '../../types/messages';
+import type { ExtensionMessage, QueryHistoryEntry } from '../../../../src/types/messages';
 
 interface QueryHistoryProps {
   readonly onSelect: (sql: string) => void;

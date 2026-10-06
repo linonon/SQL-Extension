@@ -1,4 +1,4 @@
-import type { ColumnInfo } from '../types/database';
+import type { ColumnInfo } from '../../../src/types/query';
 import { escapeIdentifier } from '../../../src/utils/sql-builder';
 import { sqlLiteral } from '../../../src/utils/sql-literal';
 

@@ -34,7 +34,6 @@ describe('isReadonlySQL', () => {
     ['ALTER TABLE users ADD COLUMN age INT', 'ALTER'],
     ['TRUNCATE TABLE users', 'TRUNCATE'],
     ['SELECT * INTO OUTFILE "/tmp/x" FROM users', 'SELECT INTO'],
-    ['SELECT 1; DROP TABLE users', 'multi-statement'],
     ['GRANT ALL ON *.* TO root', 'GRANT'],
   ];
 
@@ -46,10 +45,6 @@ describe('isReadonlySQL', () => {
 
   it('should allow single statement with trailing semicolon', () => {
     expect(isReadonlySQL('SELECT 1;')).toBe(true);
-  });
-
-  it('should reject multi-statement even with whitespace', () => {
-    expect(isReadonlySQL('SELECT 1;  SELECT 2')).toBe(false);
   });
 });
 
@@ -93,16 +88,41 @@ describe('enforceLimit', () => {
 
 describe('isMultiStatement', () => {
   it('should return false for single statement', () => {
-    expect(isMultiStatement('SELECT 1')).toBe(false);
+    expect(isMultiStatement('SELECT 1', 'mysql')).toBe(false);
   });
   it('should return false for trailing semicolon', () => {
-    expect(isMultiStatement('SELECT 1;')).toBe(false);
+    expect(isMultiStatement('SELECT 1;', 'mysql')).toBe(false);
   });
   it('should return true for multiple statements', () => {
-    expect(isMultiStatement('SELECT 1; DROP TABLE users')).toBe(true);
+    expect(isMultiStatement('SELECT 1; DROP TABLE users', 'mysql')).toBe(true);
   });
   it('should ignore semicolons in strings', () => {
-    expect(isMultiStatement("SELECT * FROM t WHERE name = 'a;b'")).toBe(false);
+    expect(isMultiStatement("SELECT * FROM t WHERE name = 'a;b'", 'mysql')).toBe(false);
+  });
+  it('注释里的 ; 不算分隔符, 两条真语句照样拒绝 (两种方言)', () => {
+    for (const dialect of ['mysql', 'postgresql'] as const) {
+      expect(isMultiStatement('SELECT 1 -- a; b', dialect)).toBe(false);
+      expect(isMultiStatement('SELECT /* a; b */ 1;\n-- tail; x', dialect)).toBe(false);
+      expect(isMultiStatement('SELECT 1;  SELECT 2', dialect)).toBe(true);
+    }
+  });
+  it("反斜杠只在 MySQL 字符串里转义: PG 的 'a\\' 已结束, 其后的 DROP 是第二条语句", () => {
+    const sql = "SELECT 'a\\'; DROP TABLE t; --'";
+    expect(isMultiStatement(sql, 'postgresql')).toBe(true);
+    expect(isMultiStatement(sql, 'mysql')).toBe(false);
+    // PG 的 E'..' 认反斜杠
+    expect(isMultiStatement("SELECT E'a\\'; DROP TABLE t; --'", 'postgresql')).toBe(false);
+  });
+  it('PG dollar quote 里的 ; 不切分: 函数体是一条语句', () => {
+    const fn = 'CREATE FUNCTION f() RETURNS void AS $body$\nBEGIN\n  DELETE FROM t;\n  UPDATE u SET a = 1;\nEND;\n$body$ LANGUAGE plpgsql;';
+    expect(isMultiStatement(fn, 'postgresql')).toBe(false);
+    expect(isMultiStatement('DO $$ BEGIN PERFORM 1; END $$; SELECT 2', 'postgresql')).toBe(true);
+  });
+  it('PG 里 dollar quote / 嵌套块注释藏不住真分隔符', () => {
+    // a$b$ 是标识符, 不是 dollar quote 的开头
+    expect(isMultiStatement('SELECT 1 AS a$b$; DROP TABLE t; SELECT 1 AS c$b$', 'postgresql')).toBe(true);
+    // 块注释在 PG 可嵌套: 注释到第二个 */ 才结束, 其后的 ' 不开字符串
+    expect(isMultiStatement("SELECT 1 /* /* */ ' */; DROP TABLE t; --'", 'postgresql')).toBe(true);
   });
 });
 

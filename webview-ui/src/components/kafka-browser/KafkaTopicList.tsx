@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import type { KafkaTopicInfo } from '../../types/kafka';
+import type { KafkaTopicInfo } from '../../../../src/types/kafka';
 
 interface KafkaTopicListProps {
   readonly topics: readonly KafkaTopicInfo[];

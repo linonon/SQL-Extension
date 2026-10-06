@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useVSCodeMessage } from '../../hooks/useVSCodeMessage';
 import { usePostMessage } from '../../hooks/usePostMessage';
-import type { ExtensionMessage } from '../../types/messages';
-import type { RedisKeyInfo, RedisKeyType, RedisValue } from '../../types/redis';
+import type { ExtensionMessage } from '../../../../src/types/messages';
+import type { RedisKeyInfo, RedisKeyType, RedisValue } from '../../../../src/types/redis';
 import { RedisToolbar } from './RedisToolbar';
 import { RedisKeyList } from './RedisKeyList';
 import { RedisValueViewer } from './RedisValueViewer';

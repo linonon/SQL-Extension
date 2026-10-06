@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { isAutoFilledColumn, isExpressionDefault, buildInsertRow } from './insert-row';
-import type { ColumnInfo } from '../types/database';
+import type { ColumnInfo } from '../../../src/types/query';
 
 function col(overrides: Partial<ColumnInfo>): ColumnInfo {
   return {

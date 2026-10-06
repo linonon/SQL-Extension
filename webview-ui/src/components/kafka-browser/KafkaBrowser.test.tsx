@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import { act, render, screen } from '@testing-library/react';
 import { KafkaBrowser } from './KafkaBrowser';
-import type { ExtensionMessage } from '../../types/messages';
-import type { KafkaMessage, KafkaPartitionInfo } from '../../types/kafka';
+import type { ExtensionMessage } from '../../../../src/types/messages';
+import type { KafkaMessage, KafkaPartitionInfo } from '../../../../src/types/kafka';
 import { mockPostMessage } from '../../__test__/setup';
 
 vi.mock('../../styles/kafka-browser.css', () => ({}));

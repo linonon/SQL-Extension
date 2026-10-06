@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useVSCodeMessage } from '../../hooks/useVSCodeMessage';
 import { usePostMessage } from '../../hooks/usePostMessage';
-import type { ExtensionMessage, WebviewMessage } from '../../types/messages';
-import type { KafkaTopicInfo, KafkaPartitionInfo, KafkaMessage } from '../../types/kafka';
+import type { ExtensionMessage, WebviewMessage } from '../../../../src/types/messages';
+import type { KafkaTopicInfo, KafkaPartitionInfo, KafkaMessage } from '../../../../src/types/kafka';
 import { KafkaTopicList } from './KafkaTopicList';
 import { KafkaMessageTable } from './KafkaMessageTable';
 import '../../styles/kafka-browser.css';

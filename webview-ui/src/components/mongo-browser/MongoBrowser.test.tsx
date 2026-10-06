@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { act, render, screen } from '@testing-library/react';
 import { MongoBrowser, isPathProjection } from './MongoBrowser';
 import { mockPostMessage } from '../../__test__/setup';
-import type { ExtensionMessage } from '../../types/messages';
+import type { ExtensionMessage } from '../../../../src/types/messages';
 
 vi.mock('../../styles/mongo-browser.css', () => ({}));
 

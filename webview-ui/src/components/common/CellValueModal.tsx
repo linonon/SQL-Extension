@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ColumnInfo } from '../../types/database';
+import type { ColumnInfo } from '../../../../src/types/query';
 import { formatJsonLossless } from '../../utils/json-format';
 import { validateCellValue } from '../../utils/cell-value-validator';
 

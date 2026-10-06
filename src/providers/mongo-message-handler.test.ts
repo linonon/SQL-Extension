@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import * as vscode from 'vscode';
 import { BSON, EJSON, Double, Long } from 'bson';
 // instanceof 断言用 mongodb 包里的类: 被测代码经 mongodb 构造 BSON 值 (vitest 下与直接 import 的 bson 是两份模块)
 import { ObjectId } from 'mongodb';
@@ -28,6 +29,8 @@ function mockMongo() {
 }
 
 describe('handleMongoMessage', () => {
+  // 各用例自己 spy 的确认框 (showWarningMessage 等) 不带到下一个用例
+  afterEach(() => { vi.restoreAllMocks(); });
   let mongo: ReturnType<typeof mockMongo>;
   let post: ReturnType<typeof vi.fn<(msg: unknown) => void>>;
   const send = (msg: Record<string, unknown>) => handleMongoMessage(msg as unknown as WebviewMessage, mongo as unknown as MongoDriver, post);
@@ -210,7 +213,13 @@ describe('handleMongoMessage', () => {
     expect(post).toHaveBeenCalledWith({ type: 'mongoOperationResult', success: true, affectedRows: 1 });
   });
 
-  it('mongoDeleteDocument: 按 EJSON _id 删除, 没删到报 not found', async () => {
+  it('mongoDeleteDocument: 先在宿主确认, 取消不删; 按 EJSON _id 删除, 没删到报 not found', async () => {
+    const warn = vi.spyOn(vscode.window, 'showWarningMessage').mockResolvedValue(undefined as never);
+    await send({ type: 'mongoDeleteDocument', database: 'db', collection: 'users', id: 'x' });
+    expect(mongo.deleteOne).not.toHaveBeenCalled();
+    expect(post).not.toHaveBeenCalled();
+
+    warn.mockResolvedValue('Delete' as never);
     await send({ type: 'mongoDeleteDocument', database: 'db', collection: 'users', id: { $numberLong: '42' } });
     expect(canonical(mongo.deleteOne.mock.calls[0][2])).toEqual({ _id: { $numberLong: '42' } });
     mongo.deleteOne.mockResolvedValue(0);
