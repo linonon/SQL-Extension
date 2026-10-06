@@ -51,6 +51,18 @@ describe('handleSqlMessage executeQuery mysql batch', () => {
     vi.spyOn(vscode.window, 'showWarningMessage').mockResolvedValue(undefined as never);
   });
 
+  it('执行原文: 字符串字面量 / 注释不被掏空', async () => {
+    const posts: unknown[] = [];
+    const driver = createMysqlDriver([]);
+    const sql = `SELECT * FROM \`admin_url_key\` WHERE id = 15 AND name = "Log List" LIMIT 50 OFFSET 0; UPDATE t SET note = 'a;b', v = 'it\\'s' WHERE id = 1 -- c;d`;
+    await handleSqlMessage({ type: 'executeQuery', database: 'db', sql } as WebviewMessage, createCtx(driver, posts));
+    const sent = (driver.executeCancellable as ReturnType<typeof vi.fn>).mock.calls.map(c => c[0]);
+    expect(sent).toEqual([
+      'SELECT * FROM `admin_url_key` WHERE id = 15 AND name = "Log List" LIMIT 50 OFFSET 0',
+      "UPDATE t SET note = 'a;b', v = 'it\\'s' WHERE id = 1 -- c;d",
+    ]);
+  });
+
   it('两条都成功时回 queryBatchResult', async () => {
     const posts: unknown[] = [];
     const driver = createMysqlDriver([
