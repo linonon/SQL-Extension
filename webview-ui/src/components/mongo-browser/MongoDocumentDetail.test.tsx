@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { MongoDocumentDetail } from './MongoDocumentDetail';
-import { convertShellToJson, jsonToShell } from '../../utils/mongo-shell-to-json';
 import type { ChangeEvent, KeyboardEvent, RefObject } from 'react';
 
 // mock useMongoAutocomplete - 避免 DOM 测量

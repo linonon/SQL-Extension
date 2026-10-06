@@ -1,7 +1,9 @@
-import { describe, it, expect, vi } from 'vitest';
-import { convertShellToJson, stripShellTypes, jsonToShell } from './mongo-shell-to-json';
+import { describe, it, expect } from 'vitest';
+import { stripShellTypes, jsonToShell } from './mongo-shell-to-json';
+import { convertShellToJson } from '../../../src/utils/mongo-shell-syntax';
 
-describe('convertShellToJson', () => {
+// convertShellToJson 自身的用例在 src/utils/mongo-shell-syntax.test.ts; 这里只测与 jsonToShell 的往返
+describe('jsonToShell -> convertShellToJson 往返', () => {
   it('字符串值里形似 shell 写法的文本原样保留; 字符串外的照常转换 (编辑器 jsonToShell -> convertShellToJson 往返)', () => {
     // 文档的 ObjectId 以 shell 写法字符串到达 webview
     const doc = { _id: 'ObjectId("abc123456789012345678901")', note: 'call Long(5) or ISODate("x") here, NumberInt(3)' };
@@ -11,136 +13,6 @@ describe('convertShellToJson', () => {
       _id: { $oid: 'abc123456789012345678901' },
       note: 'call Long(5) or ISODate("x") here, NumberInt(3)',
     });
-  });
-
-  it('ObjectId -> $oid Extended JSON', () => {
-    expect(convertShellToJson('ObjectId("abc123456789012345678901")'))
-      .toBe('{"$oid":"abc123456789012345678901"}');
-  });
-
-  it('ISODate with value -> $date Extended JSON', () => {
-    expect(convertShellToJson('ISODate("2024-01-15T00:00:00.000Z")'))
-      .toBe('{"$date":"2024-01-15T00:00:00.000Z"}');
-  });
-
-  it('ISODate 不带时区的日期时间按 UTC (mongosh 语义); 带时区 / 纯日期 / new Date 不变', () => {
-    expect(convertShellToJson('ISODate("2026-01-01 08:00:00")')).toBe('{"$date":"2026-01-01T08:00:00Z"}');
-    expect(convertShellToJson('ISODate("2026-01-01T08:00")')).toBe('{"$date":"2026-01-01T08:00Z"}');
-    expect(convertShellToJson('ISODate("2026-01-01T08:00:00.123")')).toBe('{"$date":"2026-01-01T08:00:00.123Z"}');
-    expect(convertShellToJson('ISODate("2026-01-01T08:00:00+08:00")')).toBe('{"$date":"2026-01-01T08:00:00+08:00"}');
-    expect(convertShellToJson('ISODate("2026-01-01")')).toBe('{"$date":"2026-01-01"}');
-    expect(convertShellToJson('new Date("2026-01-01 08:00:00")')).toBe('{"$date":"2026-01-01 08:00:00"}');
-  });
-
-  it('ISODate() without arg -> $date with current timestamp', () => {
-    const fakeNow = '2026-02-18T00:00:00.000Z';
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date(fakeNow));
-    const result = convertShellToJson('ISODate()');
-    expect(result).toBe(`{"$date":"${fakeNow}"}`);
-    vi.useRealTimers();
-  });
-
-  it('NumberLong with quoted arg -> $numberLong', () => {
-    expect(convertShellToJson('NumberLong("123")'))
-      .toBe('{"$numberLong":"123"}');
-  });
-
-  it('NumberLong with unquoted arg -> $numberLong', () => {
-    expect(convertShellToJson('NumberLong(123)'))
-      .toBe('{"$numberLong":"123"}');
-  });
-
-  it('NumberInt -> $numberInt', () => {
-    expect(convertShellToJson('NumberInt(42)'))
-      .toBe('{"$numberInt":"42"}');
-  });
-
-  it('负数 NumberLong / NumberInt 保留负号', () => {
-    expect(convertShellToJson('NumberLong("-5")')).toBe('{"$numberLong":"-5"}');
-    expect(convertShellToJson('NumberLong(-5)')).toBe('{"$numberLong":"-5"}');
-    expect(convertShellToJson('NumberInt(-5)')).toBe('{"$numberInt":"-5"}');
-  });
-
-  it('NumberDecimal -> $numberDecimal', () => {
-    expect(convertShellToJson('NumberDecimal("3.14")'))
-      .toBe('{"$numberDecimal":"3.14"}');
-  });
-
-  it('Long/Int32/Decimal128 别名 (与后端对齐) — M1', () => {
-    expect(convertShellToJson('Long(999)')).toBe('{"$numberLong":"999"}');
-    expect(convertShellToJson('Long("999")')).toBe('{"$numberLong":"999"}');
-    expect(convertShellToJson('Int32(42)')).toBe('{"$numberInt":"42"}');
-    expect(convertShellToJson('Decimal128("3.14")')).toBe('{"$numberDecimal":"3.14"}');
-  });
-
-  it('UUID/BinData/Timestamp -> EJSON (与后端对齐) — H3', () => {
-    expect(convertShellToJson('UUID("b26ddf70-e8e9-4e7d-9fe9-f05eb8ec872a")'))
-      .toBe('{"$uuid":"b26ddf70-e8e9-4e7d-9fe9-f05eb8ec872a"}');
-    expect(convertShellToJson('BinData(0,"AQIDBA==")'))
-      .toBe('{"$binary":{"base64":"AQIDBA==","subType":0}}');
-    expect(convertShellToJson('Timestamp(1700000000,5)'))
-      .toBe('{"$timestamp":{"t":1700000000,"i":5}}');
-  });
-
-  it('MinKey() -> $minKey', () => {
-    expect(convertShellToJson('MinKey()'))
-      .toBe('{"$minKey":1}');
-  });
-
-  it('MaxKey() -> $maxKey', () => {
-    expect(convertShellToJson('MaxKey()'))
-      .toBe('{"$maxKey":1}');
-  });
-
-  it('new Date with value -> $date Extended JSON', () => {
-    expect(convertShellToJson('new Date("2024-01-15T00:00:00.000Z")'))
-      .toBe('{"$date":"2024-01-15T00:00:00.000Z"}');
-  });
-
-  it('new Date() without arg -> $date with current timestamp', () => {
-    const fakeNow = '2026-02-18T00:00:00.000Z';
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date(fakeNow));
-    const result = convertShellToJson('new Date()');
-    expect(result).toBe(`{"$date":"${fakeNow}"}`);
-    vi.useRealTimers();
-  });
-
-  it('空输入 -> 空字符串', () => {
-    expect(convertShellToJson('')).toBe('');
-  });
-
-  it('普通字符串原样返回', () => {
-    expect(convertShellToJson('hello world')).toBe('hello world');
-  });
-
-  it('嵌套多类型混合文档', () => {
-    const input = '{ "_id": ObjectId("aabbccddeeff00112233aabb"), "count": NumberInt(5), "date": ISODate("2024-01-15T00:00:00.000Z"), "big": NumberLong("999") }';
-    const result = convertShellToJson(input);
-    expect(result).toContain('{"$oid":"aabbccddeeff00112233aabb"}');
-    expect(result).toContain('{"$numberInt":"5"}');
-    expect(result).toContain('{"$date":"2024-01-15T00:00:00.000Z"}');
-    expect(result).toContain('{"$numberLong":"999"}');
-  });
-
-  it('字符串外超出 2^53 的裸整数包成 $numberLong, 安全整数 / 小数 / 指数 / 字符串内的不动', () => {
-    const out = convertShellToJson('{"uid": 9007199254740993, "neg": -9223372036854775808, "n": 9007199254740991, "f": 9007199254740993.5, "e": 1e25, "s": "9007199254740993", "t": "a\\"9007199254740993"}');
-    expect(JSON.parse(out)).toEqual({
-      uid: { $numberLong: '9007199254740993' },
-      neg: { $numberLong: '-9223372036854775808' },
-      n: 9007199254740991,
-      f: 9007199254740993.5,
-      e: 1e25,
-      s: '9007199254740993',
-      t: 'a"9007199254740993',
-    });
-  });
-
-  it('超出 int64 的裸整数只能是 double, 原样不包; 负指数里的数字不动', () => {
-    for (const s of ['{"a":100000000000000000000}', '{"a":-9223372036854775809}', '{"a":1e-99999999999999999999}']) {
-      expect(convertShellToJson(s)).toBe(s);
-    }
   });
 });
 

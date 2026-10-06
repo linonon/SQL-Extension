@@ -7,8 +7,7 @@ import { MongoDocumentList } from './MongoDocumentList';
 import { MongoTableView } from './MongoTableView';
 import { idToShell } from './mongo-id';
 import { convertTags } from './mongo-field-editor';
-import { useMongoFilterHistory, MongoFilterHistory, type FilterHistoryEntry } from './MongoFilterHistory';
-import { MongoFilterBuilder } from './MongoFilterBuilder';
+import { MongoFilterHistory, type FilterHistoryEntry } from './MongoFilterHistory';
 import { MongoExplainPanel } from './MongoExplainPanel';
 import { capRows } from './mongo-render-cap';
 import type { MongoExplainSummary } from '../../../../src/types/messages';
@@ -31,6 +30,8 @@ interface MongoDocumentTableProps {
   readonly projection: string;
   // 已生效的 projection 不是顶层字段 0/1 取舍 (子路径 / 重命名 / 计算字段 / $slice), 写回会丢字段或写错值: 禁用 Edit / Clone / 单元格编辑
   readonly readOnly?: boolean;
+  // 当前集合查询成功过的历史 (新的在前)
+  readonly history: readonly FilterHistoryEntry[];
   readonly customLimit: string;
   readonly customSkip: string;
   readonly onFilterChange: (filter: string) => void;
@@ -72,6 +73,7 @@ export function MongoDocumentTable({
   sort,
   projection,
   readOnly = false,
+  history,
   customLimit,
   customSkip,
   onFilterChange,
@@ -216,39 +218,26 @@ export function MongoDocumentTable({
     }
   }, [editorActive, switchAfterSave, pendingAction]);
 
-  const { entries: filterHistory, addEntry: addFilterHistory } = useMongoFilterHistory();
   const [showHistory, setShowHistory] = useState(false);
-  const [showBuilder, setShowBuilder] = useState(false);
-  const dropdownGroupRef = useRef<HTMLDivElement>(null);
+  const historyGroupRef = useRef<HTMLDivElement>(null);
 
-  // 点击 Builder/History 下拉之外的区域关闭 (镜像 detail copy menu)
+  // 点击 History 下拉之外的区域关闭 (镜像 detail copy menu)
   useEffect(() => {
-    if (!showHistory && !showBuilder) { return; }
+    if (!showHistory) { return; }
     const onDown = (e: MouseEvent) => {
-      if (dropdownGroupRef.current && !dropdownGroupRef.current.contains(e.target as Node)) {
+      if (historyGroupRef.current && !historyGroupRef.current.contains(e.target as Node)) {
         setShowHistory(false);
-        setShowBuilder(false);
       }
     };
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
-  }, [showHistory, showBuilder]);
+  }, [showHistory]);
 
-  // 可视化构建器生成的 filter 回填到 Filter 框 (用户再点 Apply)
-  const handleBuilderGenerate = useCallback((json: string) => {
-    onFilterChange(json);
-    setShowBuilder(false);
-  }, [onFilterChange]);
-
-  // Apply 时记录查询历史 (在真实 filter/sort/projection 上); 经脏数据守卫.
-  // 查询进行中不重发: Apply 按钮与各输入框的 Enter 都走这里
-  const applyAndRecord = useCallback(() => {
+  // Apply 经脏数据守卫; 查询进行中不重发: Apply 按钮与各输入框的 Enter 都走这里
+  const applyQuery = useCallback(() => {
     if (loading) { return; }
-    guardedAction(() => {
-      addFilterHistory(filter, sort, projection);
-      onApply();
-    });
-  }, [loading, guardedAction, addFilterHistory, filter, sort, projection, onApply]);
+    guardedAction(onApply);
+  }, [loading, guardedAction, onApply]);
 
   const handlePageChange = useCallback((p: number) => {
     guardedAction(() => onPageChange(p));
@@ -330,9 +319,9 @@ export function MongoDocumentTable({
               <MongoFilterInput
                 value={filter}
                 onChange={onFilterChange}
-                onApply={applyAndRecord}
+                onApply={applyQuery}
                 fieldNames={fieldNames}
-                placeholder='{"status": "active"}'
+                placeholder='{uid: 123}'
               />
             </div>
           </div>
@@ -342,9 +331,9 @@ export function MongoDocumentTable({
               <MongoFilterInput
                 value={sort}
                 onChange={onSortChange}
-                onApply={applyAndRecord}
+                onApply={applyQuery}
                 fieldNames={fieldNames}
-                placeholder='{"_id": -1}'
+                placeholder='{_id: -1}'
               />
             </div>
           </div>
@@ -354,9 +343,9 @@ export function MongoDocumentTable({
               <MongoFilterInput
                 value={projection}
                 onChange={onProjectionChange}
-                onApply={applyAndRecord}
+                onApply={applyQuery}
                 fieldNames={fieldNames}
-                placeholder='{"name": 1, "email": 1}'
+                placeholder='{name: 1, lv: 1}'
               />
             </div>
           </div>
@@ -367,7 +356,7 @@ export function MongoDocumentTable({
               className="mongo-numeric-input"
               value={customLimit}
               onChange={(e) => onLimitChange(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); applyAndRecord(); } }}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); applyQuery(); } }}
               placeholder="50"
             />
             <label className="mongo-filter-label-inline">Skip:</label>
@@ -376,47 +365,26 @@ export function MongoDocumentTable({
               className="mongo-numeric-input"
               value={customSkip}
               onChange={(e) => onSkipChange(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); applyAndRecord(); } }}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); applyQuery(); } }}
               placeholder="0"
             />
-            <button className="btn-small btn-primary" onClick={applyAndRecord} disabled={loading}>
+            <button className="btn-small btn-primary" onClick={applyQuery} disabled={loading}>
               Apply
             </button>
-            <div className="mongo-query-dropdowns" ref={dropdownGroupRef}>
-            <div className="mongo-history-group">
+            <div className="mongo-history-group" ref={historyGroupRef}>
               <button
                 className="btn-small"
-                onClick={() => { setShowBuilder((v) => !v); setShowHistory(false); }}
-                title="可视化构建查询条件"
-                aria-label="Filter builder"
-              >
-                Builder ▾
-              </button>
-              {showBuilder && (
-                <div className="mongo-filter-builder-dropdown">
-                  <MongoFilterBuilder
-                    fieldNames={fieldNames}
-                    onGenerate={handleBuilderGenerate}
-                    onClose={() => setShowBuilder(false)}
-                  />
-                </div>
-              )}
-            </div>
-            <div className="mongo-history-group">
-              <button
-                className="btn-small"
-                onClick={() => { setShowHistory((v) => !v); setShowBuilder(false); }}
-                title="Recent queries"
+                onClick={() => setShowHistory((v) => !v)}
+                title="Recent queries on this collection"
                 aria-label="Query history"
               >
                 History ▾
               </button>
               {showHistory && (
                 <div className="mongo-filter-history-dropdown">
-                  <MongoFilterHistory entries={filterHistory} onSelect={handleRestoreQuery} />
+                  <MongoFilterHistory entries={history} onSelect={handleRestoreQuery} />
                 </div>
               )}
-            </div>
             </div>
             <div className="mongo-data-ops">
               {onExplain && (

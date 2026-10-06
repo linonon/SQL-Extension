@@ -2,7 +2,8 @@ import * as vscode from 'vscode';
 import type { Document } from 'mongodb';
 import type { ExtensionMessage, WebviewMessage } from '../types/messages.js';
 import { BROWSE_TIMEOUT_MS, userFilter, type MongoDriver } from '../drivers/mongo-driver.js';
-import { convertEjsonToBson, convertShellToJson } from '../utils/mongo-shell-to-json.js';
+import { convertEjsonToBson } from '../utils/mongo-shell-to-json.js';
+import { parseShellJson } from '../utils/mongo-shell-syntax.js';
 import { buildClone, buildUpdate, castLike, changedSinceLoaded, diffDocuments, isEmptyDiff, type DocumentDiff } from '../utils/mongo-update.js';
 
 const NOT_FOUND = 'document not found (deleted or _id changed)';
@@ -25,7 +26,7 @@ export async function handleMongoMessage(
       const { requestId, database, collection, filter, sort, projection, skip, limit, count } = message;
       try {
         const pipeline = buildAggregatePipeline(filter, sort, projection, skip, limit);
-        const counting = count ? browserCount(mongo, database, collection, userFilter(parseShell(filter))) : null;
+        const counting = count ? browserCount(mongo, database, collection, userFilter(parseShell('Filter', filter))) : null;
         const docsResult = await mongo.findDocumentsForBrowser(database, collection, pipeline);
         post({ type: 'mongoDocumentList', requestId, columns: docsResult.columns, rows: docsResult.rows });
         if (counting) { post({ type: 'mongoDocumentCount', requestId, total: await counting }); }
@@ -66,8 +67,8 @@ export async function handleMongoMessage(
     case 'mongoExplainQuery': {
       const { database, collection, filter, sort } = message;
       try {
-        const sortObj = sort.trim() ? parseShell(sort) as Record<string, unknown> : undefined;
-        const summary = await mongo.explainFind(database, collection, parseShell(filter) as Record<string, unknown>, sortObj);
+        const sortObj = sort.trim() ? parseShell('Sort', sort) as Record<string, unknown> : undefined;
+        const summary = await mongo.explainFind(database, collection, parseShell('Filter', filter) as Record<string, unknown>, sortObj);
         post({ type: 'mongoExplainResult', summary });
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
@@ -280,9 +281,14 @@ function browserCount(mongo: MongoDriver, database: string, collection: string, 
   return counting.catch(() => null);
 }
 
-function parseShell(text: string): unknown {
-  const trimmed = text.trim();
-  return trimmed ? JSON.parse(convertShellToJson(trimmed)) : {};
+// 空串当 {}; 出错时标明是哪个输入框, 位置是用户原文的行列
+function parseShell(label: string, text: string): unknown {
+  if (!text.trim()) { return {}; }
+  try {
+    return parseShellJson(text);
+  } catch (e) {
+    throw new Error(`${label}: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 // $match / $sort / $project, 空串与 {} 不生成 stage.
@@ -296,20 +302,17 @@ function buildExportPipeline(
 
   const trimmedFilter = filter.trim();
   if (trimmedFilter && trimmedFilter !== '{}') {
-    const parsed = JSON.parse(convertShellToJson(trimmedFilter));
-    pipeline.push({ $match: parsed });
+    pipeline.push({ $match: parseShell('Filter', filter) });
   }
 
   const trimmedSort = sort.trim();
   if (trimmedSort && trimmedSort !== '{}') {
-    const parsed = JSON.parse(convertShellToJson(trimmedSort));
-    pipeline.push({ $sort: parsed });
+    pipeline.push({ $sort: parseShell('Sort', sort) });
   }
 
   const trimmedProjection = projection?.trim() ?? '';
   if (trimmedProjection && trimmedProjection !== '{}') {
-    const parsed = JSON.parse(convertShellToJson(trimmedProjection));
-    pipeline.push({ $project: parsed });
+    pipeline.push({ $project: parseShell('Projection', projection ?? '') });
   }
 
   return pipeline;

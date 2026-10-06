@@ -118,6 +118,18 @@ describe('handleMongoMessage', () => {
       });
     });
 
+    it('从 mongosh 粘来的写法 (裸 key / 单引号 / Long uid) 照常查; 语法错标明输入框并按用户原文报行列', async () => {
+      await send({ ...find, collection: 'players', filter: "{uid: 7000000000000012345, 'nick': 'a:b'}", sort: '{lv: -1}' });
+      const [, , filter] = mongo.count.mock.calls[0];
+      expect(String(filter.uid)).toBe('7000000000000012345');
+      expect(filter.nick).toBe('a:b');
+      expect(mongo.findDocumentsForBrowser.mock.calls[0][2]).toContainEqual({ $sort: { lv: -1 } });
+
+      post.mockClear();
+      await send({ ...find, collection: 'players', filter: '{uid: 1001', count: false });
+      expect(post).toHaveBeenCalledWith(expect.objectContaining({ type: 'mongoDocumentList', error: expect.stringMatching(/^Filter: .* at line 1 column 11$/) }));
+    });
+
     it('driver 抛错时回带 requestId 与 error, 不发总数', async () => {
       mongo.findDocumentsForBrowser.mockRejectedValue(new Error('aggregation failed'));
       await send({ ...find, collection: 'users', filter: '{"a": 1}' });

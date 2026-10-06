@@ -2,7 +2,7 @@ import { render, screen, fireEvent, within } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { ChangeEvent, KeyboardEvent, RefObject } from 'react';
 import { MongoDocumentTable } from './MongoDocumentTable';
-import { convertShellToJson } from '../../utils/mongo-shell-to-json';
+import { parseShellJson } from '../../../../src/utils/mongo-shell-syntax';
 
 // 卡片编辑器 / filter 输入用 autocomplete hook, mock 掉避免 DOM 测量; 保留 "Enter 触发 onApply"
 vi.mock('../../hooks/useMongoAutocomplete', () => ({
@@ -33,6 +33,7 @@ function renderTable(over: Record<string, unknown> = {}) {
     filter: '',
     sort: '',
     projection: '',
+    history: [],
     customLimit: '',
     customSkip: '',
     onFilterChange: vi.fn(),
@@ -157,22 +158,24 @@ describe('MongoDocumentTable - 标题与 Apply', () => {
 });
 
 describe('MongoDocumentTable - 输入框 placeholder', () => {
-  it('Filter / Sort / Projection 的 placeholder 是后端能解析的写法', () => {
+  it('Filter / Sort / Projection 的 placeholder 是 mongosh 写法, 且后端能解析', () => {
     renderTable();
     const placeholders = [...document.querySelectorAll('textarea.mongo-filter-input')].map((t) => t.getAttribute('placeholder')!);
-    expect(placeholders).toHaveLength(3);
-    for (const p of placeholders) { expect(() => JSON.parse(convertShellToJson(p))).not.toThrow(); }
+    expect(placeholders).toEqual(['{uid: 123}', '{_id: -1}', '{name: 1, lv: 1}']);
+    for (const p of placeholders) { expect(() => parseShellJson(p)).not.toThrow(); }
   });
 });
 
-describe('MongoDocumentTable - 下拉互斥 (M10)', () => {
-  it('打开 Builder 再打开 History 时 Builder 关闭', () => {
-    renderTable();
-    fireEvent.click(screen.getByRole('button', { name: /Filter builder/i }));
-    expect(document.querySelector('.mongo-filter-builder-dropdown')).not.toBeNull();
+describe('MongoDocumentTable - History 下拉', () => {
+  it('列出传入的历史, 点一条回填三个输入框, 下拉关闭', () => {
+    const entry = { namespace: 'game_s1.users', filter: '{uid: 1001}', sort: '{lv: -1}', projection: '{name: 1}', timestamp: 1 };
+    const { props } = renderTable({ history: [entry] });
     fireEvent.click(screen.getByRole('button', { name: /Query history/i }));
-    expect(document.querySelector('.mongo-filter-history-dropdown')).not.toBeNull();
-    expect(document.querySelector('.mongo-filter-builder-dropdown')).toBeNull();
+    fireEvent.click(screen.getByText('{uid: 1001}'));
+    expect(props.onFilterChange).toHaveBeenCalledWith('{uid: 1001}');
+    expect(props.onSortChange).toHaveBeenCalledWith('{lv: -1}');
+    expect(props.onProjectionChange).toHaveBeenCalledWith('{name: 1}');
+    expect(document.querySelector('.mongo-filter-history-dropdown')).toBeNull();
   });
 });
 

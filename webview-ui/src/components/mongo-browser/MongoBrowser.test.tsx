@@ -134,14 +134,42 @@ describe('MongoBrowser - 已生效查询的快照', () => {
 });
 
 describe('isPathProjection', () => {
-  it('只有顶层字段且值都是 0/1/true/false 才算可写回的取舍', () => {
-    for (const p of ['', '{}', '{"a": 1, "b": 0}', '{"a": true}', '{"_id": 0, "a": 1}']) {
+  it('只有顶层字段且值都是 0/1/true/false 才算可写回的取舍 (mongosh 裸 key / 单引号同样认)', () => {
+    for (const p of ['', '{}', '{"a": 1, "b": 0}', '{"a": true}', '{"_id": 0, "a": 1}', '{name: 1, _id: 0}', "{'bag': 1}"]) {
       expect(isPathProjection(p)).toBe(true);
     }
     for (const p of ['{"items.name": 1}', '{"items.qty": 0}', '{"bag": {"gold": 1}}', '{"a": "$b"}',
-      '{"items": {"$slice": ["$items", 2]}}', '{"t": {"$add": ["$a", 1]}}', '{"a": [1]}', '{"a": null}', '[1]', 'not json']) {
+      '{"items": {"$slice": ["$items", 2]}}', '{"t": {"$add": ["$a", 1]}}', '{"a": [1]}', '{"a": null}', '[1]', 'not json', "{'bag.gold': 1}", "{n: '$name'}"]) {
       expect(isPathProjection(p)).toBe(false);
     }
+  });
+});
+
+describe('MongoBrowser - 查询历史', () => {
+  it('Apply 的回执无 error 才记录; 历史带集合名, 只给当前集合的条目', () => {
+    render(<MongoBrowser connectionId="c1" defaultDatabase="db" />);
+    send({ type: 'mongoAllCollectionList', collections: [
+      { database: 'db', name: 'users', count: 1 }, { database: 'db', name: 'orders', count: 1 },
+    ] });
+    send(docList());
+
+    applyQuery({ filter: '{uid: 1' });
+    send({ type: 'mongoDocumentList', requestId: lastFindId(), columns: [], rows: [], error: 'Filter: bad' });
+    expect(tableProps.history).toEqual([]);
+
+    applyQuery({ filter: '{uid: 1}' });
+    // 翻页的回执不认领 Apply 的那条历史
+    act(() => { tableProps.onPageChange(1); });
+    send(docList());
+    expect(tableProps.history).toEqual([]);
+    applyQuery({ filter: '{uid: 1}', sort: '{lv: -1}' });
+    send(docList());
+    expect(tableProps.history).toMatchObject([{ namespace: 'db.users', filter: '{uid: 1}', sort: '{lv: -1}' }]);
+
+    act(() => { listProps.onSelectCollection('db', 'orders'); });
+    act(() => { tableProps.onSwitchConfirmed(); });
+    send(docList());
+    expect(tableProps.history).toEqual([]);
   });
 });
 

@@ -3,9 +3,10 @@ import { useVSCodeMessage } from '../../hooks/useVSCodeMessage';
 import { usePostMessage } from '../../hooks/usePostMessage';
 import type { ExtensionMessage, MongoExplainSummary } from '../../../../src/types/messages';
 import type { ColumnInfo } from '../../../../src/types/query';
-import { convertShellToJson } from '../../utils/mongo-shell-to-json';
+import { parseShellJson } from '../../../../src/utils/mongo-shell-syntax';
 import { MongoCollectionList } from './MongoCollectionList';
 import { MongoDocumentTable } from './MongoDocumentTable';
+import { useMongoFilterHistory, type FilterHistoryEntry } from './MongoFilterHistory';
 import '../../styles/mongo-browser.css';
 
 interface MongoBrowserProps {
@@ -63,7 +64,7 @@ export function isPathProjection(text: string): boolean {
   const trimmed = text.trim();
   if (!trimmed) { return true; }
   let parsed: unknown;
-  try { parsed = JSON.parse(convertShellToJson(trimmed)); } catch { return false; }
+  try { parsed = parseShellJson(trimmed); } catch { return false; }
   return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
     && Object.entries(parsed).every(([k, v]) =>
       !k.startsWith('$') && !k.includes('.') && (typeof v === 'number' || typeof v === 'boolean'));
@@ -97,6 +98,9 @@ export function MongoBrowser({ connectionId, defaultDatabase }: MongoBrowserProp
   // 带 count 的那次查询的 requestId: 其后翻页不重算总数, 总数回执按它认领
   const countIdRef = useRef(0);
   const pendingSwitchTarget = useRef<{ database: string; name: string } | null>(null);
+  // Apply 发出的查询: 它的回执无 error 才记进历史
+  const pendingHistory = useRef<{ requestId: number; entry: Omit<FilterHistoryEntry, 'timestamp'> } | null>(null);
+  const { entries: history, addEntry: addHistory } = useMongoFilterHistory();
 
   const postMessage = usePostMessage();
   const resizing = useRef(false);
@@ -145,6 +149,7 @@ export function MongoBrowser({ connectionId, defaultDatabase }: MongoBrowserProp
         break;
       case 'mongoDocumentList':
         if (msg.requestId !== findIdRef.current) { break; }
+        if (!msg.error && pendingHistory.current?.requestId === msg.requestId) { addHistory(pendingHistory.current.entry); }
         setColumns(msg.columns);
         setRows(msg.rows);
         setQueryError(msg.error ?? null);
@@ -195,7 +200,7 @@ export function MongoBrowser({ connectionId, defaultDatabase }: MongoBrowserProp
         }
         break;
     }
-  }, [handleRefetch, defaultDatabase]);
+  }, [handleRefetch, defaultDatabase, addHistory]);
 
   useVSCodeMessage(handleMessage);
 
@@ -239,7 +244,10 @@ export function MongoBrowser({ connectionId, defaultDatabase }: MongoBrowserProp
     const q = { filter, sort, projection, skip: resolveSkip(customSkip), limit: resolveLimit(customLimit, PAGE_SIZE) };
     setApplied(q);
     fetchDocs(q, 0, true);
-  }, [filter, sort, projection, customSkip, customLimit, fetchDocs]);
+    if (selected) {
+      pendingHistory.current = { requestId: findIdRef.current, entry: { namespace: `${selected.database}.${selected.name}`, filter, sort, projection } };
+    }
+  }, [selected, filter, sort, projection, customSkip, customLimit, fetchDocs]);
 
   const handlePageChange = useCallback((p: number) => fetchDocs(applied, p, false), [fetchDocs, applied]);
 
@@ -386,6 +394,7 @@ export function MongoBrowser({ connectionId, defaultDatabase }: MongoBrowserProp
               sort={sort}
               projection={projection}
               readOnly={!isPathProjection(applied.projection)}
+              history={history.filter((e) => e.namespace === `${selected.database}.${selected.name}`)}
               customLimit={customLimit}
               customSkip={customSkip}
               onFilterChange={setFilter}

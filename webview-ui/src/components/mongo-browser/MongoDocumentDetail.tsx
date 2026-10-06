@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import { useMongoAutocomplete } from '../../hooks/useMongoAutocomplete';
-import { convertShellToJson, stripShellTypes, jsonToShell } from '../../utils/mongo-shell-to-json';
+import { stripShellTypes, jsonToShell } from '../../utils/mongo-shell-to-json';
+import { convertShellToJson, parseShellJson } from '../../../../src/utils/mongo-shell-syntax';
 import { jsonErrorLine, validateEjsonValues, lineOfIndex } from './mongo-editor-syntax';
 import { findMatches } from '../../utils/text-search';
 import { AutocompletePopup } from '../sql-editor/AutocompletePopup';
@@ -50,7 +51,7 @@ export function MongoDocumentDetail({ document, mode, fieldNames, onClose, onSav
   const validation = useMemo(() => {
     let parsed: unknown;
     try {
-      parsed = JSON.parse(convertShellToJson(text));
+      parsed = parseShellJson(text);
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Invalid JSON';
       return { ok: false, error: msg, line: jsonErrorLine(text, msg) };
@@ -143,9 +144,9 @@ export function MongoDocumentDetail({ document, mode, fieldNames, onClose, onSav
     // 否则非法值 (如越界整数 / 非法日期) 可经外部保存信号静默写库.
     if (!validation.ok) { onSaveError?.(); return; }
     try {
-      const parsed = JSON.parse(convertShellToJson(text)) as Record<string, unknown>;
+      const parsed = parseShellJson(text) as Record<string, unknown>;
       // 打开时的文本与编辑结果走同一解析, 没动过的字段两边逐字相同, 宿主按 path 对比后只写改动
-      const original = openedText !== null ? JSON.parse(convertShellToJson(openedText)) as Record<string, unknown> : null;
+      const original = openedText !== null ? parseShellJson(openedText) as Record<string, unknown> : null;
       onSave(original, parsed);
     } catch {
       onSaveError?.();
