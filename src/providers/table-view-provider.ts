@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import type { ConnectionManager } from '../services/connection-manager.js';
+import { newConnectionId, type ConnectionManager } from '../services/connection-manager.js';
 import { QueryService } from '../services/query-service.js';
 import { CredentialStore } from '../services/credential-store.js';
 // driver 按需动态加载, 避免 main bundle 包含所有 driver 依赖
@@ -633,10 +633,9 @@ export class TableViewProvider implements vscode.Disposable {
     panel: vscode.WebviewPanel,
     config: SaveConnectionConfig
   ): Promise<void> {
-    const id = `${config.driverType}-${config.host}-${config.port}-${Date.now()}`;
     await this.connectionManager.addConnection(
       {
-        id,
+        id: newConnectionId(config),
         name: config.name,
         driverType: config.driverType,
         host: config.host,

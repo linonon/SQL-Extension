@@ -210,6 +210,41 @@ describe('ConnectionManager', () => {
     });
   });
 
+  describe('duplicateConnection', () => {
+    it('配置换新 id 和名字, DB / SSH 密码拷到新 id, 源连接不动', async () => {
+      const source: ConnectionConfig = {
+        id: 'src',
+        name: 'Prod',
+        driverType: 'mysql',
+        host: 'db.internal',
+        port: 3306,
+        username: 'root',
+        database: 'app',
+        ssh: { enabled: true, host: 'jump', port: 22, username: 'ops', authType: 'password' },
+      };
+      const snapshot = structuredClone(source);
+      const secrets: Record<string, string> = {
+        'sqlext.password.src': 'db-pw',
+        'sqlext.sshPassword.src': 'ssh-pw',
+      };
+      mockGlobalState.get.mockReturnValue([source]);
+      mockSecrets.get.mockImplementation(async (k: string) => secrets[k]);
+
+      const newId = await manager.duplicateConnection('src');
+
+      expect(newId).not.toBe('src');
+      expect(mockGlobalState.update).toHaveBeenCalledWith('sqlext.connections', [
+        source,
+        { ...snapshot, id: newId, name: 'Prod (copy)' },
+      ]);
+      expect(mockSecrets.store).toHaveBeenCalledWith(`sqlext.password.${newId}`, 'db-pw');
+      expect(mockSecrets.store).toHaveBeenCalledWith(`sqlext.sshPassword.${newId}`, 'ssh-pw');
+      expect(mockSecrets.store).toHaveBeenCalledTimes(2);
+      expect(mockSecrets.delete).not.toHaveBeenCalled();
+      expect(source).toEqual(snapshot);
+    });
+  });
+
   describe('removeConnection', () => {
     it('应该移除连接并删除密码', async () => {
       const testManager = new ConnectionManager(mockGlobalState, mockCredentialStore);

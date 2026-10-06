@@ -130,6 +130,13 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }],
 
+    ['sqlext.duplicateConnection', async (item: unknown) => {
+      if (item instanceof ConnectionTreeItem) {
+        const newId = await connectionManager.duplicateConnection(item.connectionId);
+        viewProvider.openConnectionForm(newId);
+      }
+    }],
+
     ['sqlext.refreshConnections', () => {
       treeProvider.refresh();
     }],

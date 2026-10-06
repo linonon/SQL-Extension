@@ -1,8 +1,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { ConnectionPool } from '../connection-pool.js';
 import type { IpcClient } from '../ipc-client.js';
-import { routeQuery } from '../query-router.js';
+import { makeError, toErrorMessage, type ToolResult } from './mcp-result.js';
 
 const DB_READ_DESCRIPTION = [
   'Execute read-only queries (SQL runs in a read-only transaction; results capped at 500 rows). Use db_schema to discover databases/tables/columns. Query format by database type:',
@@ -13,14 +12,27 @@ const DB_READ_DESCRIPTION = [
   '- RabbitMQ: JSON, e.g. {"action":"listQueues"}, {"action":"peek","queue":"q1","count":10}',
 ].join('\n');
 
-export function registerReadTools(server: McpServer, pool: ConnectionPool, ipc: IpcClient): void {
+// 只读 / 上限校验与执行都在 VS Code 扩展里 (routeByDriver), 本进程只转发
+export async function forwardQuery(
+  ipc: IpcClient,
+  mode: 'read' | 'execute',
+  params: { connectionId: string; query: string; database?: string },
+): Promise<ToolResult> {
+  try {
+    return await ipc.request(mode, params) as ToolResult;
+  } catch (err) {
+    return makeError(toErrorMessage(err), 'QUERY_FAILED');
+  }
+}
+
+export function registerReadTools(server: McpServer, ipc: IpcClient): void {
   server.registerTool(
     'db_read',
     {
       title: 'Read Query',
       description: DB_READ_DESCRIPTION,
       inputSchema: {
-        connectionId: z.string().describe('Connection ID from db_list_connections (saved VS Code connections connect on demand)'),
+        connectionId: z.string().describe('Connection ID from db_list_connections (connects automatically on first use)'),
         query: z.string().describe('Query string (format depends on database type)'),
         database: z.string().optional().describe('MySQL: schema to USE (defaults to the connection\'s database; required if the connection has none; use information_schema for server-level statements). PostgreSQL: ignored, bound to the connection\'s database. MongoDB: required unless the connection has a default. Redis: db index 0-15 (default: connection\'s db).'),
       },
@@ -31,6 +43,6 @@ export function registerReadTools(server: McpServer, pool: ConnectionPool, ipc: 
         openWorldHint: true,
       },
     },
-    async (params) => routeQuery('read', params.connectionId, params.query, params.database, pool, ipc),
+    async (params) => forwardQuery(ipc, 'read', params),
   );
 }

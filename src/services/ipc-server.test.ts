@@ -38,7 +38,6 @@ function makeConnectionManager() {
       },
     ]),
     connect: vi.fn().mockResolvedValue(undefined),
-    disconnect: vi.fn().mockResolvedValue(undefined),
     getState: vi.fn().mockReturnValue('disconnected'),
     getDriver: vi.fn().mockReturnValue({
       execute: vi.fn(),
@@ -101,29 +100,6 @@ describe('IpcServer', () => {
     expect(resp.result[0].name).toBe('test-db');
     expect(resp.result[0].driverType).toBe('mysql');
     expect(resp.result[0]).not.toHaveProperty('password');
-  });
-
-  it('should handle connect', async () => {
-    await new Promise(r => setTimeout(r, 100));
-    const resp = await sendRequest(SOCKET_PATH, {
-      id: '2',
-      method: 'connect',
-      params: { connectionId: 'test-id' },
-    });
-    expect(resp.id).toBe('2');
-    expect(resp.result.success).toBe(true);
-    expect(cm.connect).toHaveBeenCalledWith('test-id');
-  });
-
-  it('should handle disconnect', async () => {
-    await new Promise(r => setTimeout(r, 100));
-    const resp = await sendRequest(SOCKET_PATH, {
-      id: '3',
-      method: 'disconnect',
-      params: { connectionId: 'test-id' },
-    });
-    expect(resp.result.success).toBe(true);
-    expect(cm.disconnect).toHaveBeenCalledWith('test-id');
   });
 
   it('should auto-connect and run read through the read-only path with default database', async () => {

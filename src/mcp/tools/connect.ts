@@ -1,196 +1,21 @@
-import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { ConnectionPool } from '../connection-pool.js';
 import type { IpcClient } from '../ipc-client.js';
 import { makeResult, makeError, toErrorMessage } from './mcp-result.js';
 
-const DRIVER_TYPES = ['mysql', 'postgresql', 'redis', 'mongodb', 'kafka', 'rabbitmq'] as const;
-
-export function registerConnectTools(server: McpServer, pool: ConnectionPool, ipc: IpcClient): void {
-  server.registerTool(
-    'db_connect',
-    {
-      title: 'Connect to Database',
-      description: [
-        'Connect to a database. Two modes:',
-        '1. IPC mode (VS Code running): provide only connectionId to connect a saved connection (optional: db_read/db_execute/db_schema connect saved connections on demand).',
-        '2. Standalone mode: provide driverType, host, port, etc. for a new connection.',
-      ].join(' '),
-      inputSchema: {
-        // IPC mode: 只需 connectionId
-        connectionId: z.string().optional().describe('Saved connection ID (from db_list_connections). Use this when VS Code is running.'),
-        // Standalone mode: 完整参数
-        driverType: z.enum(DRIVER_TYPES).optional().describe('Database type (standalone mode)'),
-        host: z.string().optional().describe('Database host (standalone mode)'),
-        port: z.number().int().positive().optional().describe('Database port (standalone mode)'),
-        username: z.string().optional().describe('Username'),
-        password: z.string().optional().describe('Password'),
-        database: z.string().optional().describe('Database name'),
-        authSource: z.string().optional().describe('MongoDB auth database (default: admin)'),
-        ssh: z.object({
-          enabled: z.boolean(),
-          host: z.string(),
-          port: z.number().int().positive(),
-          username: z.string(),
-          authType: z.enum(['password', 'privateKey']),
-          password: z.string().optional(),
-          privateKeyPath: z.string().optional(),
-        }).optional().describe('SSH tunnel configuration (standalone mode)'),
-      },
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    },
-    async (params) => {
-      try {
-        // IPC mode: 用 connectionId 连接保存的连接
-        if (params.connectionId) {
-          await ipc.request('connect', { connectionId: params.connectionId });
-          return makeResult({ connectionId: params.connectionId, mode: 'ipc' });
-        }
-
-        // Standalone mode: 需要完整参数
-        if (!params.driverType || !params.host || !params.port) {
-          return makeError(
-            'Provide connectionId (IPC mode) or driverType+host+port (standalone mode).',
-            'INVALID_PARAMS',
-          );
-        }
-
-        const connectionId = await pool.connect({
-          driverType: params.driverType,
-          host: params.host,
-          port: params.port,
-          username: params.username,
-          password: params.password,
-          database: params.database,
-          authSource: params.authSource,
-          ssh: params.ssh ? { ...params.ssh, enabled: params.ssh.enabled } : undefined,
-        });
-        return makeResult({
-          connectionId,
-          driverType: params.driverType,
-          database: params.database ?? '',
-          mode: 'standalone',
-        });
-      } catch (err) {
-        return makeError(toErrorMessage(err), 'CONNECT_FAILED');
-      }
-    }
-  );
-
-  server.registerTool(
-    'db_disconnect',
-    {
-      title: 'Disconnect from Database',
-      description: 'Disconnect from a database.',
-      inputSchema: {
-        connectionId: z.string().describe('Connection ID'),
-      },
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    },
-    async (params) => {
-      try {
-        if (pool.has(params.connectionId)) {
-          await pool.disconnect(params.connectionId);
-        } else {
-          await ipc.request('disconnect', { connectionId: params.connectionId });
-        }
-        return makeResult({ success: true, connectionId: params.connectionId });
-      } catch (err) {
-        return makeError(toErrorMessage(err), 'DISCONNECT_FAILED');
-      }
-    }
-  );
-
+export function registerConnectTools(server: McpServer, ipc: IpcClient): void {
   server.registerTool(
     'db_list_connections',
     {
       title: 'List Database Connections',
-      description: 'List connections: saved VS Code connections (any state; they connect on demand) plus active standalone ones. If VS Code is unreachable, the result carries a "vscode" field explaining why.',
+      description: 'List the connections saved in VS Code (Database Explorer), in any state. Pass a connection id to db_schema / db_read / db_execute; they connect automatically. New connections are added by the user in VS Code.',
       inputSchema: {},
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async () => {
-      const result: unknown[] = [];
-      // VS Code 不可达要说出来, 否则和 "没有保存的连接" 分不清
-      let vscode: string | undefined;
-
-      // IPC mode: 返回扩展中保存的连接 (懒连接: 即使启动时 VS Code 没开, 现在也会尝试)
       try {
-        const saved = await ipc.request('listConnections') as unknown[];
-        result.push(...saved);
+        return makeResult({ connections: await ipc.request('listConnections') });
       } catch (err) {
-        vscode = toErrorMessage(err);
-      }
-
-      // Standalone mode: 返回 pool 中的活跃连接
-      const poolConns = pool.listConnections().map(c => ({
-        ...c,
-        mode: 'standalone' as const,
-        state: 'connected' as const,
-      }));
-      result.push(...poolConns);
-
-      return makeResult(vscode ? { connections: result, vscode } : { connections: result });
-    }
-  );
-
-  server.registerTool(
-    'db_save_connection',
-    {
-      title: 'Save Connection',
-      description: 'Save a database connection configuration to VS Code extension. Requires VS Code to be running. The saved connection will appear in the extension sidebar.',
-      inputSchema: {
-        name: z.string().describe('Display name for the connection'),
-        driverType: z.enum(DRIVER_TYPES).describe('Database type'),
-        host: z.string().describe('Database host (the actual target host, not the SSH jump host)'),
-        port: z.number().int().positive().describe('Database port'),
-        username: z.string().optional().describe('Username'),
-        password: z.string().optional().describe('Password'),
-        database: z.string().optional().describe('Default database name'),
-        authSource: z.string().optional().describe('MongoDB auth database (default: admin)'),
-        ssh: z.object({
-          enabled: z.boolean(),
-          host: z.string(),
-          port: z.number().int().positive(),
-          username: z.string(),
-          authType: z.enum(['password', 'privateKey']),
-          password: z.string().optional(),
-          privateKeyPath: z.string().optional(),
-        }).optional().describe('SSH tunnel configuration'),
-      },
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-    },
-    async (params) => {
-      try {
-        const id = `conn_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-        const config: Record<string, unknown> = {
-          id,
-          name: params.name,
-          driverType: params.driverType,
-          host: params.host,
-          port: params.port,
-          username: params.username ?? '',
-          database: params.database ?? '',
-          authSource: params.authSource,
-        };
-        if (params.ssh) {
-          config.ssh = {
-            enabled: params.ssh.enabled,
-            host: params.ssh.host,
-            port: params.ssh.port,
-            username: params.ssh.username,
-            authType: params.ssh.authType,
-            privateKeyPath: params.ssh.privateKeyPath,
-          };
-        }
-        const result = await ipc.request('saveConnection', {
-          config,
-          password: params.password ?? '',
-          sshPassword: params.ssh?.password,
-        });
-        return makeResult(result);
-      } catch (err) {
-        return makeError(toErrorMessage(err), 'SAVE_FAILED');
+        return makeError(toErrorMessage(err), 'IPC_FAILED');
       }
     }
   );

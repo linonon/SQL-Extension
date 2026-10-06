@@ -83,6 +83,11 @@
         "category": "Database"
       },
       {
+        "command": "sqlext.duplicateConnection",
+        "title": "Duplicate Connection",
+        "category": "Database"
+      },
+      {
         "command": "sqlext.refreshConnections",
         "title": "Refresh",
         "icon": "$(refresh)",
@@ -96,6 +101,12 @@
       }
     ],
     "menus": {
+      "commandPalette": [
+        {
+          "command": "sqlext.duplicateConnection",
+          "when": "false"
+        }
+      ],
       "view/title": [
         {
           "command": "sqlext.addConnection",
@@ -126,6 +137,11 @@
         },
         {
           "command": "sqlext.editConnection",
+          "when": "viewItem =~ /^connection/",
+          "group": "context"
+        },
+        {
+          "command": "sqlext.duplicateConnection",
           "when": "viewItem =~ /^connection/",
           "group": "context"
         },

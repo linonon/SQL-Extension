@@ -129,7 +129,7 @@ export class IpcClient {
     await this.ensureConnected();
     const socket = this.socket;
     if (!socket) {
-      throw new Error('VS Code is not reachable: open VS Code with Database Explorer activated (reload windows after upgrading), or connect with full parameters (driverType, host, port).');
+      throw new Error('VS Code is not reachable: open VS Code with Database Explorer activated (reload windows after upgrading).');
     }
     const id = `req_${++this.counter}`;
     return new Promise((resolve, reject) => {

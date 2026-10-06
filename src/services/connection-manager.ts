@@ -17,6 +17,10 @@ const CONNECTIONS_KEY = 'sqlext.connections';
 
 const HEARTBEAT_INTERVAL_MS = 60_000;
 
+export function newConnectionId(config: Pick<ConnectionConfig, 'driverType' | 'host' | 'port'>): string {
+  return `${config.driverType}-${config.host}-${config.port}-${Date.now()}`;
+}
+
 export class ConnectionManager implements vscode.Disposable {
   private readonly drivers = new Map<string, IDatabaseDriver | IRedisDriver | IKafkaDriver | IRabbitMQDriver>();
   private readonly tunnels = new Map<string, TunnelHandle>();
@@ -84,6 +88,19 @@ export class ConnectionManager implements vscode.Disposable {
       await this.credentialStore.setSSHPassword(id, sshPassword);
     }
     this._onDidChange.fire();
+  }
+
+  // 复制配置和已存凭据 (DB / SSH 密码) 到新 id, 凭据只在 extension host 内流转; 返回新 id
+  async duplicateConnection(id: string): Promise<string> {
+    const source = this.getConnections().find((c) => c.id === id);
+    if (!source) {
+      throw new Error(`Connection not found: ${id}`);
+    }
+    const copy: ConnectionConfig = { ...source, id: newConnectionId(source), name: `${source.name} (copy)` };
+    const password = (await this.credentialStore.getPassword(id)) ?? '';
+    const sshPassword = await this.credentialStore.getSSHPassword(id);
+    await this.addConnection(copy, password, sshPassword);
+    return copy.id;
   }
 
   async reorderConnection(id: string, beforeId: string | null): Promise<void> {

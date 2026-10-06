@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import type { ConnectionManager } from './connection-manager.js';
 import type { MongoDriver } from '../drivers/mongo-driver.js';
-import { routeByDriver, type DriverSource, type RouteMode } from '../mcp/query-router.js';
+import { routeByDriver, type DriverSource, type RouteMode } from './query-router.js';
 import { sanitizeErrorMessage } from '../utils/sanitize-error.js';
 
 export const SOCKET_DIR = path.join(os.homedir(), '.sql-extension');
@@ -83,7 +83,7 @@ export class IpcServer {
     }
   }
 
-  // 未连接则按需连接 (连接状态按窗口保存, agent 无从得知要先 db_connect)
+  // 未连接则按需连接: 连接状态按窗口保存, agent 不感知也不管理连接
   private async ensureConnected(id: string): Promise<void> {
     if (this.connectionManager.getState(id) === 'connected') { return; }
     await this.connectionManager.connect(id);
@@ -107,19 +107,6 @@ export class IpcServer {
           database: info.config.database,
           state: info.state,
         }));
-
-      case 'connect': {
-        const id = params.connectionId as string;
-        this.findConfig(id);
-        await this.ensureConnected(id);
-        return { success: true };
-      }
-
-      case 'disconnect': {
-        const id = params.connectionId as string;
-        await this.connectionManager.disconnect(id);
-        return { success: true };
-      }
 
       case 'read':
       case 'execute': {
@@ -188,30 +175,6 @@ export class IpcServer {
         await this.ensureConnected(id);
         const driver = this.connectionManager.getDriver(id);
         return await driver.getTableDDL(database, table);
-      }
-
-      case 'saveConnection': {
-        const config = params.config as Record<string, unknown>;
-        const password = (params.password as string) ?? '';
-        const sshPassword = params.sshPassword as string | undefined;
-        const id = config.id as string || `conn_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-        const connConfig = {
-          id,
-          name: (config.name as string) || id,
-          driverType: config.driverType as string,
-          host: config.host as string,
-          port: config.port as number,
-          username: (config.username as string) ?? '',
-          database: (config.database as string) ?? '',
-          authSource: config.authSource as string | undefined,
-          ssh: config.ssh as Record<string, unknown> | undefined,
-        };
-        await this.connectionManager.addConnection(
-          connConfig as unknown as import('../types/connection.js').ConnectionConfig,
-          password,
-          sshPassword,
-        );
-        return { success: true, connectionId: id };
       }
 
       default:

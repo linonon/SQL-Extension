@@ -1,9 +1,8 @@
-import type { ConnectionPool } from './connection-pool.js';
-import type { IpcClient } from './ipc-client.js';
 import type { IDatabaseDriver } from '../types/driver.js';
 import type { IRedisDriver } from '../types/redis-driver.js';
 import type { IKafkaDriver } from '../types/kafka-driver.js';
 import type { IRabbitMQDriver } from '../types/rabbitmq-driver.js';
+import type { QueryResult } from '../types/query.js';
 import type { MongoDriver } from '../drivers/mongo-driver.js';
 import { ErrorCode } from './utils.js';
 import { isReadonlySQL, enforceLimit, isMultiStatement } from './sql-validator.js';
@@ -11,8 +10,7 @@ import { parseRedisCommand } from './parsers/redis-parser.js';
 import { parseMongoQuery, READ_METHODS } from './parsers/mongo-parser.js';
 import { parseKafkaQuery, READ_ACTIONS } from './parsers/kafka-parser.js';
 import { parseRabbitMQQuery } from './parsers/rabbitmq-parser.js';
-import { makeResult, makeError, toErrorMessage } from './tools/mcp-result.js';
-import type { QueryResultData } from './tools/types.js';
+import { makeResult, makeError, type ToolResult } from '../mcp/tools/mcp-result.js';
 
 const REDIS_READ_COMMANDS = new Set([
   'GET', 'MGET', 'TTL', 'PTTL', 'TYPE', 'EXISTS', 'DBSIZE', 'INFO',
@@ -35,9 +33,8 @@ const capLimit = (n: unknown): number =>
   Number.isInteger(n) && (n as number) > 0 ? Math.min(n as number, MAX_LIMIT) : MAX_LIMIT;
 
 export type RouteMode = 'read' | 'execute';
-export type ToolResult = ReturnType<typeof makeResult> | ReturnType<typeof makeError>;
 
-// 取 driver 的来源: MCP 进程内的 standalone pool, 或 VS Code 扩展里的 ConnectionManager
+// driver 来源, 由 IpcServer 用 ConnectionManager 适配
 export interface DriverSource {
   getDriver(id: string): IDatabaseDriver;
   getRedisDriver(id: string): IRedisDriver;
@@ -46,28 +43,10 @@ export interface DriverSource {
   getRabbitMQDriver(id: string): IRabbitMQDriver;
 }
 
-// standalone 连接在本进程执行; 其余 id 视为 VS Code 已保存连接, 整条转给扩展,
-// 扩展侧同样经 routeByDriver 执行, 两条路径共用全部只读 / 上限校验.
-export async function routeQuery(
-  mode: RouteMode,
-  connectionId: string,
-  query: string,
-  database: string | undefined,
-  pool: ConnectionPool,
-  ipc: IpcClient,
-): Promise<ToolResult> {
-  try {
-    if (pool.has(connectionId)) {
-      const entry = pool.getEntry(connectionId);
-      return await routeByDriver(mode, entry.driverType, connectionId, query, database || entry.database || undefined, pool);
-    }
-    return await ipc.request(mode, { connectionId, query, database }) as ToolResult;
-  } catch (err) {
-    return makeError(toErrorMessage(err), ErrorCode.QUERY_FAILED);
-  }
-}
-
-/** database 为调用方显式值, 缺省时应已回落到连接配置的默认库. */
+/**
+ * MCP db_read / db_execute 经 IPC 到达扩展后的执行入口, 返回值是 MCP tool result, 由 MCP 进程原样转交 agent.
+ * database 为调用方显式值, 缺省时应已回落到连接配置的默认库.
+ */
 export async function routeByDriver(
   mode: RouteMode,
   driverType: string,
@@ -127,14 +106,13 @@ async function routeSQL(
   if (mode === 'read' && !driver.executeReadOnly) {
     return makeError(`Driver '${driverType}' has no read-only execution.`, ErrorCode.UNSUPPORTED_COMMAND);
   }
-  let result: QueryResultData;
+  let result: QueryResult;
   if (mode === 'read') {
-    result = await driver.executeReadOnly!(query, isMysql ? database : undefined) as QueryResultData;
+    result = await driver.executeReadOnly!(query, isMysql ? database : undefined);
   } else if (isMysql) {
-    const { promise } = driver.executeCancellable(query, undefined, database);
-    result = await promise as QueryResultData;
+    result = await driver.executeCancellable(query, undefined, database).promise;
   } else {
-    result = await driver.execute(query) as QueryResultData;
+    result = await driver.execute(query);
   }
 
   return makeResult({

@@ -1,9 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-// 内联测试 query tool 的校验逻辑
-// 因为 tool 注册在 McpServer 上, 直接测试 sql-validator + connection-pool 集成
+// db_read / db_execute 在扩展侧的校验: sql-validator 与 routeByDriver
 
-import { isReadonlySQL, enforceLimit } from '../sql-validator.js';
+import { isReadonlySQL, enforceLimit } from './sql-validator.js';
 
 describe('query tool - SQL validation integration', () => {
   it('should reject INSERT via isReadonlySQL', () => {
@@ -47,11 +46,12 @@ describe('query tool - SQL validation integration', () => {
   });
 });
 
-import { routeByDriver, type DriverSource, type ToolResult } from '../query-router.js';
+import { routeByDriver, type DriverSource } from './query-router.js';
+import type { ToolResult } from '../mcp/tools/mcp-result.js';
 
 const isErr = (r: ToolResult) => 'isError' in r && r.isError === true;
 
-describe('routeByDriver SQL guards (shared by standalone and VS Code paths)', () => {
+describe('routeByDriver SQL guards', () => {
   const ok = { columns: [], rows: [{ n: 1 }], affectedRows: 0, executionTime: 1 };
   function source() {
     const driver = {
