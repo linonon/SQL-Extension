@@ -98,7 +98,7 @@ export function RedisValueViewer({
         <div className="key-info">
           <h3>{keyName}</h3>
           <div className="key-meta">
-            <span className={`type-badge ${keyType}`}>{keyType}</span>
+            <span className={`type-badge ${keyType}`}>{value.type === 'unsupported' ? value.typeName : keyType}</span>
             <span>TTL: {formatTTL(ttl)}</span>
           </div>
         </div>
@@ -125,6 +125,7 @@ export function RedisValueViewer({
         {value.type === 'list' && (
           <RedisListEditor
             value={value.value}
+            start={value.start}
             total={value.total}
             onPush={onListPush}
             onRemove={onListRemove}
@@ -153,6 +154,13 @@ export function RedisValueViewer({
             onBatchEdit={onZSetBatchEdit}
             onLoadMore={onZSetLoadMore}
           />
+        )}
+        {value.type === 'unsupported' && (
+          <div className="redis-empty">
+            {value.typeName === 'none'
+              ? 'This key no longer exists (expired or deleted). Refresh the key list.'
+              : `"${value.typeName}" keys are read-only here. Use the command bar to inspect them.`}
+          </div>
         )}
       </div>
     </>

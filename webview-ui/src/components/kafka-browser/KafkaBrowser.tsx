@@ -18,6 +18,8 @@ export function KafkaBrowser({ connectionId }: KafkaBrowserProps) {
   const [selectedPartition, setSelectedPartition] = useState(0);
   const [messages, setMessages] = useState<readonly KafkaMessage[]>([]);
   const [loading, setLoading] = useState(false);
+  // 最近一次拉取在加入 group 后等满超时仍没收到消息
+  const [timedOut, setTimedOut] = useState(false);
   const [panelWidth, setPanelWidth] = useState(240);
   const [produceResult, setProduceResult] = useState<{ readonly success: boolean; readonly partition?: number; readonly offset?: string; readonly error?: string } | null>(null);
 
@@ -42,6 +44,7 @@ export function KafkaBrowser({ connectionId }: KafkaBrowserProps) {
           // 首次加载或 partition 变化, reset
           setSelectedPartition(msg.partitions.length > 0 ? msg.partitions[0].partitionId : 0);
           setMessages([]);
+          setTimedOut(false);
           setLoading(false);
           return msg.partitions;
         });
@@ -49,6 +52,7 @@ export function KafkaBrowser({ connectionId }: KafkaBrowserProps) {
       case 'kafkaMessageList':
         if (msg.topic !== selectedTopic || msg.partition !== selectedPartition) { break; }
         setMessages(msg.messages);
+        setTimedOut(msg.timedOut);
         setLoading(false);
         break;
       case 'kafkaProduceResult':
@@ -72,6 +76,19 @@ export function KafkaBrowser({ connectionId }: KafkaBrowserProps) {
     if (selectedTopic) {
       setPartitions([]);
       setMessages([]);
+      setTimedOut(false);
+      setProduceResult(null);
+      postMessage({ type: 'kafkaGetPartitions', topic: selectedTopic });
+    }
+  }, [selectedTopic, postMessage]);
+
+  const handleRefreshTopics = useCallback(() => {
+    postMessage({ type: 'kafkaListTopics' });
+  }, [postMessage]);
+
+  // partition 数量不变时保留当前选中与消息, 只更新 offset
+  const handleRefreshPartitions = useCallback(() => {
+    if (selectedTopic) {
       postMessage({ type: 'kafkaGetPartitions', topic: selectedTopic });
     }
   }, [selectedTopic, postMessage]);
@@ -84,12 +101,14 @@ export function KafkaBrowser({ connectionId }: KafkaBrowserProps) {
   const handlePartitionChange = useCallback((partition: number) => {
     setSelectedPartition(partition);
     setMessages([]);
+    setTimedOut(false);
     setLoading(false);
   }, []);
 
   const handleFetch = useCallback((offset: string) => {
     if (!selectedTopic) { return; }
     setLoading(true);
+    setTimedOut(false);
     postMessage({
       type: 'kafkaFetchMessages',
       topic: selectedTopic,
@@ -99,9 +118,18 @@ export function KafkaBrowser({ connectionId }: KafkaBrowserProps) {
     });
   }, [selectedTopic, selectedPartition, postMessage]);
 
+  // 宿主现取 high watermark 再拉最后 50 条, partition 下拉的 offset 随之刷新
+  const handleFetchLatest = useCallback(() => {
+    if (!selectedTopic) { return; }
+    setLoading(true);
+    setTimedOut(false);
+    postMessage({ type: 'kafkaFetchLatest', topic: selectedTopic, partition: selectedPartition, limit: 50 });
+  }, [selectedTopic, selectedPartition, postMessage]);
+
   const handleFetchByTimestamp = useCallback((timestamp: number) => {
     if (!selectedTopic) { return; }
     setLoading(true);
+    setTimedOut(false);
     postMessage({
       type: 'kafkaFetchByTimestamp',
       topic: selectedTopic,
@@ -158,19 +186,25 @@ export function KafkaBrowser({ connectionId }: KafkaBrowserProps) {
             topics={topics}
             selectedTopic={selectedTopic}
             onSelectTopic={handleSelectTopic}
+            onRefresh={handleRefreshTopics}
           />
         </div>
         <div className="kafka-resize-handle" onMouseDown={handleMouseDown} />
         <div className="kafka-right-panel">
           {selectedTopic ? (
+            // 按 topic 重建: 切 topic 时 detail / produce 子视图与输入框回到初始状态
             <KafkaMessageTable
+              key={selectedTopic}
               topic={selectedTopic}
               partitions={partitions}
               messages={messages}
               selectedPartition={selectedPartition}
               loading={loading}
+              timedOut={timedOut}
               onPartitionChange={handlePartitionChange}
+              onRefreshPartitions={handleRefreshPartitions}
               onFetch={handleFetch}
+              onFetchLatest={handleFetchLatest}
               onFetchByTimestamp={handleFetchByTimestamp}
               onProduce={handleProduce}
               produceResult={produceResult}

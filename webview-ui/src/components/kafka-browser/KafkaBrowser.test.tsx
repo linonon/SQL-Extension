@@ -3,6 +3,7 @@ import { act, render } from '@testing-library/react';
 import { KafkaBrowser } from './KafkaBrowser';
 import type { ExtensionMessage } from '../../types/messages';
 import type { KafkaMessage, KafkaPartitionInfo } from '../../types/kafka';
+import { mockPostMessage } from '../../__test__/setup';
 
 vi.mock('../../styles/kafka-browser.css', () => ({}));
 
@@ -33,7 +34,7 @@ describe('KafkaBrowser - 切 topic / partition 后旧回执丢弃', () => {
     act(() => { topicProps.onSelectTopic('B'); });
 
     send({ type: 'kafkaPartitionList', topic: 'A', partitions: partitions(3) });
-    send({ type: 'kafkaMessageList', topic: 'A', partition: 0, messages: [msg('1')] });
+    send({ type: 'kafkaMessageList', topic: 'A', partition: 0, messages: [msg('1')], timedOut: false });
     expect(tableProps.topic).toBe('B');
     expect(tableProps.partitions).toEqual([]);
     expect(tableProps.messages).toEqual([]);
@@ -51,7 +52,30 @@ describe('KafkaBrowser - 切 topic / partition 后旧回执丢弃', () => {
     act(() => { tableProps.onPartitionChange(1); });
     expect(tableProps.loading).toBe(false);
 
-    send({ type: 'kafkaMessageList', topic: 'A', partition: 0, messages: [msg('1')] });
+    send({ type: 'kafkaMessageList', topic: 'A', partition: 0, messages: [msg('1')], timedOut: false });
     expect(tableProps.messages).toEqual([]);
+  });
+});
+
+describe('KafkaBrowser - Latest / Refresh / 超时提示', () => {
+  it('Latest 交给宿主现取 high watermark; 回执 timedOut 透传给表格; 两个 Refresh 重拉 topic 与 partition', () => {
+    render(<KafkaBrowser connectionId="c1" />);
+    act(() => { topicProps.onSelectTopic('A'); });
+    send({ type: 'kafkaPartitionList', topic: 'A', partitions: partitions(2) });
+    act(() => { tableProps.onPartitionChange(1); });
+    mockPostMessage.mockClear();
+
+    act(() => { tableProps.onFetchLatest(); });
+    expect(mockPostMessage).toHaveBeenCalledWith({ type: 'kafkaFetchLatest', topic: 'A', partition: 1, limit: 50 });
+    expect(tableProps.loading).toBe(true);
+
+    send({ type: 'kafkaMessageList', topic: 'A', partition: 1, messages: [], timedOut: true });
+    expect(tableProps.loading).toBe(false);
+    expect(tableProps.timedOut).toBe(true);
+
+    act(() => { topicProps.onRefresh(); });
+    act(() => { tableProps.onRefreshPartitions(); });
+    expect(mockPostMessage).toHaveBeenCalledWith({ type: 'kafkaListTopics' });
+    expect(mockPostMessage).toHaveBeenCalledWith({ type: 'kafkaGetPartitions', topic: 'A' });
   });
 });

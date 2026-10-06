@@ -7,7 +7,7 @@ import type { WebviewMessage, ViewType, SaveConnectionConfig, UpdateConnectionCo
 import type { ConnectionFormSSH } from '../types/messages.js';
 import type { DriverType, SSHTunnelConfig } from '../types/connection.js';
 import type { AlterTableChanges } from '../types/query.js';
-import { handleRedisMessage, exportRedisKeys, importRedisKeys, validateTtlInput } from './redis-message-handler.js';
+import { handleRedisMessage, exportRedisKeys, importRedisKeys, validateTtlInput, parseCommandArgs } from './redis-message-handler.js';
 import { handleKafkaMessage } from './kafka-message-handler.js';
 import { handleMongoMessage, buildExportPipeline } from './mongo-message-handler.js';
 import { getWebviewContent, getWebviewOptions } from './webview-helper.js';
@@ -107,11 +107,12 @@ export class TableViewProvider implements vscode.Disposable {
     }
   }
 
-  openRedisBrowser(connectionId: string, database: number): void {
+  // 打开时落在连接配置的 DB index 上
+  openRedisBrowser(connectionId: string): void {
     const config = this.connectionManager.getConnections().find((c) => c.id === connectionId);
     this.openBrowser(`redis-browser:${connectionId}`, `Redis - ${config?.name ?? connectionId}`, 'redis-browser', {
       connectionId,
-      database,
+      database: Number(config?.database) || 0,
       separator: config?.separator ?? ':',
     });
   }
@@ -495,6 +496,21 @@ export class TableViewProvider implements vscode.Disposable {
                 await handleRedisMessage({ type: 'redisSetTTL', key: ttlMsg.key, ttl, database: ttlMsg.database }, redisDriver, post);
               }
               return;
+            }
+
+            if (message.type === 'redisExecuteCommand') {
+              // 命令栏可执行任意命令; 清库命令 (带不带 ASYNC / SYNC 参数) 先确认
+              const cmd = parseCommandArgs(message.command)[0]?.toUpperCase();
+              if (cmd === 'FLUSHDB' || cmd === 'FLUSHALL') {
+                const scope = cmd === 'FLUSHALL' ? 'EVERY database' : `db ${message.database}`;
+                const confirm = await vscode.window.showWarningMessage(
+                  `${cmd} deletes all keys in ${scope}. Continue?`, { modal: true }, cmd
+                );
+                if (confirm !== cmd) {
+                  post({ type: 'redisCommandResult', output: `${cmd} cancelled` });
+                  return;
+                }
+              }
             }
 
             if (message.type === 'redisDeleteKeys') {

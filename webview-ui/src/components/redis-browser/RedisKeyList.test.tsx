@@ -19,6 +19,8 @@ describe('RedisKeyList', () => {
     keys: [] as readonly RedisKeyInfo[],
     selectedKey: null as string | null,
     hasMore: false,
+    scanning: false,
+    scanned: 0,
     filterQuery: '',
     onSelectKey: vi.fn(),
     onLoadMore: vi.fn(),
@@ -34,6 +36,18 @@ describe('RedisKeyList', () => {
   it('空列表显示 "No keys found"', () => {
     render(<RedisKeyList {...defaultProps} />);
     expect(screen.getByText('No keys found')).toBeInTheDocument();
+  });
+
+  it('这一段没匹配但还没扫完: 显示已扫数量与 Continue, 不说 No keys found; 在途时显示 Scanning', () => {
+    const { rerender } = render(<RedisKeyList {...defaultProps} hasMore={true} scanned={20000} />);
+    expect(screen.queryByText('No keys found')).not.toBeInTheDocument();
+    expect(screen.getByText(/Scanned ~20000 keys, no match yet/)).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Continue'));
+    expect(defaultProps.onLoadMore).toHaveBeenCalled();
+
+    rerender(<RedisKeyList {...defaultProps} hasMore={false} scanning={true} />);
+    expect(screen.getByText('Scanning...')).toBeInTheDocument();
+    expect(screen.queryByText('No keys found')).not.toBeInTheDocument();
   });
 
   it('渲染 key 列表', () => {

@@ -16,6 +16,7 @@ const mockAdmin = {
     { partition: 0, high: '100', low: '0' },
     { partition: 1, high: '50', low: '0' },
   ]),
+  deleteGroups: vi.fn().mockResolvedValue([]),
 };
 
 const mockConsumer = {
@@ -26,10 +27,12 @@ const mockConsumer = {
   seek: vi.fn(),
 };
 
+const consumerOptions: unknown[] = [];
+
 vi.mock('kafkajs', () => {
   class MockKafka {
     admin() { return mockAdmin; }
-    consumer() { return mockConsumer; }
+    consumer(options: unknown) { consumerOptions.push(options); return mockConsumer; }
   }
   return { Kafka: MockKafka };
 });
@@ -170,7 +173,7 @@ describe('KafkaDriver', () => {
         });
       });
 
-      const messages = await driver.fetchMessages('topic-a', 0, '10', 1);
+      const { messages, timedOut } = await driver.fetchMessages('topic-a', 0, '10', 1);
 
       expect(mockConsumer.connect).toHaveBeenCalled();
       expect(mockConsumer.subscribe).toHaveBeenCalledWith({ topic: 'topic-a', fromBeginning: true });
@@ -184,6 +187,7 @@ describe('KafkaDriver', () => {
         timestamp: '1700000000000',
         headers: { 'x-id': 'abc' },
       }]);
+      expect(timedOut).toBe(false);
     });
 
     it('重复 header key (kafkajs 解码为数组) 逐个解码后拼接', async () => {
@@ -203,9 +207,49 @@ describe('KafkaDriver', () => {
         });
       });
 
-      const [msg] = await driver.fetchMessages('topic-a', 0, '1', 1);
+      const { messages: [msg] } = await driver.fetchMessages('topic-a', 0, '1', 1);
 
       expect(msg.headers).toEqual({ trace: 'a, b', empty: '' });
+    });
+
+    it('不提交 offset, 断开后删掉这次的一次性 group', async () => {
+      await driver.connect(TEST_CONFIG);
+      consumerOptions.length = 0;
+      mockConsumer.run.mockImplementation(async ({ eachBatch }: { eachBatch: Function }) => {
+        await eachBatch({ batch: { partition: 0, messages: [{ offset: '1', key: null, value: null, timestamp: '0' }] } });
+      });
+
+      await driver.fetchMessages('topic-a', 0, '1', 1);
+
+      expect(mockConsumer.run).toHaveBeenCalledWith(expect.objectContaining({ autoCommit: false }));
+      const { groupId } = consumerOptions[0] as { groupId: string };
+      expect(mockAdmin.deleteGroups).toHaveBeenCalledWith([groupId]);
+      expect(mockConsumer.disconnect.mock.invocationCallOrder[0])
+        .toBeLessThan(mockAdmin.deleteGroups.mock.invocationCallOrder[0]);
+    });
+
+    it('等消息的 3 秒从加入 group 之后才计时; 到点一条没收到回 timedOut, 删 group 失败不影响结果', async () => {
+      vi.useFakeTimers();
+      try {
+        await driver.connect(TEST_CONFIG);
+        mockAdmin.deleteGroups.mockRejectedValueOnce(new Error('GROUP_ID_NOT_FOUND'));
+        let joined!: () => void;
+        mockConsumer.run.mockImplementation(() => new Promise<void>((resolve) => { joined = resolve; }));
+        let settled = false;
+        const pending = driver.fetchMessages('topic-a', 0, '0', 10).finally(() => { settled = true; });
+
+        // join 耗时 (如 broker 的 initial rebalance delay) 不占等消息的时间
+        await vi.advanceTimersByTimeAsync(5000);
+        expect(settled).toBe(false);
+        joined();
+        await vi.advanceTimersByTimeAsync(2999);
+        expect(settled).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+
+        await expect(pending).resolves.toEqual({ messages: [], timedOut: true });
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 });

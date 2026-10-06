@@ -71,7 +71,8 @@ export type ExtensionMessage =
   | { type: 'alterTableResult'; success: boolean; error?: string }
   // previewAlterTable 的回执: ddl 为空串表示没有改动
   | { type: 'alterTablePreview'; ddl: string }
-  | { type: 'redisScanResult'; requestId: number; keys: readonly RedisKeyInfo[]; cursor: string; done: boolean }
+  // scanned: 本次请求扫过的 key 数估值; keys 为空且 done 为 false 表示这一段没匹配到, 可从 cursor 接着扫
+  | { type: 'redisScanResult'; requestId: number; keys: readonly RedisKeyInfo[]; cursor: string; done: boolean; scanned: number }
   | { type: 'redisValueResult'; key: string; database: number; keyType: RedisKeyType; value: RedisValue; ttl: number }
   | { type: 'redisOperationResult'; success: boolean; error?: string }
   | { type: 'redisDbList'; databases: readonly { readonly index: number; readonly keyCount: number }[] }
@@ -82,7 +83,8 @@ export type ExtensionMessage =
   | { type: 'redisAddKeyResult'; key: string }
   | { type: 'kafkaTopicList'; topics: readonly KafkaTopicInfo[] }
   | { type: 'kafkaPartitionList'; topic: string; partitions: readonly KafkaPartitionInfo[] }
-  | { type: 'kafkaMessageList'; topic: string; partition: number; messages: readonly KafkaMessage[] }
+  // timedOut: 加入 group 后等满 3 秒一条消息也没收到
+  | { type: 'kafkaMessageList'; topic: string; partition: number; messages: readonly KafkaMessage[]; timedOut: boolean }
   | { type: 'kafkaProduceResult'; success: boolean; partition?: number; offset?: string; error?: string }
   | { type: 'mongoDocumentList'; requestId: number; columns: readonly ColumnInfo[]; rows: readonly Record<string, unknown>[]; error?: string }
   // mongoFindDocuments 带 count 时另发: total 为 null 表示计数失败或超时 (总数未知)
@@ -118,6 +120,7 @@ export type WebviewMessage =
   | { type: 'alterTable'; database: string; table: string; changes: AlterTableChanges }
   | { type: 'exportCsv'; content: string; defaultFileName: string }
   | { type: 'ready' }
+  // count: 本次请求期望凑够的 key 数 (宿主循环 SCAN 直到凑够或扫满预算)
   | { type: 'redisScan'; requestId: number; database: number; pattern: string; cursor: string; count: number }
   | { type: 'redisGetValue'; key: string; database: number; setCursor?: string; listStart?: number; zsetStart?: number }
   | { type: 'redisSetString'; key: string; value: string; database: number; ttl?: number }
@@ -146,6 +149,8 @@ export type WebviewMessage =
   | { type: 'kafkaListTopics' }
   | { type: 'kafkaGetPartitions'; topic: string }
   | { type: 'kafkaFetchMessages'; topic: string; partition: number; offset: string; limit: number }
+  // 宿主现取 high watermark, 拉最后 limit 条
+  | { type: 'kafkaFetchLatest'; topic: string; partition: number; limit: number }
   | { type: 'kafkaFetchByTimestamp'; topic: string; partition: number; timestamp: number; limit: number }
   | { type: 'kafkaProduceMessage'; topic: string; key: string | null; value: string; headers: Record<string, string>; partition?: number }
   | { type: 'mongoFindDocuments'; requestId: number; database: string; collection: string; filter: string; sort: string; projection?: string; skip: number; limit: number; count: boolean }

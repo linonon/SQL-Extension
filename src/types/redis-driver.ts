@@ -1,5 +1,5 @@
 import type { ConnectionConfig } from './connection.js';
-import type { RedisDbInfo, RedisKeyType, RedisRawKey, RedisScanResult } from './redis.js';
+import type { RedisDbInfo, RedisRawKey, RedisScanResult } from './redis.js';
 
 export interface IRedisDriver {
   readonly driverType: 'redis';
@@ -12,7 +12,8 @@ export interface IRedisDriver {
 
   // 以下操作都显式带库号 db, 在该库自己的 client 上执行, 不在共享连接上 SELECT
 
-  // key 扫描 - 绝对禁止 KEYS 命令
+  // key 浏览, 绝对禁止 KEYS 命令. 精确 key 名 (无 glob 元字符) 直接查 TYPE + TTL;
+  // 否则从 cursor 起循环 SCAN, 直到凑够 count 个 key, 或 cursor 回到 0, 或本次已扫约 2 万个
   scan(db: number, pattern: string, cursor: string, count: number): Promise<RedisScanResult>;
 
   // 按类型读取
@@ -42,7 +43,8 @@ export interface IRedisDriver {
 
   // key 管理
   deleteKey(db: number, key: string): Promise<void>;
-  getKeyType(db: number, key: string): Promise<RedisKeyType>;
+  // TYPE 原样返回 (含模块类型如 ReJSON-RL), key 不存在为 'none'
+  getKeyType(db: number, key: string): Promise<string>;
   getTTL(db: number, key: string): Promise<number>;
   setTTL(db: number, key: string, ttl: number): Promise<void>;
   removeTTL(db: number, key: string): Promise<void>;

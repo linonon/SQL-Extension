@@ -15,16 +15,17 @@ function createMockDriver(): IKafkaDriver {
     getTopicPartitions: vi.fn().mockResolvedValue([
       { partitionId: 0, leader: 1, offset: '100' },
     ]),
-    fetchMessages: vi.fn().mockResolvedValue([
-      {
+    fetchMessages: vi.fn().mockResolvedValue({
+      messages: [{
         partition: 0,
         offset: '50',
         key: 'k1',
         value: '{"msg":"hello"}',
         timestamp: '1700000000000',
         headers: {},
-      },
-    ]),
+      }],
+      timedOut: false,
+    }),
     fetchOffsetByTimestamp: vi.fn().mockResolvedValue('0'),
     produceMessage: vi.fn().mockResolvedValue({ partition: 0, offset: '0' }),
   };
@@ -91,7 +92,26 @@ describe('handleKafkaMessage', () => {
         timestamp: '1700000000000',
         headers: {},
       }],
+      timedOut: false,
     });
+  });
+
+  it('kafkaFetchLatest: 现取 high watermark 再拉最后 limit 条, 并回刷新后的 partition 列表', async () => {
+    (driver.getTopicPartitions as Mock).mockResolvedValue([
+      { partitionId: 0, leader: 1, offset: '100' },
+      { partitionId: 1, leader: 1, offset: '30' },
+    ]);
+    (driver.fetchMessages as Mock).mockResolvedValue({ messages: [], timedOut: true });
+
+    await handleKafkaMessage({ type: 'kafkaFetchLatest', topic: 'topic-a', partition: 1, limit: 50 }, driver, post);
+
+    expect(driver.getTopicPartitions).toHaveBeenCalledWith('topic-a');
+    expect(driver.fetchMessages).toHaveBeenCalledWith('topic-a', 1, '0', 50);
+    expect(post).toHaveBeenCalledWith(expect.objectContaining({ type: 'kafkaPartitionList', topic: 'topic-a' }));
+    expect(post).toHaveBeenLastCalledWith({ type: 'kafkaMessageList', topic: 'topic-a', partition: 1, messages: [], timedOut: true });
+
+    await handleKafkaMessage({ type: 'kafkaFetchLatest', topic: 'topic-a', partition: 0, limit: 50 }, driver, post);
+    expect(driver.fetchMessages).toHaveBeenLastCalledWith('topic-a', 0, '50', 50);
   });
 
   it('未知消息类型: 返回 false', async () => {

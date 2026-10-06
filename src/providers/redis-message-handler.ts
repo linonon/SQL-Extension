@@ -16,12 +16,15 @@ export function validateTtlInput(v: string): string | undefined {
 
 /**
  * 解析命令字符串, 支持双引号和单引号包裹的参数.
- * 例: SET key "hello world" -> ['SET', 'key', 'hello world']
+ * 双引号内 \" 和 \\ 转义为 " 和 \, 其余反斜杠原样保留; 引号包裹的空串 ("") 是一个空参数.
+ * 例: SET k "{\"open\":true}" -> ['SET', 'k', '{"open":true}']
  */
 export function parseCommandArgs(command: string): string[] {
   const args: string[] = [];
   let current = '';
   let inQuote: '"' | "'" | null = null;
+  // 当前 token 出现过引号: 即使内容为空也要作为参数保留
+  let quoted = false;
 
   for (let i = 0; i < command.length; i++) {
     const ch = command[i];
@@ -29,22 +32,26 @@ export function parseCommandArgs(command: string): string[] {
     if (inQuote) {
       if (ch === inQuote) {
         inQuote = null;
+      } else if (inQuote === '"' && ch === '\\' && (command[i + 1] === '"' || command[i + 1] === '\\')) {
+        current += command[++i];
       } else {
         current += ch;
       }
     } else if (ch === '"' || ch === "'") {
       inQuote = ch;
+      quoted = true;
     } else if (/\s/.test(ch)) {
-      if (current.length > 0) {
+      if (current.length > 0 || quoted) {
         args.push(current);
         current = '';
+        quoted = false;
       }
     } else {
       current += ch;
     }
   }
 
-  if (current.length > 0) {
+  if (current.length > 0 || quoted) {
     args.push(current);
   }
 
@@ -70,15 +77,16 @@ export async function handleRedisMessage(
           keys: result.keys,
           cursor: result.cursor,
           done: result.cursor === '0',
+          scanned: result.scanned,
         });
         return true;
       }
 
       case 'redisGetValue': {
-        const keyType = await driver.getKeyType(message.database, message.key);
+        const rawType = await driver.getKeyType(message.database, message.key);
         const ttl = await driver.getTTL(message.database, message.key);
         let value: RedisValue;
-        switch (keyType) {
+        switch (rawType) {
           case 'string': {
             const strVal = await driver.getString(message.database, message.key);
             value = { type: 'string', value: strVal ?? '' };
@@ -93,7 +101,7 @@ export async function handleRedisMessage(
             const total = await driver.getListLength(message.database, message.key);
             const listStart = message.listStart ?? 0;
             const listVal = await driver.getList(message.database, message.key, listStart, listStart + 99);
-            value = { type: 'list', value: listVal, total };
+            value = { type: 'list', value: listVal, total, start: listStart };
             break;
           }
           case 'set': {
@@ -106,11 +114,12 @@ export async function handleRedisMessage(
             const total = await driver.getZSetLength(message.database, message.key);
             const zsetStart = message.zsetStart ?? 0;
             const zsetVal = await driver.getZSet(message.database, message.key, zsetStart, zsetStart + 99);
-            value = { type: 'zset', value: zsetVal, total };
+            value = { type: 'zset', value: zsetVal, total, start: zsetStart };
             break;
           }
           default: {
-            value = { type: 'string', value: `[Unsupported type: ${keyType}]` };
+            // stream / 模块类型 / 已不存在 ('none'): 不读值, webview 只读显示类型名
+            value = { type: 'unsupported', typeName: rawType };
             break;
           }
         }
@@ -118,7 +127,7 @@ export async function handleRedisMessage(
           type: 'redisValueResult',
           key: message.key,
           database: message.database,
-          keyType,
+          keyType: value.type !== 'unsupported' ? value.type : rawType === 'stream' ? 'stream' : 'unknown',
           value,
           ttl,
         });

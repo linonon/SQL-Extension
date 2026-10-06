@@ -7,6 +7,9 @@ interface RedisKeyListProps {
   readonly keys: readonly RedisKeyInfo[];
   readonly selectedKey: string | null;
   readonly hasMore: boolean;
+  // 有 SCAN 请求在途; scanned 为这次搜索累计扫过的 key 数估值
+  readonly scanning: boolean;
+  readonly scanned: number;
   readonly filterQuery: string;
   readonly separator?: string;
   readonly onSelectKey: (key: string) => void;
@@ -120,6 +123,8 @@ export function RedisKeyList({
   keys,
   selectedKey,
   hasMore,
+  scanning,
+  scanned,
   filterQuery,
   separator = ':',
   onSelectKey,
@@ -217,7 +222,17 @@ export function RedisKeyList({
             </button>
           </div>
         )}
-        {isEmpty && (
+        {isEmpty && scanning && (
+          <div className="redis-empty">Scanning...</div>
+        )}
+        {/* 大 keyspace 上这一段没扫到匹配, 不等于没有: 让用户从 cursor 接着扫 */}
+        {isEmpty && !scanning && hasMore && (
+          <div className="redis-load-more">
+            <div className="redis-scan-progress">Scanned ~{scanned} keys, no match yet</div>
+            <button className="secondary" onClick={onLoadMore}>Continue</button>
+          </div>
+        )}
+        {isEmpty && !scanning && !hasMore && (
           <div className="redis-empty">No keys found</div>
         )}
         {noMatch && (
@@ -248,10 +263,10 @@ export function RedisKeyList({
             />
           ))}
         </>
-        {hasMore && (
+        {hasMore && !isEmpty && (
           <div className="redis-load-more">
-            <button className="secondary" onClick={onLoadMore}>
-              Load More
+            <button className="secondary" onClick={onLoadMore} disabled={scanning}>
+              {scanning ? 'Scanning...' : 'Load More'}
             </button>
           </div>
         )}

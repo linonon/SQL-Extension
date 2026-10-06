@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { RedisLoadMore } from './RedisLoadMore';
 
 interface RedisSetEditorProps {
   readonly members: readonly string[];
@@ -85,13 +86,7 @@ export function RedisSetEditor({
           </div>
         );
       })}
-      {hasMore && (
-        <div className="redis-load-more">
-          <button className="secondary" onClick={onLoadMore}>
-            Load More
-          </button>
-        </div>
-      )}
+      {hasMore && <RedisLoadMore pendingEdits={dirtyEdits.length} onLoadMore={onLoadMore} />}
       {hasDirty && (
         <div className="batch-actions">
           <button onClick={handleSaveAll}>Save All ({dirtyEdits.length})</button>

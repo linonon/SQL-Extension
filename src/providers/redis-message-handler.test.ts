@@ -11,7 +11,7 @@ function createMockDriver(): IRedisDriver {
     isConnected: vi.fn().mockReturnValue(true),
     ping: vi.fn(),
     listDatabases: vi.fn().mockResolvedValue([]),
-    scan: vi.fn().mockResolvedValue({ cursor: '0', keys: [] }),
+    scan: vi.fn().mockResolvedValue({ cursor: '0', keys: [], scanned: 0 }),
     getString: vi.fn().mockResolvedValue(null),
     hashScan: vi.fn().mockResolvedValue({ cursor: '0', fields: {} }),
     getList: vi.fn().mockResolvedValue([]),
@@ -66,6 +66,13 @@ describe('parseCommandArgs', () => {
   it('只有一个命令', () => {
     expect(parseCommandArgs('PING')).toEqual(['PING']);
   });
+
+  it('双引号内 \\" 和 \\\\ 转义, 其余反斜杠原样; 空引号保留为空参数', () => {
+    expect(parseCommandArgs('SET k "{\\"open\\":true}"')).toEqual(['SET', 'k', '{"open":true}']);
+    expect(parseCommandArgs('SET k "a\\\\b\\n"')).toEqual(['SET', 'k', 'a\\b\\n']);
+    expect(parseCommandArgs('HSET h f ""')).toEqual(['HSET', 'h', 'f', '']);
+    expect(parseCommandArgs("SET k ''")).toEqual(['SET', 'k', '']);
+  });
 });
 
 describe('handleRedisMessage', () => {
@@ -89,6 +96,7 @@ describe('handleRedisMessage', () => {
       (driver.scan as any).mockResolvedValue({
         cursor: '5',
         keys: [{ key: 'k1', type: 'string', ttl: -1 }],
+        scanned: 3000,
       });
 
       const msg = { type: 'redisScan', requestId: 7, database: 2, pattern: '*', cursor: '0', count: 100 } as WebviewMessage;
@@ -102,6 +110,7 @@ describe('handleRedisMessage', () => {
         keys: [{ key: 'k1', type: 'string', ttl: -1 }],
         cursor: '5',
         done: false,
+        scanned: 3000,
       });
     });
   });
@@ -164,9 +173,45 @@ describe('handleRedisMessage', () => {
 
       expect(postMessage).toHaveBeenCalledWith(
         expect.objectContaining({
-          value: { type: 'list', value: ['a', 'b'], total: 5 },
+          value: { type: 'list', value: ['a', 'b'], total: 5, start: 0 },
         })
       );
+    });
+
+    it('list / zset 翻页: 回执带回本页起点 start, webview 用 start + i 作 Redis index', async () => {
+      (driver.getKeyType as any).mockResolvedValue('list');
+      (driver.getListLength as any).mockResolvedValue(250);
+      (driver.getList as any).mockResolvedValue(['x']);
+      await handleRedisMessage({ type: 'redisGetValue', key: 'l', database: 0, listStart: 200 }, driver, postMessage);
+      expect(driver.getList).toHaveBeenCalledWith(0, 'l', 200, 299);
+      expect(postMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+        value: { type: 'list', value: ['x'], total: 250, start: 200 },
+      }));
+
+      (driver.getKeyType as any).mockResolvedValue('zset');
+      (driver.getZSetLength as any).mockResolvedValue(150);
+      (driver.getZSet as any).mockResolvedValue([{ member: 'm', score: 1 }]);
+      await handleRedisMessage({ type: 'redisGetValue', key: 'z', database: 0, zsetStart: 100 }, driver, postMessage);
+      expect(postMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+        value: { type: 'zset', value: [{ member: 'm', score: 1 }], total: 150, start: 100 },
+      }));
+    });
+
+    it('浏览器不能编辑的类型: 不读值, 回 unsupported 带 TYPE 原名', async () => {
+      (driver.getKeyType as any).mockResolvedValue('ReJSON-RL');
+      await handleRedisMessage({ type: 'redisGetValue', key: 'j', database: 0 }, driver, postMessage);
+      expect(postMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+        keyType: 'unknown',
+        value: { type: 'unsupported', typeName: 'ReJSON-RL' },
+      }));
+
+      (driver.getKeyType as any).mockResolvedValue('stream');
+      await handleRedisMessage({ type: 'redisGetValue', key: 's', database: 0 }, driver, postMessage);
+      expect(postMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+        keyType: 'stream',
+        value: { type: 'unsupported', typeName: 'stream' },
+      }));
+      expect(driver.getString).not.toHaveBeenCalled();
     });
 
     it('set 类型用默认 cursor', async () => {
@@ -204,7 +249,7 @@ describe('handleRedisMessage', () => {
 
       expect(postMessage).toHaveBeenCalledWith(
         expect.objectContaining({
-          value: { type: 'zset', value: [{ member: 'm', score: 1 }], total: 10 },
+          value: { type: 'zset', value: [{ member: 'm', score: 1 }], total: 10, start: 0 },
         })
       );
     });

@@ -5,9 +5,10 @@ interface KafkaTopicListProps {
   readonly topics: readonly KafkaTopicInfo[];
   readonly selectedTopic: string | null;
   readonly onSelectTopic: (topic: string) => void;
+  readonly onRefresh: () => void;
 }
 
-export function KafkaTopicList({ topics, selectedTopic, onSelectTopic }: KafkaTopicListProps) {
+export function KafkaTopicList({ topics, selectedTopic, onSelectTopic, onRefresh }: KafkaTopicListProps) {
   const [filter, setFilter] = useState('');
 
   const filtered = filter
@@ -27,6 +28,9 @@ export function KafkaTopicList({ topics, selectedTopic, onSelectTopic }: KafkaTo
           onChange={handleFilterChange}
           placeholder="Filter topics..."
         />
+        <button className="btn-small" onClick={onRefresh} title="Refresh topic list">
+          Refresh
+        </button>
       </div>
       <div className="kafka-topic-list">
         {filtered.map((t) => (

@@ -18,6 +18,12 @@ export interface KafkaMessage {
   readonly headers: Record<string, string>;
 }
 
+export interface KafkaFetchResult {
+  readonly messages: readonly KafkaMessage[];
+  // 加入 group 后等满超时仍一条消息也没收到 (offset 之后暂无消息)
+  readonly timedOut: boolean;
+}
+
 export interface KafkaProduceResult {
   readonly partition: number;
   readonly offset?: string;

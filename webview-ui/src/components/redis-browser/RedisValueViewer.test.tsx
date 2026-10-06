@@ -77,7 +77,7 @@ describe('RedisValueViewer', () => {
   });
 
   it('list 类型路由到 RedisListEditor', () => {
-    const value: RedisValue = { type: 'list', value: ['a'], total: 1 };
+    const value: RedisValue = { type: 'list', value: ['a'], total: 1, start: 0 };
     render(<RedisValueViewer {...defaultProps} keyName="k" keyType="list" value={value} />);
     expect(screen.getByTestId('list-editor')).toBeInTheDocument();
   });
@@ -89,9 +89,19 @@ describe('RedisValueViewer', () => {
   });
 
   it('zset 类型路由到 RedisSortedSetEditor', () => {
-    const value: RedisValue = { type: 'zset', value: [{ member: 'm', score: 1 }], total: 1 };
+    const value: RedisValue = { type: 'zset', value: [{ member: 'm', score: 1 }], total: 1, start: 0 };
     render(<RedisValueViewer {...defaultProps} keyName="k" keyType="zset" value={value} />);
     expect(screen.getByTestId('zset-editor')).toBeInTheDocument();
+  });
+
+  it('不支持编辑的类型 (模块类型 / stream) 只读显示 TYPE 原名与 CLI 提示, 不给编辑器和 Save', () => {
+    const value: RedisValue = { type: 'unsupported', typeName: 'ReJSON-RL' };
+    render(<RedisValueViewer {...defaultProps} keyName="j" keyType="unknown" value={value} />);
+
+    expect(screen.getByText('ReJSON-RL')).toBeInTheDocument();
+    expect(screen.getByText(/read-only here\. Use the command bar/)).toBeInTheDocument();
+    expect(screen.queryByTestId('string-editor')).not.toBeInTheDocument();
+    expect(screen.queryByText('Save')).not.toBeInTheDocument();
   });
 
   it('key info 显示 keyName, keyType, TTL', () => {

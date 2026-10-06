@@ -20,18 +20,16 @@ export async function handleKafkaMessage(
     }
 
     case 'kafkaFetchMessages': {
-      const messages = await driver.fetchMessages(
-        message.topic,
-        message.partition,
-        message.offset,
-        message.limit
-      );
-      post({
-        type: 'kafkaMessageList',
-        topic: message.topic,
-        partition: message.partition,
-        messages,
-      });
+      await fetchAndPost(driver, post, message.topic, message.partition, message.offset, message.limit);
+      return true;
+    }
+
+    case 'kafkaFetchLatest': {
+      // 现取 high watermark: 打开 topic 时拿到的旧值看不到之后写入的消息; 顺带刷新 partition 下拉里的 offset
+      const partitions = await driver.getTopicPartitions(message.topic);
+      post({ type: 'kafkaPartitionList', topic: message.topic, partitions });
+      const high = Number(partitions.find((p) => p.partitionId === message.partition)?.offset ?? 0);
+      await fetchAndPost(driver, post, message.topic, message.partition, String(Math.max(0, high - message.limit)), message.limit);
       return true;
     }
 
@@ -41,18 +39,7 @@ export async function handleKafkaMessage(
         message.partition,
         message.timestamp
       );
-      const messages = await driver.fetchMessages(
-        message.topic,
-        message.partition,
-        offset,
-        message.limit
-      );
-      post({
-        type: 'kafkaMessageList',
-        topic: message.topic,
-        partition: message.partition,
-        messages,
-      });
+      await fetchAndPost(driver, post, message.topic, message.partition, offset, message.limit);
       return true;
     }
 
@@ -84,4 +71,16 @@ export async function handleKafkaMessage(
     default:
       return false;
   }
+}
+
+async function fetchAndPost(
+  driver: IKafkaDriver,
+  post: (msg: unknown) => void,
+  topic: string,
+  partition: number,
+  offset: string,
+  limit: number
+): Promise<void> {
+  const { messages, timedOut } = await driver.fetchMessages(topic, partition, offset, limit);
+  post({ type: 'kafkaMessageList', topic, partition, messages, timedOut });
 }

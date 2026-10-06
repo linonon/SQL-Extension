@@ -9,6 +9,7 @@ export interface RedisKeyInfo {
 export interface RedisScanResult {
   readonly cursor: string;
   readonly keys: readonly RedisKeyInfo[];
+  readonly scanned: number; // 本次请求扫过的 key 数估值 (SCAN 轮数 x COUNT)
 }
 
 export interface RedisDbInfo {
@@ -16,12 +17,15 @@ export interface RedisDbInfo {
   readonly keyCount: number;
 }
 
+// list / zset 的 start 是 value[0] 在 Redis 里的下标, value[i] 即 index start + i.
+// unsupported: 浏览器不能编辑的类型 (stream, 模块类型如 ReJSON-RL, key 已不存在为 'none'), typeName 为 TYPE 原样返回
 export type RedisValue =
   | { readonly type: 'string'; readonly value: string }
   | { readonly type: 'hash'; readonly value: Record<string, string>; readonly cursor: string }
-  | { readonly type: 'list'; readonly value: readonly string[]; readonly total: number }
+  | { readonly type: 'list'; readonly value: readonly string[]; readonly total: number; readonly start: number }
   | { readonly type: 'set'; readonly value: readonly string[]; readonly cursor: string }
-  | { readonly type: 'zset'; readonly value: readonly { readonly member: string; readonly score: number }[]; readonly total: number };
+  | { readonly type: 'zset'; readonly value: readonly { readonly member: string; readonly score: number }[]; readonly total: number; readonly start: number }
+  | { readonly type: 'unsupported'; readonly typeName: string };
 
 // 导出导入在 driver 层的原始形态, 全部是 Buffer, 不做 utf8 解码.
 // items: string 为 [value]; hash 为 [field, value, ...]; list / set 为成员; zset 为 [member, score, ...]

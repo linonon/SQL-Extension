@@ -8,6 +8,9 @@ const RAW_COMMAND_TIMEOUT_MS = 30_000;
 // 这些命令把连接切成推送模式, 不会回单个 reply
 const STREAMING_COMMANDS = new Set(['SUBSCRIBE', 'PSUBSCRIBE', 'SSUBSCRIBE', 'MONITOR']);
 const EXPORT_SCAN_COUNT = 1000;
+// key 浏览: 每轮 SCAN 的 COUNT, 一次请求最多扫过的 key 数; 大 keyspace 上的稀疏 pattern 由用户点 Continue 接着扫
+const BROWSE_SCAN_COUNT = 1000;
+const BROWSE_SCAN_BUDGET = 20_000;
 // 导入时单条 HSET / RPUSH / SADD / ZADD 的参数个数上限; 取偶数, 不拆散 field-value / score-member 对
 const WRITE_CHUNK = 1000;
 const WRITE_COMMANDS: Readonly<Record<string, string>> = {
@@ -21,6 +24,29 @@ function parseKeyType(raw: string): RedisKeyType {
     return normalized;
   }
   return 'unknown';
+}
+
+// pattern 含 glob 元字符 (* ? [ ]) 或转义才需要 SCAN, 否则就是精确 key 名
+function isGlobPattern(pattern: string): boolean {
+  return /[*?[\]\\]/.test(pattern);
+}
+
+// pipeline 批量取 TYPE + TTL; exec 返回 null 时 type 记 unknown, ttl 记 -1
+async function describeKeys(client: Redis, keys: readonly string[]): Promise<RedisKeyInfo[]> {
+  if (keys.length === 0) {
+    return [];
+  }
+  const pipeline = client.pipeline();
+  for (const key of keys) {
+    pipeline.type(key);
+    pipeline.ttl(key);
+  }
+  const results = await pipeline.exec();
+  return keys.map((key, i) => ({
+    key,
+    type: parseKeyType(String(results?.[i * 2]?.[1] ?? 'unknown')),
+    ttl: Number(results?.[i * 2 + 1]?.[1] ?? -1),
+  }));
 }
 
 // 跑完一整轮 SCAN / HSCAN / SSCAN, 收齐所有元素
@@ -117,32 +143,22 @@ export class RedisDriver implements IRedisDriver {
 
   async scan(db: number, pattern: string, cursor: string, count: number): Promise<RedisScanResult> {
     const client = await this.clientFor(db);
-    const [nextCursor, rawKeys] = await client.scan(
-      cursor, 'MATCH', pattern, 'COUNT', count
-    );
-
-    if (rawKeys.length === 0) {
-      return { cursor: nextCursor, keys: [] };
+    if (!isGlobPattern(pattern)) {
+      // 精确 key 名直接查, 不 SCAN; TTL -2 即 key 不存在
+      const keys = (await describeKeys(client, [pattern])).filter((k) => k.ttl !== -2);
+      return { cursor: '0', keys, scanned: 1 };
     }
-
-    // pipeline 批量获取 TYPE + TTL
-    const pipeline = client.pipeline();
-    for (const key of rawKeys) {
-      pipeline.type(key);
-      pipeline.ttl(key);
-    }
-    const results = await pipeline.exec();
-    if (!results) {
-      return { cursor: nextCursor, keys: rawKeys.map((key) => ({ key, type: 'unknown' as const, ttl: -1 })) };
-    }
-
-    const keys: RedisKeyInfo[] = rawKeys.map((key, i) => ({
-      key,
-      type: parseKeyType(String(results?.[i * 2]?.[1] ?? 'unknown')),
-      ttl: Number(results?.[i * 2 + 1]?.[1] ?? -1),
-    }));
-
-    return { cursor: nextCursor, keys };
+    const rawKeys = new Set<string>();
+    let next = cursor;
+    let scanned = 0;
+    do {
+      const [nextCursor, page] = await client.scan(next, 'MATCH', pattern, 'COUNT', BROWSE_SCAN_COUNT);
+      next = nextCursor;
+      scanned += BROWSE_SCAN_COUNT;
+      // SCAN 在 rehash 期间可能重复返回同一个 key, Set 去重
+      for (const key of page) { rawKeys.add(key); }
+    } while (next !== '0' && rawKeys.size < count && scanned < BROWSE_SCAN_BUDGET);
+    return { cursor: next, keys: await describeKeys(client, [...rawKeys]), scanned };
   }
 
   async getString(db: number, key: string): Promise<string | null> {
@@ -246,8 +262,8 @@ export class RedisDriver implements IRedisDriver {
     await (await this.clientFor(db)).del(key);
   }
 
-  async getKeyType(db: number, key: string): Promise<RedisKeyType> {
-    return parseKeyType(await (await this.clientFor(db)).type(key));
+  async getKeyType(db: number, key: string): Promise<string> {
+    return (await this.clientFor(db)).type(key);
   }
 
   async getTTL(db: number, key: string): Promise<number> {

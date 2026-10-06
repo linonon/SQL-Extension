@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { RedisLoadMore } from './RedisLoadMore';
 
 interface ZSetEntry {
   readonly member: string;
@@ -118,13 +119,7 @@ export function RedisSortedSetEditor({
           </div>
         );
       })}
-      {hasMore && (
-        <div className="redis-load-more">
-          <button className="secondary" onClick={onLoadMore}>
-            Load More
-          </button>
-        </div>
-      )}
+      {hasMore && <RedisLoadMore pendingEdits={dirtyEntries.length} onLoadMore={onLoadMore} />}
       {hasDirty && (
         <div className="batch-actions">
           <button onClick={handleSaveAll}>Save All ({dirtyEntries.length})</button>

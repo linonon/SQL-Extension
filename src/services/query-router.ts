@@ -330,7 +330,7 @@ async function routeKafka(
       const result = await driver.fetchMessages(
         params.topic, params.partition ?? 0, params.offset ?? '0', limit,
       );
-      return makeResult(result);
+      return makeResult(result.messages);
     }
     case 'produce': {
       if (!params.topic || params.value === undefined) {

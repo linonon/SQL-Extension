@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { RedisLoadMore } from './RedisLoadMore';
 
 interface RedisHashEditorProps {
   readonly value: Record<string, string>;
@@ -130,11 +131,7 @@ export function RedisHashEditor({ value, onBatchEdit, onDeleteField, hashDone, o
           </div>
         );
       })}
-      {!hashDone && (
-        <div className="redis-pagination">
-          <button onClick={onHashLoadMore}>Load More</button>
-        </div>
-      )}
+      {!hashDone && <RedisLoadMore pendingEdits={dirtyEntries.length} onLoadMore={onHashLoadMore} />}
       {hasDirty && (
         <div className="batch-actions">
           <button onClick={handleSaveAll}>Save All ({dirtyEntries.length})</button>

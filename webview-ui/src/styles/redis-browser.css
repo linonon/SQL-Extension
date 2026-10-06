@@ -187,6 +187,28 @@
   width: 100%;
 }
 
+.redis-load-more-confirm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.redis-load-more-confirm span {
+  flex: 1;
+  text-align: left;
+  font-size: 12px;
+}
+
+.redis-load-more-confirm button {
+  width: auto;
+}
+
+.redis-scan-progress {
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground);
+}
+
 /* Value viewer */
 .redis-value-header {
   display: flex;

@@ -41,7 +41,7 @@ export function activate(context: vscode.ExtensionContext): void {
         viewProvider.openDbBrowser(id, name, dt);
         break;
       case 'redis':
-        viewProvider.openRedisBrowser(id, 0);
+        viewProvider.openRedisBrowser(id);
         break;
       case 'kafka':
         viewProvider.openKafkaBrowser(id);

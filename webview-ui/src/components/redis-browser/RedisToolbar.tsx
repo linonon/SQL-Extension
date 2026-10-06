@@ -19,22 +19,13 @@ interface RedisToolbarProps {
   readonly onImport: () => void;
 }
 
-// 判断输入是否是 Redis command (而非 SCAN pattern)
-function isRedisCommand(text: string): boolean {
+// 单个 token 时只有这些无参命令按命令执行, 其余单 token 都当 key pattern (含精确 key 名)
+const NO_ARG_COMMANDS: ReadonlySet<string> = new Set(['PING', 'INFO', 'DBSIZE', 'TIME', 'LASTSAVE', 'ROLE']);
+
+// 判断输入是 Redis 命令还是 key pattern: 含空白即命令, 命令名不设白名单 (ZREVRANGE / HINCRBY / UNLINK 等原样执行)
+export function isRedisCommand(text: string): boolean {
   const trimmed = text.trim();
-  if (!trimmed) { return false; }
-  const firstWord = trimmed.split(/\s+/)[0].toUpperCase();
-  const commands = [
-    'GET', 'SET', 'DEL', 'MGET', 'MSET', 'APPEND', 'INCR', 'DECR', 'INCRBY', 'DECRBY',
-    'HGET', 'HSET', 'HDEL', 'HGETALL', 'HMGET', 'HMSET', 'HKEYS', 'HVALS', 'HLEN', 'HSCAN', 'HEXISTS',
-    'LRANGE', 'LPUSH', 'RPUSH', 'LPOP', 'RPOP', 'LLEN', 'LINDEX', 'LSET',
-    'SADD', 'SREM', 'SMEMBERS', 'SISMEMBER', 'SCARD', 'SSCAN',
-    'ZADD', 'ZREM', 'ZRANGE', 'ZRANGEBYSCORE', 'ZSCORE', 'ZCARD', 'ZCOUNT', 'ZSCAN',
-    'KEYS', 'SCAN', 'TYPE', 'TTL', 'PTTL', 'EXPIRE', 'PERSIST', 'EXISTS', 'RENAME',
-    'PING', 'INFO', 'DBSIZE', 'FLUSHDB', 'SELECT', 'CONFIG', 'CLIENT',
-    'XADD', 'XLEN', 'XRANGE', 'XREAD',
-  ];
-  return commands.includes(firstWord);
+  return /\s/.test(trimmed) || NO_ARG_COMMANDS.has(trimmed.toUpperCase());
 }
 
 export function RedisToolbar({

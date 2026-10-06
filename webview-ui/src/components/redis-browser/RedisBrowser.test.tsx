@@ -6,7 +6,7 @@ import type { ExtensionMessage } from '../../types/messages';
 
 vi.mock('./RedisToolbar', () => ({
   RedisToolbar: (props: any) => (
-    <div data-testid="redis-toolbar" data-db={props.database}>
+    <div data-testid="redis-toolbar" data-db={props.database} data-command={props.commandText}>
       <button data-testid="refresh" onClick={props.onRefresh}>Refresh</button>
       <button data-testid="search" onClick={() => props.onSearch('user:*')}>Search</button>
       <button data-testid="export" onClick={props.onExport}>Export</button>
@@ -16,7 +16,7 @@ vi.mock('./RedisToolbar', () => ({
 
 vi.mock('./RedisKeyList', () => ({
   RedisKeyList: (props: any) => (
-    <div data-testid="redis-key-list">
+    <div data-testid="redis-key-list" data-scanning={String(props.scanning)}>
       {props.keys.map((k: any) => (
         <div key={k.key} data-testid={`key-${k.key}`} onClick={() => props.onSelectKey(k.key)}>
           {k.key}
@@ -32,6 +32,7 @@ vi.mock('./RedisValueViewer', () => ({
     <div data-testid="redis-value-viewer" data-key={props.keyName} data-set-has-more={String(props.setHasMore)} data-value={JSON.stringify(props.value)}>
       {props.value && <span data-testid="value-type">{props.value.type}</span>}
       {props.setHasMore && <button data-testid="set-load-more" onClick={props.onSetLoadMore}>Set Load More</button>}
+      {props.listHasMore && <button data-testid="list-load-more" onClick={props.onListLoadMore}>List Load More</button>}
     </div>
   ),
 }));
@@ -64,7 +65,7 @@ describe('RedisBrowser', () => {
     render(<RedisBrowser connectionId="conn1" database={0} />);
 
     const msg: ExtensionMessage = {
-      type: 'redisScanResult',
+      type: 'redisScanResult', scanned: 1000,
       requestId: lastScanId(),
       keys: [{ key: 'k1', type: 'string', ttl: -1 }, { key: 'k2', type: 'hash', ttl: 300 }],
       cursor: '5',
@@ -79,7 +80,7 @@ describe('RedisBrowser', () => {
 
     // 发送重复 key, 不应该重复出现
     const msg2: ExtensionMessage = {
-      type: 'redisScanResult',
+      type: 'redisScanResult', scanned: 1000,
       requestId: lastScanId(),
       keys: [{ key: 'k1', type: 'string', ttl: -1 }, { key: 'k3', type: 'list', ttl: -1 }],
       cursor: '0',
@@ -97,7 +98,7 @@ describe('RedisBrowser', () => {
     render(<RedisBrowser connectionId="conn1" database={0} />);
 
     const msg1: ExtensionMessage = {
-      type: 'redisScanResult',
+      type: 'redisScanResult', scanned: 1000,
       requestId: lastScanId(),
       keys: [{ key: 'k1', type: 'string', ttl: -1 }],
       cursor: '5',
@@ -110,7 +111,7 @@ describe('RedisBrowser', () => {
     });
 
     const msg2: ExtensionMessage = {
-      type: 'redisScanResult',
+      type: 'redisScanResult', scanned: 1000,
       requestId: lastScanId(),
       keys: [],
       cursor: '0',
@@ -130,7 +131,7 @@ describe('RedisBrowser', () => {
 
     // 先加载 keys
     const scanMsg: ExtensionMessage = {
-      type: 'redisScanResult',
+      type: 'redisScanResult', scanned: 1000,
       requestId: scanId,
       keys: [{ key: 'mykey', type: 'string', ttl: -1 }],
       cursor: '0',
@@ -154,7 +155,7 @@ describe('RedisBrowser', () => {
 
     // 先选中 key
     const scanMsg: ExtensionMessage = {
-      type: 'redisScanResult',
+      type: 'redisScanResult', scanned: 1000,
       requestId: lastScanId(),
       keys: [{ key: 'k1', type: 'string', ttl: -1 }],
       cursor: '0',
@@ -184,7 +185,7 @@ describe('RedisBrowser', () => {
 
     // 加载 key
     const scanMsg: ExtensionMessage = {
-      type: 'redisScanResult',
+      type: 'redisScanResult', scanned: 1000,
       requestId: lastScanId(),
       keys: [{ key: 's1', type: 'set', ttl: -1 }],
       cursor: '0',
@@ -227,7 +228,7 @@ describe('RedisBrowser', () => {
     render(<RedisBrowser connectionId="conn1" database={0} />);
 
     const scanMsg: ExtensionMessage = {
-      type: 'redisScanResult',
+      type: 'redisScanResult', scanned: 1000,
       requestId: lastScanId(),
       keys: [{ key: 's1', type: 'set', ttl: -1 }],
       cursor: '0',
@@ -275,10 +276,10 @@ describe('RedisBrowser', () => {
     const currentId = lastScanId();
     expect(currentId).not.toBe(staleId);
     window.dispatchEvent(new MessageEvent('message', { data: {
-      type: 'redisScanResult', requestId: staleId, keys: [{ key: 'old', type: 'string', ttl: -1 }], cursor: '9', done: false,
+      type: 'redisScanResult', scanned: 1000, requestId: staleId, keys: [{ key: 'old', type: 'string', ttl: -1 }], cursor: '9', done: false,
     } satisfies ExtensionMessage }));
     window.dispatchEvent(new MessageEvent('message', { data: {
-      type: 'redisScanResult', requestId: currentId, keys: [{ key: 'cur', type: 'string', ttl: -1 }], cursor: '0', done: true,
+      type: 'redisScanResult', scanned: 1000, requestId: currentId, keys: [{ key: 'cur', type: 'string', ttl: -1 }], cursor: '0', done: true,
     } satisfies ExtensionMessage }));
     await waitFor(() => expect(screen.getByTestId('key-cur')).toBeInTheDocument());
     expect(screen.queryByTestId('key-old')).not.toBeInTheDocument();
@@ -288,7 +289,7 @@ describe('RedisBrowser', () => {
   it('选中 key 已换: 旧 key 的取值回执与 hash 分页回执都丢弃', async () => {
     render(<RedisBrowser connectionId="conn1" database={0} />);
     window.dispatchEvent(new MessageEvent('message', { data: {
-      type: 'redisScanResult', requestId: lastScanId(), cursor: '0', done: true,
+      type: 'redisScanResult', scanned: 1000, requestId: lastScanId(), cursor: '0', done: true,
       keys: [{ key: 'a', type: 'string', ttl: -1 }, { key: 'b', type: 'hash', ttl: -1 }],
     } satisfies ExtensionMessage }));
     await waitFor(() => screen.getByTestId('key-a').click());
@@ -317,10 +318,26 @@ describe('RedisBrowser', () => {
     expect(screen.getByTestId('redis-value-viewer').getAttribute('data-value')).not.toContain('leaked');
   });
 
+  it('换 key 后回执未到前不显示上一个 key 的值', async () => {
+    render(<RedisBrowser connectionId="conn1" database={0} />);
+    window.dispatchEvent(new MessageEvent('message', { data: {
+      type: 'redisScanResult', scanned: 1000, requestId: lastScanId(), cursor: '0', done: true,
+      keys: [{ key: 'a', type: 'string', ttl: -1 }, { key: 'b', type: 'string', ttl: -1 }],
+    } satisfies ExtensionMessage }));
+    await waitFor(() => screen.getByTestId('key-a').click());
+    window.dispatchEvent(new MessageEvent('message', { data: {
+      type: 'redisValueResult', key: 'a', database: 0, keyType: 'string', value: { type: 'string', value: 'A' }, ttl: -1,
+    } satisfies ExtensionMessage }));
+    await waitFor(() => expect(screen.getByTestId('value-type')).toBeInTheDocument());
+
+    screen.getByTestId('key-b').click();
+    await waitFor(() => expect(screen.queryByTestId('value-type')).not.toBeInTheDocument());
+  });
+
   it('Load More 未回就换 key: 新 key 首屏替换而非追加到旧 key 的成员上', async () => {
     render(<RedisBrowser connectionId="conn1" database={0} />);
     window.dispatchEvent(new MessageEvent('message', { data: {
-      type: 'redisScanResult', requestId: lastScanId(), cursor: '0', done: true,
+      type: 'redisScanResult', scanned: 1000, requestId: lastScanId(), cursor: '0', done: true,
       keys: [{ key: 'sa', type: 'set', ttl: -1 }, { key: 'sb', type: 'set', ttl: -1 }],
     } satisfies ExtensionMessage }));
     await waitFor(() => screen.getByTestId('key-sa').click());
@@ -353,5 +370,72 @@ describe('RedisBrowser', () => {
     ));
     fireEvent.click(screen.getByTestId('export'));
     expect(mockPostMessage).toHaveBeenCalledWith({ type: 'redisExportPattern', database: 0, pattern: 'user:*' });
+  });
+
+  it('host 回笼统 error (连接已断开) 时结束 Scanning 并提示', async () => {
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
+    render(<RedisBrowser connectionId="conn1" database={0} />);
+    expect(screen.getByTestId('redis-key-list').getAttribute('data-scanning')).toBe('true');
+
+    window.dispatchEvent(new MessageEvent('message', { data: { type: 'error', message: 'No active connection: conn1' } }));
+    await waitFor(() => expect(screen.getByTestId('redis-key-list').getAttribute('data-scanning')).toBe('false'));
+    expect(alertSpy).toHaveBeenCalledWith('Operation failed: No active connection: conn1');
+    alertSpy.mockRestore();
+  });
+
+  it('一次搜索只发一遍 SCAN', async () => {
+    render(<RedisBrowser connectionId="conn1" database={0} />);
+    mockPostMessage.mockClear();
+    fireEvent.click(screen.getByTestId('search'));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockPostMessage.mock.calls.filter(([m]) => m.type === 'redisScan')).toHaveLength(1);
+  });
+
+  it('选中集合类 key 时预填有界命令', async () => {
+    render(<RedisBrowser connectionId="conn1" database={0} />);
+    window.dispatchEvent(new MessageEvent('message', { data: {
+      type: 'redisScanResult', scanned: 1000, requestId: lastScanId(), cursor: '0', done: true,
+      keys: [{ key: 'l', type: 'list', ttl: -1 }, { key: 's', type: 'set', ttl: -1 }, { key: 'z', type: 'zset', ttl: -1 }],
+    } satisfies ExtensionMessage }));
+    const command = () => screen.getByTestId('redis-toolbar').getAttribute('data-command');
+    await waitFor(() => screen.getByTestId('key-l').click());
+    expect(command()).toBe('LRANGE l 0 99');
+    screen.getByTestId('key-s').click();
+    await waitFor(() => expect(command()).toBe('SSCAN s 0 COUNT 100'));
+    screen.getByTestId('key-z').click();
+    await waitFor(() => expect(command()).toBe('ZRANGE z 0 99 WITHSCORES'));
+  });
+
+  it('list 写成功后重拉首屏, 下一次 Load More 从已加载末尾接着取; 接不上末尾的旧页丢弃', async () => {
+    const page = (start: number, n: number) => Array.from({ length: n }, (_, i) => `v${start + i}`);
+    const listResult = (start: number, n: number): ExtensionMessage => ({
+      type: 'redisValueResult', key: 'l', database: 0, keyType: 'list', ttl: -1,
+      value: { type: 'list', value: page(start, n), total: 250, start },
+    });
+    const loaded = () => JSON.parse(screen.getByTestId('redis-value-viewer').getAttribute('data-value')!).value as string[];
+    const send = (data: ExtensionMessage) => window.dispatchEvent(new MessageEvent('message', { data }));
+
+    render(<RedisBrowser connectionId="conn1" database={0} />);
+    send({ type: 'redisScanResult', scanned: 1000, requestId: lastScanId(), cursor: '0', done: true, keys: [{ key: 'l', type: 'list', ttl: -1 }] });
+    await waitFor(() => screen.getByTestId('key-l').click());
+    send(listResult(0, 100));
+    await waitFor(() => screen.getByTestId('list-load-more').click());
+    expect(mockPostMessage).toHaveBeenLastCalledWith({ type: 'redisGetValue', key: 'l', database: 0, listStart: 100 });
+    send(listResult(100, 100));
+    await waitFor(() => expect(loaded()).toHaveLength(200));
+
+    // 写成功: 重拉首屏 (不带 listStart), 已加载的两页被首屏替换
+    send({ type: 'redisOperationResult', success: true });
+    await waitFor(() => expect(mockPostMessage).toHaveBeenLastCalledWith({ type: 'redisGetValue', key: 'l', database: 0 }));
+    send(listResult(0, 100));
+    await waitFor(() => expect(loaded()).toHaveLength(100));
+
+    // 重拉前在途的第三页晚到: 接不上当前末尾, 丢弃
+    send(listResult(200, 50));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(loaded()).toHaveLength(100);
+
+    screen.getByTestId('list-load-more').click();
+    expect(mockPostMessage).toHaveBeenLastCalledWith({ type: 'redisGetValue', key: 'l', database: 0, listStart: 100 });
   });
 });

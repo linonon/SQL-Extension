@@ -233,6 +233,65 @@ describe('RedisDriver', () => {
         { key: 'key1', type: 'unknown', ttl: -1 },
       ]);
     });
+
+    it('稀疏 pattern: 循环 SCAN COUNT 1000 直到凑够 count 或 cursor 回到 0, 重复 key 去重', async () => {
+      await driver.connect(TEST_CONFIG);
+      mockClient.scan.mockReset();
+      mockClient.scan
+        .mockResolvedValueOnce(['7', []])
+        .mockResolvedValueOnce(['9', ['a']])
+        .mockResolvedValueOnce(['0', ['a', 'b']]);
+      mockClient.pipeline.mockReturnValue({
+        type: vi.fn().mockReturnThis(),
+        ttl: vi.fn().mockReturnThis(),
+        exec: vi.fn().mockResolvedValue([[null, 'string'], [null, -1], [null, 'hash'], [null, 5]]),
+      });
+
+      const result = await driver.scan(0, 'player:10086*', '0', 100);
+
+      expect(mockClient.scan).toHaveBeenCalledTimes(3);
+      expect(mockClient.scan).toHaveBeenNthCalledWith(2, '7', 'MATCH', 'player:10086*', 'COUNT', 1000);
+      expect(result).toEqual({
+        cursor: '0',
+        scanned: 3000,
+        keys: [{ key: 'a', type: 'string', ttl: -1 }, { key: 'b', type: 'hash', ttl: 5 }],
+      });
+    });
+
+    it('一次请求最多扫约 2 万个 key, 没匹配也带 cursor 返回让用户接着扫', async () => {
+      await driver.connect(TEST_CONFIG);
+      mockClient.scan.mockReset();
+      mockClient.scan.mockResolvedValue(['42', []]);
+
+      const result = await driver.scan(0, 'nope:*', '0', 100);
+
+      expect(mockClient.scan).toHaveBeenCalledTimes(20);
+      expect(result).toEqual({ cursor: '42', keys: [], scanned: 20000 });
+    });
+
+    it('无 glob 元字符的精确 key 名直接查 TYPE + TTL, 不 SCAN; 不存在返回空', async () => {
+      await driver.connect(TEST_CONFIG);
+      mockClient.scan.mockReset();
+      const pipeline = {
+        type: vi.fn().mockReturnThis(),
+        ttl: vi.fn().mockReturnThis(),
+        exec: vi.fn().mockResolvedValue([[null, 'zset'], [null, 60]]),
+      };
+      mockClient.pipeline.mockReturnValue(pipeline);
+
+      const hit = await driver.scan(0, 'rank:1', '0', 100);
+      expect(pipeline.type).toHaveBeenCalledWith('rank:1');
+      expect(hit).toEqual({ cursor: '0', keys: [{ key: 'rank:1', type: 'zset', ttl: 60 }], scanned: 1 });
+
+      pipeline.exec.mockResolvedValue([[null, 'none'], [null, -2]]);
+      expect((await driver.scan(0, 'rank:2', '0', 100)).keys).toEqual([]);
+      expect(mockClient.scan).not.toHaveBeenCalled();
+
+      // 转义也算 pattern, 走 SCAN
+      mockClient.scan.mockResolvedValue(['0', []]);
+      await driver.scan(0, 'a\\*b', '0', 100);
+      expect(mockClient.scan).toHaveBeenCalled();
+    });
   });
 
   describe('getString', () => {
@@ -411,6 +470,11 @@ describe('RedisDriver', () => {
       mockClient.type.mockResolvedValue('hash');
       const t = await driver.getKeyType(0, 'k');
       expect(t).toBe('hash');
+    });
+
+    it('getKeyType 原样返回模块类型名', async () => {
+      mockClient.type.mockResolvedValue('ReJSON-RL');
+      expect(await driver.getKeyType(0, 'k')).toBe('ReJSON-RL');
     });
 
     it('getTTL 返回秒数', async () => {
