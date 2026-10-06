@@ -7,7 +7,7 @@ const DB_EXECUTE_DESCRIPTION = [
   'Execute write operations and DDL. SQL: one statement per call, each on its own autocommitted session; USE / SET / BEGIN do not carry over to the next call (multi-statement transactions are not supported). Query format by database type:',
   '- MySQL/PostgreSQL: SQL string, e.g. "INSERT INTO users (name) VALUES (\'foo\')", "DROP TABLE ..."',
   '- Redis: command string, e.g. "SET key val EX 60", "DEL key1", "FLUSHDB"',
-  '- MongoDB: JSON, e.g. {"collection":"users","method":"insertOne","document":{"name":"foo"}}',
+  '- MongoDB: JSON, e.g. {"collection":"users","method":"insertOne","document":{"name":"foo"}} (filter / update / document accept EJSON such as {"$oid":"..."}, {"$date":"..."}, {"$numberLong":"..."})',
   '- Kafka: JSON, e.g. {"action":"produce","topic":"t1","key":"k","value":"v"}',
   '- RabbitMQ: not supported yet',
 ].join('\n');

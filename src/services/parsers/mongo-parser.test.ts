@@ -30,6 +30,14 @@ describe('parseMongoQuery', () => {
   it('should throw on unknown method', () => {
     expect(() => parseMongoQuery('{"collection":"users","method":"drop"}')).toThrow();
   });
+  it('find 透传 sort / skip / limit', () => {
+    const r = parseMongoQuery('{"collection":"u","method":"find","filter":{},"sort":{"at":-1},"skip":10,"limit":5}');
+    expect([r.sort, r.skip, r.limit]).toEqual([{ at: -1 }, 10, 5]);
+  });
+  it('method 不认的字段报错, 不静默忽略', () => {
+    expect(() => parseMongoQuery('{"collection":"u","method":"find","options":{"sort":{"a":1}}}')).toThrow(/Unknown field\(s\) for find: options/);
+    expect(() => parseMongoQuery('{"collection":"u","method":"countDocuments","filter":{},"sort":{"a":1}}')).toThrow(/sort/);
+  });
 });
 
 describe('method lists', () => {

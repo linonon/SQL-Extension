@@ -1,7 +1,7 @@
 import {
   BSON, MongoClient, ObjectId,
   type AggregateOptions, type CollectionInfo, type CountDocumentsOptions, type CreateIndexesOptions,
-  type Document, type FindOptions, type IndexSpecification, type Sort,
+  type Document, type EstimatedDocumentCountOptions, type FindOptions, type IndexSpecification, type Sort,
 } from 'mongodb';
 import type { ConnectionConfig } from '../types/connection.js';
 import type { ColumnInfo, TableInfo } from '../types/query.js';
@@ -95,6 +95,7 @@ export class MongoDriver {
   }
 
   // explain 浏览查询的 find (filter + sort 决定索引选择), 返回精简摘要供 UI 展示索引使用情况.
+  // 只取 queryPlanner (选计划不执行): executionStats 会把查询跑满, 大集合上就是一次全表扫描
   async explainFind(
     database: string,
     collection: string,
@@ -107,7 +108,7 @@ export class MongoDriver {
     if (sort && Object.keys(sort).length > 0) {
       cursor.sort(convertEjsonToBson(sort) as Sort);
     }
-    const raw = await cursor.explain('executionStats');
+    const raw = await cursor.explain('queryPlanner');
     return summarizeExplain(raw);
   }
 
@@ -208,6 +209,11 @@ export class MongoDriver {
 
   count(database: string, collection: string, filter: Document, options: CountDocumentsOptions = {}): Promise<number> {
     return this.coll(database, collection).countDocuments(filter, options);
+  }
+
+  // 读集合元数据的近似总数, 不扫文档
+  estimatedCount(database: string, collection: string, options: EstimatedDocumentCountOptions = {}): Promise<number> {
+    return this.coll(database, collection).estimatedDocumentCount(options);
   }
 
   // 按库内原 BSON 类型取单个文档 (promoteValues:false: Int32 / Long / Double 不转成 JS number), 供写回时沿用类型

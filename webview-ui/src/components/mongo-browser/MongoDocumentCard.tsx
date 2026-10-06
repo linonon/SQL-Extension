@@ -9,8 +9,8 @@ import { convertTags } from './mongo-field-editor';
 interface MongoDocumentCardProps {
   readonly doc: Record<string, unknown>;
   readonly view: Exclude<MongoView, 'table'>;
-  // 文档由 projection 查出, 不完整: 禁用 Edit / Clone (编辑器看不到未投影字段)
-  readonly projected?: boolean;
+  // projection 不是顶层字段 0/1 取舍 (子路径 / 表达式), 写回会丢字段或写错值: 禁用 Edit / Clone
+  readonly readOnly?: boolean;
   readonly editing?: boolean;
   readonly fieldNames?: readonly string[];
   readonly onEdit: (doc: Record<string, unknown>) => void;
@@ -28,7 +28,7 @@ interface MongoDocumentCardProps {
 export function MongoDocumentCard({
   doc,
   view,
-  projected,
+  readOnly,
   editing,
   fieldNames,
   onEdit,
@@ -90,7 +90,7 @@ export function MongoDocumentCard({
   // 投影排除 _id 时无法定位文档, 增删改禁用 (Copy 仍可用)
   const hasId = doc._id != null;
   const noIdTitle = hasId ? undefined : 'projection 排除了 _id, 无法定位该文档进行增删改';
-  const writeBlockedTitle = noIdTitle ?? (projected ? 'Clear the projection to edit' : undefined);
+  const writeBlockedTitle = noIdTitle ?? (readOnly ? 'Only a projection of top-level fields with 0/1 values can be edited' : undefined);
 
   return (
     <div className="mongo-doc-card">

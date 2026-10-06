@@ -293,25 +293,18 @@ describe('MongoDriver', () => {
       expect(() => driver.find('db', 'users', {}, { limit: 1 })).toThrow('not connected');
     });
 
-    it('explainFind 返回精简 explain 摘要 (全表扫描)', async () => {
-      mockCollection.find.mockReturnValue({
-        sort: vi.fn().mockReturnThis(),
-        explain: vi.fn().mockResolvedValue({
-          queryPlanner: { winningPlan: { stage: 'COLLSCAN' } },
-          executionStats: { nReturned: 1, totalDocsExamined: 50, totalKeysExamined: 0, executionTimeMillis: 3 },
-        }),
-      });
+    it('explainFind 只取 queryPlanner (不执行查询), 返回精简摘要', async () => {
+      const explain = vi.fn().mockResolvedValue({ queryPlanner: { winningPlan: { stage: 'COLLSCAN' } } });
+      mockCollection.find.mockReturnValue({ sort: vi.fn().mockReturnThis(), explain });
 
       const s = await (driver as any).explainFind('mydb', 'users', { age: { $gt: 18 } });
-      expect(s.isCollScan).toBe(true);
-      expect(s.docsExamined).toBe(50);
-      expect(s.nReturned).toBe(1);
+      expect(explain).toHaveBeenCalledWith('queryPlanner');
+      expect(s).toEqual({ stage: 'COLLSCAN', indexName: undefined, isCollScan: true });
     });
 
     it('explainFind 带 EJSON _id filter 还原类型后 explain', async () => {
       const explain = vi.fn().mockResolvedValue({
         queryPlanner: { winningPlan: { stage: 'IDHACK' } },
-        executionStats: { nReturned: 1, totalDocsExamined: 1, totalKeysExamined: 1, executionTimeMillis: 0 },
       });
       mockCollection.find.mockReturnValue({ sort: vi.fn().mockReturnThis(), explain });
 
@@ -324,7 +317,7 @@ describe('MongoDriver', () => {
       const sortFn = vi.fn().mockReturnThis();
       mockCollection.find.mockReturnValue({
         sort: sortFn,
-        explain: vi.fn().mockResolvedValue({ queryPlanner: { winningPlan: { stage: 'COLLSCAN' } }, executionStats: {} }),
+        explain: vi.fn().mockResolvedValue({ queryPlanner: { winningPlan: { stage: 'COLLSCAN' } } }),
       });
       await (driver as any).explainFind('mydb', 'users', { a: 1 }, { a: -1 });
       expect(sortFn).toHaveBeenCalledWith({ a: -1 });

@@ -3,6 +3,7 @@ import type { IRedisDriver } from '../types/redis-driver.js';
 import type { IKafkaDriver } from '../types/kafka-driver.js';
 import type { IRabbitMQDriver } from '../types/rabbitmq-driver.js';
 import type { QueryResult } from '../types/query.js';
+import { BSON, type Document, type Sort } from 'mongodb';
 import { userFilter, type MongoDriver } from '../drivers/mongo-driver.js';
 import { convertEjsonToBson } from '../utils/mongo-shell-to-json.js';
 import { ErrorCode } from './utils.js';
@@ -234,8 +235,8 @@ async function routeMongo(
 
   const mongo = drivers.getMongoDriver(connectionId);
   const { collection } = params;
-  // db_read: 行数上限与服务端超时; db_execute 不加
-  const limit = mode === 'read' ? capLimit(params.limit) : undefined;
+  // db_read: 行数上限与服务端超时; db_execute 按调用方给的 limit, 不加超时
+  const limit = mode === 'read' ? capLimit(params.limit) : params.limit;
   const maxTimeMS = mode === 'read' ? READ_TIMEOUT_MS : undefined;
   const filter = () => userFilter(params.filter);
   const ejson = <T>(v: T): T => convertEjsonToBson(v) as T;
@@ -243,11 +244,13 @@ async function routeMongo(
   const run = async (): Promise<ToolResult> => {
     switch (params.method) {
       case 'find':
-        return docsResult(await mongo.find(database, collection, filter(), { projection: params.projection, limit: limit ?? 1000, maxTimeMS }));
+        return docsResult(await mongo.find(database, collection, filter(), {
+          projection: params.projection, sort: params.sort as Sort | undefined, skip: params.skip, limit: limit ?? 1000, maxTimeMS,
+        }));
       case 'aggregate': {
-        // 行数上限下推到服务端, 避免先把整个结果集拉进内存
+        // db_read 的行数上限下推到服务端, 避免先把整个结果集拉进内存; db_execute 不追加 ($out / $merge 必须是最后一个 stage)
         const pipeline = ejson(params.pipeline ?? []);
-        return docsResult(await mongo.aggregate(database, collection, limit ? [...pipeline, { $limit: limit }] : pipeline, { maxTimeMS }));
+        return docsResult(await mongo.aggregate(database, collection, mode === 'read' && limit ? [...pipeline, { $limit: limit }] : pipeline, { maxTimeMS }));
       }
       case 'countDocuments':
         return docsResult([{ count: await mongo.count(database, collection, filter(), { maxTimeMS }) }]);
@@ -277,8 +280,23 @@ async function routeMongo(
   return mode === 'read' ? run().catch(rethrowReadTimeout) : run();
 }
 
-function docsResult(docs: Record<string, unknown>[]): ToolResult {
-  return makeResult({ rows: docs, rowCount: docs.length });
+// 文档按 relaxed EJSON 输出: ObjectId / Date 带 $oid / $date, Int32 / Double / 安全范围内的 Long 是裸 number.
+// relaxed 会把超出 2^53 的 Long 舍入成 number, 这类值先换成 {$numberLong} 保住原值
+function docsResult(docs: Document[]): ToolResult {
+  return makeResult({ rows: BSON.EJSON.serialize(docs.map(keepUnsafeLongs), { relaxed: true }), rowCount: docs.length });
+}
+
+function keepUnsafeLongs(value: unknown): unknown {
+  if (Array.isArray(value)) { return value.map(keepUnsafeLongs); }
+  if (value === null || typeof value !== 'object') { return value; }
+  if ((value as { _bsontype?: string })._bsontype === 'Long') {
+    const s = String(value);
+    return Number.isSafeInteger(Number(s)) ? value : { $numberLong: s };
+  }
+  // 其余 BSON 实例 / Date / RegExp 原样交给 EJSON, 只下钻普通子文档
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) { return value; }
+  return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, keepUnsafeLongs(v)]));
 }
 
 async function routeKafka(

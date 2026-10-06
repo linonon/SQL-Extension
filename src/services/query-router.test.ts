@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // db_read / db_execute 在扩展侧的校验: sql-validator 与 routeByDriver
 
-import { ObjectId } from 'mongodb';
+import { Long, ObjectId } from 'mongodb';
 import { isReadonlySQL, enforceLimit } from './sql-validator.js';
 
 describe('query tool - SQL validation integration', () => {
@@ -131,7 +131,7 @@ describe('routeByDriver Mongo', () => {
   it('db_read 给 find 传行数上限与 maxTimeMS, 超时报可操作提示; db_execute 不加', async () => {
     const { mongo, src } = mongoSource();
     await routeByDriver('read', 'mongodb', 'c', '{"collection":"2024日志","method":"find","filter":{}}', 'db', src);
-    expect(mongo.find).toHaveBeenLastCalledWith('db', '2024日志', {}, { projection: undefined, limit: 500, maxTimeMS: 30000 });
+    expect(mongo.find).toHaveBeenLastCalledWith('db', '2024日志', {}, { projection: undefined, sort: undefined, skip: undefined, limit: 500, maxTimeMS: 30000 });
     const r = await routeByDriver('execute', 'mongodb', 'c', '{"collection":"u","method":"deleteOne","filter":{"a":1}}', 'db', src);
     expect(mongo.deleteOne).toHaveBeenLastCalledWith('db', 'u', { a: 1 });
     expect(JSON.parse(r.content[0].text)).toEqual({ affectedRows: 1 });
@@ -139,6 +139,26 @@ describe('routeByDriver Mongo', () => {
     mongo.count.mockRejectedValueOnce(Object.assign(new Error('operation exceeded time limit'), { code: 50 }));
     await expect(routeByDriver('read', 'mongodb', 'c', '{"collection":"u","method":"countDocuments"}', 'db', src))
       .rejects.toThrow(/exceeded the 30s read timeout/);
+  });
+
+  it('find 透传 sort / skip, limit 仍受上限', async () => {
+    const { mongo, src } = mongoSource();
+    await routeByDriver('read', 'mongodb', 'c', '{"collection":"u","method":"find","filter":{},"sort":{"at":-1},"skip":40,"limit":9999}', 'db', src);
+    expect(mongo.find).toHaveBeenLastCalledWith('db', 'u', {}, { projection: undefined, sort: { at: -1 }, skip: 40, limit: 500, maxTimeMS: 30000 });
+  });
+
+  it('结果按 relaxed EJSON 输出: ObjectId / Date 带标记, 大 Long 不被舍入也不是 {high, low}', async () => {
+    const { mongo, src } = mongoSource();
+    const oid = 'aabbccddeeff001122334455';
+    mongo.find.mockResolvedValue([{
+      _id: new ObjectId(oid), at: new Date('2024-01-01T00:00:00Z'), n: 5,
+      big: Long.fromString('9007199254740993'), nested: { ids: [Long.fromString('-9007199254740993')] },
+    }]);
+    const r = await routeByDriver('read', 'mongodb', 'c', '{"collection":"u","method":"find"}', 'db', src);
+    expect(JSON.parse(r.content[0].text).rows).toEqual([{
+      _id: { $oid: oid }, at: { $date: '2024-01-01T00:00:00Z' }, n: 5,
+      big: { $numberLong: '9007199254740993' }, nested: { ids: [{ $numberLong: '-9007199254740993' }] },
+    }]);
   });
 
   it('update 文档与 aggregate pipeline 里的 EJSON 标记还原成 BSON 再交给 driver', async () => {

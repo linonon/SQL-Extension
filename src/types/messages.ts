@@ -36,10 +36,6 @@ export interface UpdateConnectionConfig extends SaveConnectionConfig {
 export interface MongoExplainSummary {
   readonly stage: string;
   readonly indexName?: string;
-  readonly docsExamined: number;
-  readonly keysExamined: number;
-  readonly nReturned: number;
-  readonly executionTimeMillis: number;
   readonly isCollScan: boolean;
 }
 
@@ -86,7 +82,9 @@ export type ExtensionMessage =
   | { type: 'kafkaPartitionList'; topic: string; partitions: readonly KafkaPartitionInfo[] }
   | { type: 'kafkaMessageList'; topic: string; partition: number; messages: readonly KafkaMessage[] }
   | { type: 'kafkaProduceResult'; success: boolean; partition?: number; offset?: string; error?: string }
-  | { type: 'mongoDocumentList'; requestId: number; columns: readonly ColumnInfo[]; rows: readonly Record<string, unknown>[]; total: number; error?: string }
+  | { type: 'mongoDocumentList'; requestId: number; columns: readonly ColumnInfo[]; rows: readonly Record<string, unknown>[]; error?: string }
+  // mongoFindDocuments 带 count 时另发: total 为 null 表示计数失败或超时 (总数未知)
+  | { type: 'mongoDocumentCount'; requestId: number; total: number | null }
   | { type: 'mongoAllCollectionList'; collections: readonly { readonly database: string; readonly name: string; readonly count: number }[] }
   | { type: 'mongoOperationResult'; success: boolean; error?: string; affectedRows?: number; message?: string }
   | { type: 'mongoExportResult'; success: boolean; count?: number; error?: string }
@@ -148,7 +146,7 @@ export type WebviewMessage =
   | { type: 'kafkaFetchMessages'; topic: string; partition: number; offset: string; limit: number }
   | { type: 'kafkaFetchByTimestamp'; topic: string; partition: number; timestamp: number; limit: number }
   | { type: 'kafkaProduceMessage'; topic: string; key: string | null; value: string; headers: Record<string, string>; partition?: number }
-  | { type: 'mongoFindDocuments'; requestId: number; database: string; collection: string; filter: string; sort: string; projection?: string; skip: number; limit: number }
+  | { type: 'mongoFindDocuments'; requestId: number; database: string; collection: string; filter: string; sort: string; projection?: string; skip: number; limit: number; count: boolean }
   | { type: 'mongoListAllCollections' }
   | { type: 'mongoInsertDocument'; database: string; collection: string; document: Record<string, unknown> }
   // 编辑保存 / Clone: original 是编辑器打开时的文档, document 是编辑结果, 宿主按 path 对比后只写改动.

@@ -6,8 +6,8 @@ import type { MongoView } from './ViewToggle';
 interface MongoDocumentListProps {
   readonly rows: readonly Record<string, unknown>[];
   readonly view: Exclude<MongoView, 'table'>;
-  // rows 由 projection 查出: 禁用 Edit / Clone
-  readonly projected?: boolean;
+  // projection 不是顶层字段 0/1 取舍 (子路径 / 表达式), 写回会丢字段或写错值: 禁用 Edit / Clone
+  readonly readOnly?: boolean;
   readonly fieldNames?: readonly string[];
   // 正在 in-card 编辑的现存文档 _id (idToShell 形式); null 表示无
   readonly editingId?: string | null;
@@ -26,7 +26,7 @@ interface MongoDocumentListProps {
 export function MongoDocumentList({
   rows,
   view,
-  projected,
+  readOnly,
   fieldNames,
   editingId,
   composing,
@@ -67,10 +67,10 @@ export function MongoDocumentList({
         const isEditing = editingId != null && rowId === editingId;
         return (
           <MongoDocumentCard
-            key={String(row._id ?? idx)}
+            key={rowId || idx}
             doc={row}
             view={view}
-            projected={projected}
+            readOnly={readOnly}
             editing={isEditing}
             fieldNames={fieldNames}
             onEdit={onEdit}

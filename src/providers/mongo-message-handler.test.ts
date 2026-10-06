@@ -16,6 +16,7 @@ function mockMongo() {
     listTables: vi.fn().mockResolvedValue([]),
     findDocumentsForBrowser: vi.fn().mockResolvedValue({ rows: [], columns: [] }),
     count: vi.fn().mockResolvedValue(0),
+    estimatedCount: vi.fn().mockResolvedValue(0),
     explainFind: vi.fn(),
     findOneTyped: vi.fn().mockResolvedValue(null),
     insertOne: vi.fn().mockResolvedValue(undefined),
@@ -57,25 +58,55 @@ describe('handleMongoMessage', () => {
   });
 
   describe('mongoFindDocuments', () => {
-    const find = { type: 'mongoFindDocuments', requestId: 3, database: 'db', sort: '', projection: '', skip: 0, limit: 20 };
+    const find = { type: 'mongoFindDocuments', requestId: 3, database: 'db', sort: '', projection: '', skip: 0, limit: 20, count: true };
 
-    it('集合名与 filter 作为数据传给 driver: 数字开头 / 中文集合名也能浏览', async () => {
+    it('集合名与 filter 作为数据传给 driver: 数字开头 / 中文集合名也能浏览; 总数另发一条回执', async () => {
       mongo.findDocumentsForBrowser.mockResolvedValue({ rows: [{ _id: 'x' }], columns: [] });
       mongo.count.mockResolvedValue(7);
       await send({ ...find, collection: '2024日志', filter: `{"_id": "${OID}", "uid": 9007199254740993}` });
       expect(mongo.findDocumentsForBrowser).toHaveBeenCalledWith('db', '2024日志', expect.any(Array));
-      const [, coll, filter] = mongo.count.mock.calls[0];
+      const [, coll, filter, options] = mongo.count.mock.calls[0];
       expect(coll).toBe('2024日志');
+      expect(options).toEqual({ maxTimeMS: 15000 });
       // 手写 filter 的裸 24-hex _id 自动转 ObjectId; 超过 2^53 的整数按 Long, 不被舍入
       expect(filter._id).toBeInstanceOf(ObjectId);
       expect(String(filter.uid)).toBe('9007199254740993');
-      expect(post).toHaveBeenCalledWith({ type: 'mongoDocumentList', requestId: 3, columns: [], rows: [{ _id: 'x' }], total: 7 });
+      expect(post.mock.calls).toEqual([
+        [{ type: 'mongoDocumentList', requestId: 3, columns: [], rows: [{ _id: 'x' }] }],
+        [{ type: 'mongoDocumentCount', requestId: 3, total: 7 }],
+      ]);
     });
 
-    it('driver 抛错时回带 requestId 与 error', async () => {
+    it('空 filter 用 estimatedDocumentCount, 不跑 countDocuments', async () => {
+      mongo.estimatedCount.mockResolvedValue(1000000);
+      await send({ ...find, collection: 'users', filter: ' {} ' });
+      expect(mongo.count).not.toHaveBeenCalled();
+      expect(mongo.estimatedCount).toHaveBeenCalledWith('db', 'users', { maxTimeMS: 15000 });
+      expect(post).toHaveBeenLastCalledWith({ type: 'mongoDocumentCount', requestId: 3, total: 1000000 });
+    });
+
+    it('count=false (翻页 / 刷新) 不计数', async () => {
+      await send({ ...find, collection: 'users', filter: '{"a": 1}', count: false });
+      expect(mongo.count).not.toHaveBeenCalled();
+      expect(mongo.estimatedCount).not.toHaveBeenCalled();
+      expect(post.mock.calls.map(([m]) => (m as { type: string }).type)).toEqual(['mongoDocumentList']);
+    });
+
+    it('慢 count 不拖住文档; count 失败或超时回 total=null, 文档照常', async () => {
+      let rejectCount!: (e: Error) => void;
+      mongo.count.mockReturnValue(new Promise((_, reject) => { rejectCount = reject; }));
+      const done = send({ ...find, collection: 'users', filter: '{"a": 1}' });
+      await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ type: 'mongoDocumentList', requestId: 3, columns: [], rows: [] }));
+      expect(post).toHaveBeenCalledTimes(1);
+      rejectCount(Object.assign(new Error('operation exceeded time limit'), { code: 50 }));
+      await done;
+      expect(post).toHaveBeenLastCalledWith({ type: 'mongoDocumentCount', requestId: 3, total: null });
+    });
+
+    it('driver 抛错时回带 requestId 与 error, 不发总数', async () => {
       mongo.findDocumentsForBrowser.mockRejectedValue(new Error('aggregation failed'));
-      await send({ ...find, collection: 'users', filter: '' });
-      expect(post).toHaveBeenCalledWith({ type: 'mongoDocumentList', requestId: 3, columns: [], rows: [], total: 0, error: 'aggregation failed' });
+      await send({ ...find, collection: 'users', filter: '{"a": 1}' });
+      expect(post.mock.calls).toEqual([[{ type: 'mongoDocumentList', requestId: 3, columns: [], rows: [], error: 'aggregation failed' }]]);
     });
   });
 
@@ -102,6 +133,19 @@ describe('handleMongoMessage', () => {
       expect(canonical(filter)).toEqual({ _id: { $oid: OID } });
       expect(canonical(update)).toEqual({ $set: { gold: { $numberLong: '2000' } } });
       expect(post).toHaveBeenCalledWith({ type: 'mongoOperationResult', success: true, affectedRows: 1 });
+    });
+
+    it('projection 下编辑: 只 $set 改过的 path, 没投影出来的字段不 $unset', async () => {
+      // Projection {"name": 1, "bag": 1}: 编辑器只看到 name 与整个 bag, 库里还有 rate / gold
+      mongo.findOneTyped.mockResolvedValue(BSON.deserialize(BSON.serialize({
+        _id: new ObjectId(OID), name: 'a', rate: new Double(2), gold: Long.fromNumber(1000), bag: { gold: 5, items: [1, 2] },
+      }), { promoteValues: false }));
+      const projected = { name: 'a', bag: { gold: 5, items: [1, 2] } };
+      await send({ ...base, original: projected, document: { name: 'b', bag: { gold: 5, items: [1, 2] } } });
+      expect(canonical(mongo.updateOne.mock.calls[0][3])).toEqual({ $set: { name: 'b' } });
+
+      await send({ ...base, original: projected, document: { name: 'a', bag: { gold: 6, items: [1, 2] } } });
+      expect(canonical(mongo.updateOne.mock.calls[1][3])).toEqual({ $set: { 'bag.gold': { $numberInt: '6' } } });
     });
 
     it('复合 _id 内的 ObjectId / Date 按真实类型进 filter; 24-hex 字符串 _id 不被转成 ObjectId', async () => {
@@ -143,6 +187,14 @@ describe('handleMongoMessage', () => {
       expect(inserted._id).not.toEqual({ $oid: OID });
       expect(inserted).toEqual({ _id: inserted._id, gold: { $numberLong: '1000' }, name: 'copy' });
       expect(post).toHaveBeenCalledWith({ type: 'mongoOperationResult', success: true, affectedRows: 1 });
+    });
+
+    it('projection 下 Clone: 没投影出来的字段取自重读的源文档, 不丢', async () => {
+      mongo.findOneTyped.mockResolvedValue(BSON.deserialize(BSON.serialize({ _id: new ObjectId(OID), gold: Long.fromNumber(1000), name: 'a' }), { promoteValues: false }));
+      const projectedSeed = { _id: { $oid: OID }, name: 'a' };
+      await send({ ...base, original: projectedSeed, document: { ...projectedSeed, name: 'copy' } });
+      const inserted = canonical(mongo.insertOne.mock.calls[0][2]) as Record<string, unknown>;
+      expect(inserted).toEqual({ _id: inserted._id, gold: { $numberLong: '1000' }, name: 'copy' });
     });
 
     it('源文档已不存在 -> 报 not found, 不插入', async () => {

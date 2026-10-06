@@ -17,15 +17,18 @@ interface MongoDocumentTableProps {
   readonly collection: string;
   readonly columns: readonly ColumnInfo[];
   readonly rows: readonly Record<string, unknown>[];
-  readonly total: number;
+  // 已生效查询的总数; null 表示未知 (计数中 / 失败 / 超时)
+  readonly total: number | null;
   readonly loading: boolean;
   readonly page: number;
+  // 本页首行在查询结果里的偏移 (已生效的 Skip + 已翻过的页)
+  readonly offset: number;
   readonly pageSize: number;
   readonly filter: string;
   readonly sort: string;
   readonly projection: string;
-  // 当前 rows 由非空 projection 查出: 编辑器看到的不是整篇文档, 禁用 Edit / Clone / 单元格编辑
-  readonly projected?: boolean;
+  // 已生效的 projection 不是顶层字段 0/1 取舍 (子路径 / 重命名 / 计算字段 / $slice), 写回会丢字段或写错值: 禁用 Edit / Clone / 单元格编辑
+  readonly readOnly?: boolean;
   readonly customLimit: string;
   readonly customSkip: string;
   readonly onFilterChange: (filter: string) => void;
@@ -58,11 +61,12 @@ export function MongoDocumentTable({
   total,
   loading,
   page,
+  offset,
   pageSize,
   filter,
   sort,
   projection,
-  projected = false,
+  readOnly = false,
   customLimit,
   customSkip,
   onFilterChange,
@@ -100,15 +104,29 @@ export function MongoDocumentTable({
   const editorActive = editingId !== null || composing !== null;
   const capped = capRows(rows);
 
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
-  const startRow = page * pageSize + 1;
-  const endRow = Math.min((page + 1) * pageSize, total);
+  const endRow = offset + rows.length;
+  // 总数未知时以 "本页取满" 判断还有下一页
+  const hasNext = rows.length >= pageSize && (total === null || endRow < total);
 
   const clearEditor = useCallback(() => {
     setEditing(null);
     setComposing(null);
     setIsDirty(false);
   }, []);
+
+  // 统一的"未保存改动"守卫: 当有脏编辑器时, 任何会替换/丢弃当前编辑的动作 (切 collection / Apply / 翻页 /
+  // 编辑别的文档 / Clone / New / 切视图) 都先弹对话框, 由用户选择 Save / Discard / Cancel.
+  const [pendingAction, setPendingAction] = useState<{ confirm: () => void; cancel: () => void } | null>(null);
+
+  const guardedAction = useCallback((confirm: () => void, cancel: () => void = () => {}) => {
+    if (editorActive && isDirty) {
+      setPendingAction({ confirm, cancel });
+      setShowSwitchDialog(true);
+    } else {
+      clearEditor();
+      confirm();
+    }
+  }, [editorActive, isDirty, clearEditor]);
 
   const handleSave = useCallback((original: Record<string, unknown> | null, doc: Record<string, unknown>) => {
     if (editing) {
@@ -129,46 +147,35 @@ export function MongoDocumentTable({
     onUpdateDocument(convertTags(id), nest(convertTags(before)), nest(value));
   }, [onUpdateDocument]);
 
-  // rows 是 projection 结果时文档不完整, 编辑器看到的不是整篇文档: 直接退出编辑
-  useEffect(() => {
-    if (projected && editing !== null) { clearEditor(); }
-  }, [projected, editing, clearEditor]);
-
   const handleEnterEdit = useCallback((doc: Record<string, unknown>) => {
-    setComposing(null);
-    setEditing(doc);
-  }, []);
+    guardedAction(() => setEditing(doc));
+  }, [guardedAction]);
+
+  // 表格视图里打开文档: 切回 List 并进入编辑
+  const handleOpen = useCallback((doc: Record<string, unknown>) => {
+    guardedAction(() => { setView('list'); setEditing(doc); });
+  }, [guardedAction]);
 
   const handleNewDocument = useCallback(() => {
-    setEditing(null);
-    setComposing({});
-  }, []);
+    // 新建卡片只在 List / JSON 视图渲染, Table 视图下先切到 List
+    guardedAction(() => { setView((v) => (v === 'table' ? 'list' : v)); setComposing({}); });
+  }, [guardedAction]);
 
   // Clone: 整文档 (含 _id) 作 seed 塞进顶部新建卡片, _id 可编辑; 保存时宿主按 _id 重读源文档套用改动后插入
   const handleClone = useCallback((doc: Record<string, unknown>) => {
-    setEditing(null);
-    setComposing({ ...doc });
-  }, []);
+    guardedAction(() => { setView((v) => (v === 'table' ? 'list' : v)); setComposing({ ...doc }); });
+  }, [guardedAction]);
 
-  // 统一的"未保存改动"守卫: 当有脏编辑器时, 任何会替换/丢弃当前编辑的动作 (切 collection /
-  // Apply / 翻页) 都先弹对话框, 由用户选择 Save / Discard / Cancel.
-  const [pendingAction, setPendingAction] = useState<{ confirm: () => void; cancel: () => void } | null>(null);
+  // Table 视图不渲染编辑器, 切过去会丢掉编辑中的内容
+  const handleViewChange = useCallback((v: MongoView) => {
+    if (v !== view) { guardedAction(() => setView(v)); }
+  }, [view, guardedAction]);
 
   // 编辑器保存失败 (非法 JSON / 缺 key) 时, 取消挂起的 Save-then-action, 避免之后手动保存误触发它
   const handleSaveError = useCallback(() => {
     setSwitchAfterSave(false);
     setPendingAction(null);
   }, []);
-
-  const guardedAction = useCallback((confirm: () => void, cancel: () => void = () => {}) => {
-    if (editorActive && isDirty) {
-      setPendingAction({ confirm, cancel });
-      setShowSwitchDialog(true);
-    } else {
-      clearEditor();
-      confirm();
-    }
-  }, [editorActive, isDirty, clearEditor]);
 
   // 切 collection 由父级 pendingSwitchSignal 触发, 走同一守卫
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -284,7 +291,7 @@ export function MongoDocumentTable({
       <div className="mongo-document-header">
         <div className="mongo-header-row">
           <h3>{collection}</h3>
-          <ViewToggle value={view} onChange={setView} />
+          <ViewToggle value={view} onChange={handleViewChange} />
           <button
             className="btn-small btn-primary"
             onClick={handleNewDocument}
@@ -301,7 +308,7 @@ export function MongoDocumentTable({
                 onChange={onFilterChange}
                 onApply={applyAndRecord}
                 fieldNames={fieldNames}
-                placeholder='{ status: "active" }'
+                placeholder='{"status": "active"}'
               />
             </div>
           </div>
@@ -313,7 +320,7 @@ export function MongoDocumentTable({
                 onChange={onSortChange}
                 onApply={applyAndRecord}
                 fieldNames={fieldNames}
-                placeholder='{ _id: -1 }'
+                placeholder='{"_id": -1}'
               />
             </div>
           </div>
@@ -325,7 +332,7 @@ export function MongoDocumentTable({
                 onChange={onProjectionChange}
                 onApply={applyAndRecord}
                 fieldNames={fieldNames}
-                placeholder='{ name: 1, email: 1 }'
+                placeholder='{"name": 1, "email": 1}'
               />
             </div>
           </div>
@@ -436,9 +443,9 @@ export function MongoDocumentTable({
             性能保护: 仅渲染前 {capped.rows.length} / {rows.length} 条 (本页). 用 Filter 缩小范围或翻页 (每页 50).
           </div>
         )}
-        {!loading && !queryError && projected && rows.length > 0 && (
+        {!loading && !queryError && readOnly && rows.length > 0 && (
           <div className="mongo-render-cap-notice">
-            已应用 Projection, 文档只含部分字段: Edit / Clone / 单元格编辑已禁用. 清空 Projection 并 Apply 后可编辑.
+            Projection 含子路径或表达式, 显示的不是完整的库内原值: Edit / Clone / 单元格编辑已禁用. 只有顶层字段取舍 (key 不含 '.', 值为 0 / 1) 的 Projection 可编辑.
           </div>
         )}
         {!loading && !queryError && (rows.length > 0 || composing !== null) && (
@@ -446,13 +453,13 @@ export function MongoDocumentTable({
             ? <MongoTableView
                 columns={columns}
                 rows={capped.rows}
-                onRowClick={(row) => { setView('list'); if (!projected) { handleEnterEdit(row); } }}
-                onCellEdit={projected ? undefined : handleCellEdit}
+                onOpen={readOnly ? undefined : handleOpen}
+                onCellEdit={readOnly ? undefined : handleCellEdit}
               />
             : <MongoDocumentList
                 rows={capped.rows}
                 view={view}
-                projected={projected}
+                readOnly={readOnly}
                 fieldNames={fieldNames}
                 editingId={editingId}
                 composing={composing}
@@ -467,7 +474,7 @@ export function MongoDocumentTable({
               />
         )}
       </div>
-      {total > 0 && (
+      {(rows.length > 0 || page > 0) && (
         <div className="mongo-pagination">
           <button
             className="btn-small"
@@ -477,11 +484,11 @@ export function MongoDocumentTable({
             Prev
           </button>
           <span className="page-info">
-            {startRow}-{endRow} of {total}
+            {rows.length > 0 ? `${offset + 1}-${endRow}` : '0'} of {total ?? '?'}
           </span>
           <button
             className="btn-small"
-            disabled={page >= totalPages - 1}
+            disabled={!hasNext}
             onClick={() => handlePageChange(page + 1)}
           >
             Next

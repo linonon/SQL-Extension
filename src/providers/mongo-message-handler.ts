@@ -18,25 +18,18 @@ export async function handleMongoMessage(
     }
 
     case 'mongoFindDocuments': {
-      // 回执 (含出错) 带回 requestId, webview 只认最近一次查询的回执
-      const { requestId, database, collection, filter, sort, projection, skip, limit } = message;
+      // 回执 (含出错) 带回 requestId, webview 只认最近一次查询的回执.
+      // 总数只在 count=true (Apply / 切集合) 时算, 与取数并发但另发一条回执: 慢 count 不拖住文档
+      const { requestId, database, collection, filter, sort, projection, skip, limit, count } = message;
       try {
         const pipeline = buildAggregatePipeline(filter, sort, projection, skip, limit);
-        const [docsResult, total] = await Promise.all([
-          mongo.findDocumentsForBrowser(database, collection, pipeline),
-          mongo.count(database, collection, userFilter(parseShell(filter))),
-        ]);
-
-        post({
-          type: 'mongoDocumentList',
-          requestId,
-          columns: docsResult.columns,
-          rows: docsResult.rows,
-          total,
-        });
+        const counting = count ? browserCount(mongo, database, collection, userFilter(parseShell(filter))) : null;
+        const docsResult = await mongo.findDocumentsForBrowser(database, collection, pipeline);
+        post({ type: 'mongoDocumentList', requestId, columns: docsResult.columns, rows: docsResult.rows });
+        if (counting) { post({ type: 'mongoDocumentCount', requestId, total: await counting }); }
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
-        post({ type: 'mongoDocumentList', requestId, columns: [], rows: [], total: 0, error: errorMsg });
+        post({ type: 'mongoDocumentList', requestId, columns: [], rows: [], error: errorMsg });
       }
       return true;
     }
@@ -162,6 +155,18 @@ function editDiff(original: unknown, document: unknown): DocumentDiff {
     convertEjsonToBson(original) as Record<string, unknown>,
     convertEjsonToBson(document) as Record<string, unknown>,
   );
+}
+
+const COUNT_TIMEOUT_MS = 15_000;
+
+// 浏览器的总数: 空 filter 用 estimatedDocumentCount (读集合元数据, 不扫表), 否则 countDocuments.
+// 带服务端超时; 失败或超时回 null (总数未知), 不影响文档展示
+function browserCount(mongo: MongoDriver, database: string, collection: string, filter: Document): Promise<number | null> {
+  const options = { maxTimeMS: COUNT_TIMEOUT_MS };
+  const counting = Object.keys(filter).length === 0
+    ? mongo.estimatedCount(database, collection, options)
+    : mongo.count(database, collection, filter, options);
+  return counting.catch(() => null);
 }
 
 function parseShell(text: string): unknown {

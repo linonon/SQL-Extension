@@ -3,6 +3,7 @@ import { useVSCodeMessage } from '../../hooks/useVSCodeMessage';
 import { usePostMessage } from '../../hooks/usePostMessage';
 import type { ExtensionMessage, MongoExplainSummary } from '../../types/messages';
 import type { ColumnInfo } from '../../types/database';
+import { convertShellToJson } from '../../utils/mongo-shell-to-json';
 import { MongoCollectionList } from './MongoCollectionList';
 import { MongoDocumentTable } from './MongoDocumentTable';
 import '../../styles/mongo-browser.css';
@@ -28,6 +29,17 @@ const PAGE_SIZE = 50;
 // 否则旧集合的行会顶替当前集合, 随后的 Edit / Delete 按当前集合写进去
 let findSeq = 0;
 
+// 已生效的查询 (Apply / 切集合时快照): 翻页 / 刷新 / Explain / Export 都按它, 不读输入框里尚未 Apply 的文本
+interface AppliedQuery {
+  readonly filter: string;
+  readonly sort: string;
+  readonly projection: string;
+  readonly skip: number;
+  readonly limit: number;
+}
+
+const EMPTY_QUERY: AppliedQuery = { filter: '', sort: '', projection: '', skip: 0, limit: PAGE_SIZE };
+
 function resolveLimit(input: string, fallback: number): number {
   if (!input.trim()) { return fallback; }
   const n = parseInt(input, 10);
@@ -40,12 +52,28 @@ function resolveSkip(input: string): number {
   return (Number.isFinite(n) && n >= 0) ? n : 0;
 }
 
+/**
+ * projection 是否只按顶层字段整取整舍 (key 不含 '.', 值都是 0/1/true/false): 这时显示的字段都是库内的完整原值,
+ * 按 path diff 写回只动改过的字段. 子路径 ("a.b" / 嵌套) 会把子文档数组的每个元素裁掉未投影的字段, 而数组整体 $set,
+ * 写回会丢掉这些字段; 含表达式 ("$field" 重命名 / $slice / 计算字段) 时显示值不是库内值. 这两类都不可写回.
+ */
+export function isPathProjection(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) { return true; }
+  let parsed: unknown;
+  try { parsed = JSON.parse(convertShellToJson(trimmed)); } catch { return false; }
+  return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+    && Object.entries(parsed).every(([k, v]) =>
+      !k.startsWith('$') && !k.includes('.') && (typeof v === 'number' || typeof v === 'boolean'));
+}
+
 export function MongoBrowser({ connectionId }: MongoBrowserProps) {
   const [allCollections, setAllCollections] = useState<readonly GlobalCollectionInfo[]>([]);
   const [selected, setSelected] = useState<SelectedCollection | null>(null);
   const [columns, setColumns] = useState<readonly ColumnInfo[]>([]);
   const [rows, setRows] = useState<readonly Record<string, unknown>[]>([]);
-  const [total, setTotal] = useState(0);
+  // null: 总数未知 (计数中 / 失败 / 超时)
+  const [total, setTotal] = useState<number | null>(null);
   const [filter, setFilter] = useState('');
   const [sort, setSort] = useState('');
   const [projection, setProjection] = useState('');
@@ -58,11 +86,10 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
   const [panelWidth, setPanelWidth] = useState(220);
   const [pendingSwitchSignal, setPendingSwitchSignal] = useState(0);
   const [explain, setExplain] = useState<{ loading?: boolean; summary?: MongoExplainSummary; error?: string } | null>(null);
-  // 当前 rows 是否带 projection 查出 (文档不完整, 禁写). 按发出查询时的 projection 记账, 回包到达才生效,
-  // 看的是产出当前 rows 的那次查询, 不是输入框里尚未 Apply 的文本
-  const [projected, setProjected] = useState(false);
-  const requestedProjectionRef = useRef('');
+  const [applied, setApplied] = useState<AppliedQuery>(EMPTY_QUERY);
   const findIdRef = useRef(0);
+  // 带 count 的那次查询的 requestId: 其后翻页不重算总数, 总数回执按它认领
+  const countIdRef = useRef(0);
   const pendingSwitchTarget = useRef<{ database: string; name: string } | null>(null);
 
   const postMessage = usePostMessage();
@@ -70,37 +97,33 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
   const startX = useRef(0);
   const startWidth = useRef(0);
 
-  // 保存当前 filter/sort/projection/page 的 ref, 供 refetch 使用
-  const filterRef = useRef(filter);
-  const sortRef = useRef(sort);
-  const projectionRef = useRef(projection);
-  const customLimitRef = useRef(customLimit);
-  const pageRef = useRef(page);
-  filterRef.current = filter;
-  sortRef.current = sort;
-  projectionRef.current = projection;
-  customLimitRef.current = customLimit;
-  pageRef.current = page;
-
-  const handleRefetch = useCallback(() => {
+  // 唯一的取数入口: page 是相对 q.skip 的页号, skip / limit 都由已生效的查询推出; count 时重算总数
+  const fetchDocs = useCallback((q: AppliedQuery, p: number, count: boolean) => {
     if (!selected) { return; }
-    const effectiveLimit = resolveLimit(customLimitRef.current, PAGE_SIZE);
     setQueryError(null);
     setLoading(true);
-    requestedProjectionRef.current = projectionRef.current;
+    setPage(p);
     findIdRef.current = ++findSeq;
+    if (count) {
+      countIdRef.current = findIdRef.current;
+      setTotal(null);
+    }
     postMessage({
       type: 'mongoFindDocuments',
       requestId: findIdRef.current,
       database: selected.database,
       collection: selected.name,
-      filter: filterRef.current,
-      sort: sortRef.current,
-      projection: projectionRef.current,
-      skip: pageRef.current * effectiveLimit,
-      limit: effectiveLimit,
+      filter: q.filter,
+      sort: q.sort,
+      projection: q.projection,
+      skip: q.skip + p * q.limit,
+      limit: q.limit,
+      count,
     });
   }, [selected, postMessage]);
+
+  // 写操作 / 导入后刷新: 留在当前页, 写入改变了文档数, 重算总数
+  const handleRefetch = useCallback(() => fetchDocs(applied, page, true), [fetchDocs, applied, page]);
 
   const handleMessage = useCallback((msg: ExtensionMessage) => {
     switch (msg.type) {
@@ -111,17 +134,16 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
           setSelected((prev) => prev ?? { database: msg.collections[0].database, name: msg.collections[0].name });
         }
         break;
-      case 'mongoDocumentList': {
+      case 'mongoDocumentList':
         if (msg.requestId !== findIdRef.current) { break; }
-        const p = requestedProjectionRef.current.trim();
-        setProjected(p !== '' && p !== '{}');
         setColumns(msg.columns);
         setRows(msg.rows);
-        setTotal(msg.total);
         setQueryError(msg.error ?? null);
         setLoading(false);
         break;
-      }
+      case 'mongoDocumentCount':
+        if (msg.requestId === countIdRef.current) { setTotal(msg.total); }
+        break;
       case 'error':
         setLoading(false);
         // 集合列表加载若失败 (mongoListAllCollections 抛错), 后端回笼统 error: 同步清掉 spinner 避免左栏永久转
@@ -148,7 +170,8 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
         }
         break;
       case 'mongoExplainResult':
-        setExplain({ summary: msg.summary, error: msg.error });
+        // 只接收进行中的 explain: 切 collection 时面板已清空, 旧 collection 迟到的结果丢弃
+        setExplain((prev) => (prev?.loading ? { summary: msg.summary, error: msg.error } : prev));
         break;
       case 'mongoCollectionCreated':
         if (!msg.success) {
@@ -179,26 +202,12 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
     postMessage({ type: 'mongoListAllCollections' });
   }, [postMessage]);
 
-  // 选中 collection 时自动加载首页文档
+  // 选中 / 切换 collection: 查询复位, 关掉上一个集合的 explain, 从首页取并计数
   useEffect(() => {
-    if (selected) {
-      setLoading(true);
-      setPage(0);
-      requestedProjectionRef.current = '';
-      findIdRef.current = ++findSeq;
-      postMessage({
-        type: 'mongoFindDocuments',
-        requestId: findIdRef.current,
-        database: selected.database,
-        collection: selected.name,
-        filter: '',
-        sort: '',
-        projection: '',
-        skip: 0,
-        limit: PAGE_SIZE,
-      });
-    }
-  }, [selected, postMessage]);
+    setApplied(EMPTY_QUERY);
+    setExplain(null);
+    fetchDocs(EMPTY_QUERY, 0, true);
+  }, [selected, fetchDocs]);
 
   const handleSelectCollection = useCallback((database: string, name: string) => {
     pendingSwitchTarget.current = { database, name };
@@ -215,7 +224,6 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
     setProjection('');
     setCustomLimit('');
     setCustomSkip('');
-    setPage(0);
   }, []);
 
   const onSwitchCancelled = useCallback(() => {
@@ -223,46 +231,12 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
   }, []);
 
   const handleApply = useCallback(() => {
-    if (!selected) { return; }
-    setQueryError(null);
-    setLoading(true);
-    setPage(0);
-    const effectiveLimit = resolveLimit(customLimit, PAGE_SIZE);
-    requestedProjectionRef.current = projection;
-    findIdRef.current = ++findSeq;
-    postMessage({
-      type: 'mongoFindDocuments',
-      requestId: findIdRef.current,
-      database: selected.database,
-      collection: selected.name,
-      filter,
-      sort,
-      projection,
-      skip: resolveSkip(customSkip),
-      limit: effectiveLimit,
-    });
-  }, [selected, filter, sort, projection, customLimit, customSkip, postMessage]);
+    const q = { filter, sort, projection, skip: resolveSkip(customSkip), limit: resolveLimit(customLimit, PAGE_SIZE) };
+    setApplied(q);
+    fetchDocs(q, 0, true);
+  }, [filter, sort, projection, customSkip, customLimit, fetchDocs]);
 
-  const handlePageChange = useCallback((newPage: number) => {
-    if (!selected) { return; }
-    const effectiveLimit = resolveLimit(customLimit, PAGE_SIZE);
-    setQueryError(null);
-    setLoading(true);
-    setPage(newPage);
-    requestedProjectionRef.current = projection;
-    findIdRef.current = ++findSeq;
-    postMessage({
-      type: 'mongoFindDocuments',
-      requestId: findIdRef.current,
-      database: selected.database,
-      collection: selected.name,
-      filter,
-      sort,
-      projection,
-      skip: newPage * effectiveLimit,
-      limit: effectiveLimit,
-    });
-  }, [selected, filter, sort, projection, customLimit, postMessage]);
+  const handlePageChange = useCallback((p: number) => fetchDocs(applied, p, false), [fetchDocs, applied]);
 
   const handleInsertDocument = useCallback((doc: Record<string, unknown>) => {
     if (!selected) { return; }
@@ -315,10 +289,10 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
       type: 'mongoExplainQuery',
       database: selected.database,
       collection: selected.name,
-      filter: filterRef.current,
-      sort: sortRef.current,
+      filter: applied.filter,
+      sort: applied.sort,
     });
-  }, [selected, postMessage]);
+  }, [selected, applied, postMessage]);
 
   const handleExport = useCallback(() => {
     if (!selected) { return; }
@@ -326,11 +300,11 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
       type: 'mongoExportCollection',
       database: selected.database,
       collection: selected.name,
-      filter: filterRef.current,
-      sort: sortRef.current,
-      projection: projectionRef.current,
+      filter: applied.filter,
+      sort: applied.sort,
+      projection: applied.projection,
     });
-  }, [selected, postMessage]);
+  }, [selected, applied, postMessage]);
 
   const handleImport = useCallback(() => {
     if (!selected) { return; }
@@ -398,11 +372,12 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
               total={total}
               loading={loading}
               page={page}
-              pageSize={resolveLimit(customLimit, PAGE_SIZE)}
+              offset={applied.skip + page * applied.limit}
+              pageSize={applied.limit}
               filter={filter}
               sort={sort}
               projection={projection}
-              projected={projected}
+              readOnly={!isPathProjection(applied.projection)}
               customLimit={customLimit}
               customSkip={customSkip}
               onFilterChange={setFilter}

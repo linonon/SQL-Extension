@@ -7,7 +7,7 @@ const DB_READ_DESCRIPTION = [
   'Execute read-only queries (SQL runs in a read-only transaction; results capped at 500 rows; SQL and MongoDB reads time out after 30s on the server). Use db_schema to discover databases/tables/columns. Query format by database type:',
   '- MySQL/PostgreSQL: one SELECT/SHOW/DESCRIBE/EXPLAIN/WITH statement, e.g. "SELECT * FROM users LIMIT 10" (no INTO)',
   '- Redis: command string, e.g. "GET key1", "HGETALL myhash"',
-  '- MongoDB: JSON, e.g. {"collection":"users","method":"find","filter":{}}',
+  '- MongoDB: JSON, e.g. {"collection":"users","method":"find","filter":{},"sort":{"_id":-1},"skip":0,"limit":20} (find also takes projection; aggregate takes pipeline, limit; countDocuments takes filter; unknown fields are rejected). filter and pipeline accept EJSON: {"$oid":"..."}, {"$date":"2024-01-01T00:00:00Z"}, {"$numberLong":"..."}. Documents come back as relaxed EJSON (ObjectId as $oid, Date as $date; integers beyond 2^53 as $numberLong)',
   '- Kafka: JSON, e.g. {"action":"listTopics"}, {"action":"fetch","topic":"t1","partition":0,"offset":"0","limit":10}',
   '- RabbitMQ: JSON, e.g. {"action":"listQueues"}, {"action":"peek","queue":"q1","count":10}',
 ].join('\n');
