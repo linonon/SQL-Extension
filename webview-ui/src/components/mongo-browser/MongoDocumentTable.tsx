@@ -10,8 +10,9 @@ import { convertTags } from './mongo-field-editor';
 import { MongoFilterHistory, type FilterHistoryEntry } from './MongoFilterHistory';
 import { MongoExplainPanel } from './MongoExplainPanel';
 import { capRows } from './mongo-render-cap';
-import type { MongoExplainSummary } from '../../../../src/types/messages';
+import type { MongoExplainSummary, MongoQueryInputs } from '../../../../src/types/messages';
 import { useReadOnly } from '../../hooks/useReadOnly';
+import { AiAskBar } from '../query-editor/AiAskBar';
 
 interface MongoDocumentTableProps {
   readonly database: string;
@@ -220,6 +221,16 @@ export function MongoDocumentTable({
 
   const [showHistory, setShowHistory] = useState(false);
   const historyGroupRef = useRef<HTMLDivElement>(null);
+  const [showAsk, setShowAsk] = useState(false);
+
+  // Ask AI 的回答填进五个输入框: 不 Apply, 已生效的查询 (翻页 / Explain / Export 用的) 不变
+  const handleFill = useCallback((q: MongoQueryInputs) => {
+    onFilterChange(q.filter);
+    onSortChange(q.sort);
+    onProjectionChange(q.projection);
+    onLimitChange(q.limit);
+    onSkipChange(q.skip);
+  }, [onFilterChange, onSortChange, onProjectionChange, onLimitChange, onSkipChange]);
 
   // 点击 History 下拉之外的区域关闭 (镜像 detail copy menu)
   useEffect(() => {
@@ -386,6 +397,9 @@ export function MongoDocumentTable({
                 </div>
               )}
             </div>
+            <button className="btn-small" onClick={() => setShowAsk(true)} title="Ask AI to write the query for this collection">
+              Ask AI
+            </button>
             <div className="mongo-data-ops">
               {onExplain && (
                 <button className="btn-small" onClick={onExplain} title="Explain: 查看索引使用 / 是否全表扫描">
@@ -409,6 +423,18 @@ export function MongoDocumentTable({
           </div>
         </div>
       </div>
+      {showAsk && (
+        <AiAskBar
+          key={`${database}/${collection}`}
+          target="mongo"
+          database={database}
+          collection={collection}
+          inputs={{ filter, sort, projection, limit: customLimit, skip: customSkip }}
+          lastError={queryError ?? undefined}
+          onFill={handleFill}
+          onClose={() => setShowAsk(false)}
+        />
+      )}
       {explain && (
         <MongoExplainPanel
           summary={explain.summary}

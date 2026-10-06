@@ -13,7 +13,7 @@ export const CLAUDE_CODE_MODELS = [
   { alias: 'haiku', name: 'Claude Code · Haiku' },
 ] as const;
 
-const SYSTEM_PROMPT = 'You are a SQL assistant embedded in a database editor. Follow the instructions in the user message.';
+const SYSTEM_PROMPT = 'You are a database query assistant embedded in a database client. Follow the instructions in the user message.';
 
 // 从 Dock 启动的 VS Code 不带 shell 的 PATH, 补上常见安装位置
 function findClaude(): string | null {

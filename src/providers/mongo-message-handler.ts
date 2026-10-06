@@ -1,18 +1,21 @@
 import * as vscode from 'vscode';
 import type { Document } from 'mongodb';
 import type { ExtensionMessage, WebviewMessage } from '../types/messages.js';
-import { BROWSE_TIMEOUT_MS, userFilter, type MongoDriver } from '../drivers/mongo-driver.js';
+import { BROWSE_TIMEOUT_MS, fieldPathTypes, userFilter, type MongoDriver } from '../drivers/mongo-driver.js';
+import { buildMongoAiPrompt, streamAiAnswer } from '../services/ai-assist.js';
 import { convertEjsonToBson } from '../utils/mongo-shell-to-json.js';
 import { parseShellJson } from '../utils/mongo-shell-syntax.js';
 import { buildClone, buildUpdate, castLike, changedSinceLoaded, diffDocuments, isEmptyDiff, type DocumentDiff } from '../utils/mongo-update.js';
 
 const NOT_FOUND = 'document not found (deleted or _id changed)';
 
-// 返回 true 表示已处理, false 表示不是 mongo 消息. 删除 / 删集合 / 导入的确认在执行它的 case 里
+// 返回 true 表示已处理, false 表示不是 mongo 消息. 删除 / 删集合 / 导入的确认在执行它的 case 里.
+// aiKey: 进行中提问的取消 key, 须与 aiCancel / panel 关闭时 cancelAiAsk 用的同一个 (panel)
 export async function handleMongoMessage(
   message: WebviewMessage,
   mongo: MongoDriver,
-  post: (msg: ExtensionMessage) => void
+  post: (msg: ExtensionMessage) => void,
+  aiKey: object
 ): Promise<boolean> {
   switch (message.type) {
     case 'mongoListAllCollections': {
@@ -74,6 +77,32 @@ export async function handleMongoMessage(
         const errorMsg = err instanceof Error ? err.message : String(err);
         post({ type: 'mongoExplainResult', error: errorMsg });
       }
+      return true;
+    }
+
+    case 'mongoAiAsk': {
+      // 字段类型取自随机采样的文档 (promoteValues:false 保住 Int32 / Long / Double), 只进 key 与类型, 不进值
+      const { database, collection } = message;
+      await streamAiAnswer(aiKey, message.id, post, async () => {
+        // 采样失败 (含连接已断时 aggregate 同步抛错) 只是少了字段清单, 不让提问失败
+        const samples = await Promise.resolve()
+          .then(() => mongo.aggregate(database, collection, [{ $sample: { size: 20 } }], { promoteValues: false, maxTimeMS: 5000 }))
+          .catch(() => []);
+        return buildMongoAiPrompt({
+          database,
+          collection,
+          question: message.question,
+          filter: message.filter,
+          sort: message.sort,
+          projection: message.projection,
+          limit: message.limit,
+          skip: message.skip,
+          lastError: message.lastError,
+          fields: fieldPathTypes(samples),
+          now: new Date(),
+          timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        });
+      });
       return true;
     }
 

@@ -6,6 +6,17 @@ import { ObjectId } from 'mongodb';
 import { handleMongoMessage } from './mongo-message-handler';
 import type { MongoDriver } from '../drivers/mongo-driver';
 import type { WebviewMessage } from '../types/messages';
+import { runClaudeCode } from '../services/claude-code.js';
+
+// Ask AI 不起真 claude 子进程: 本机 Claude Code 视为已登录, 回答由 runClaudeCode 替身给出
+vi.mock('../services/claude-code.js', async (orig) => ({
+  ...(await orig<typeof import('../services/claude-code.js')>()),
+  claudeCodeAvailable: vi.fn(async () => '/bin/claude'),
+  runClaudeCode: vi.fn(async (_bin: string, _alias: string, _prompt: string, _signal: AbortSignal, onChunk: (t: string) => void) => {
+    onChunk('```filter\n{}\n```');
+    return 'claude-sonnet-test';
+  }),
+}));
 
 const NOT_FOUND = 'document not found (deleted or _id changed)';
 const OID = 'aaaaaaaaaaaaaaaaaaaaaaaa';
@@ -29,6 +40,7 @@ function mockMongo() {
     dropCollection: vi.fn(),
     importDocuments: vi.fn(),
     exportDocuments: vi.fn(),
+    aggregate: vi.fn().mockResolvedValue([]),
   };
 }
 
@@ -37,7 +49,7 @@ describe('handleMongoMessage', () => {
   afterEach(() => { vi.restoreAllMocks(); });
   let mongo: ReturnType<typeof mockMongo>;
   let post: ReturnType<typeof vi.fn<(msg: unknown) => void>>;
-  const send = (msg: Record<string, unknown>) => handleMongoMessage(msg as unknown as WebviewMessage, mongo as unknown as MongoDriver, post);
+  const send = (msg: Record<string, unknown>) => handleMongoMessage(msg as unknown as WebviewMessage, mongo as unknown as MongoDriver, post, {});
 
   beforeEach(() => {
     mongo = mockMongo();
@@ -366,6 +378,51 @@ describe('handleMongoMessage', () => {
     mongo.deleteOne.mockResolvedValue(0);
     await send({ type: 'mongoDeleteDocument', database: 'db', collection: 'users', id: 'x' });
     expect(post).toHaveBeenLastCalledWith({ type: 'mongoOperationResult', success: false, error: NOT_FOUND });
+  });
+
+  describe('mongoAiAsk', () => {
+    const ask = { type: 'mongoAiAsk', id: 'a1', database: 'game', collection: 'player', question: 'who is rich', filter: '', sort: '', projection: '', limit: '', skip: '' };
+    const lastPrompt = () => vi.mocked(runClaudeCode).mock.lastCall![2];
+
+    it('prompt 只有采样文档的字段路径与类型, 不含任何值 (含像字段名的值与 id / 数字 key); 回答带 id 回给 webview', async () => {
+      const hexKey = '5f1d7a2b3c4d5e6f70819203';
+      mongo.aggregate.mockResolvedValue([{
+        _id: new ObjectId(OID),
+        nick: 'SENTINEL_NICK',
+        tier: 'vip_gold_member',
+        uid: Long.fromString('9007199254740993'),
+        bag: [{ itemId: 'SENTINEL_ITEM', n: new Int32(31337) }],
+        heroes: { [hexKey]: { star: new Int32(5) }, '10086': { star: new Int32(4) } },
+        at: new Date('2026-01-02T03:04:05Z'),
+      }]);
+      // 固定时钟: Now 行的 epoch 数字不会碰巧含有下面的数字哨兵
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date('2030-01-01T00:00:00Z'));
+      try { await send(ask); } finally { vi.useRealTimers(); }
+
+      expect(mongo.aggregate).toHaveBeenCalledWith('game', 'player', [{ $sample: { size: 20 } }], { promoteValues: false, maxTimeMS: 5000 });
+      const prompt = lastPrompt();
+      for (const value of ['SENTINEL_NICK', 'vip_gold_member', '9007199254740993', 'SENTINEL_ITEM', '31337', OID, hexKey, '10086', '2026-01-02']) {
+        expect(prompt).not.toContain(value);
+      }
+      for (const line of ['_id: ObjectId', 'uid: Long', 'bag: array<object>', 'bag.n: Int32', 'heroes.<id>.star: Int32', 'heroes.<n>.star: Int32', 'at: date']) {
+        expect(prompt).toContain(line);
+      }
+      expect(post.mock.calls.map(([m]) => m)).toEqual([
+        { type: 'aiChunk', id: 'a1', text: '```filter\n{}\n```' },
+        { type: 'aiDone', id: 'a1', model: 'claude-sonnet-test' },
+      ]);
+    });
+
+    it.each([
+      ['异步失败 (超时 / 无权限)', () => mongo.aggregate.mockRejectedValue(new Error('MaxTimeMSExpired'))],
+      ['同步抛错 (连接已断)', () => mongo.aggregate.mockImplementation(() => { throw new Error('MongoDB driver is not connected'); })],
+    ])('采样%s 照常提问, 字段一节写 (no documents sampled)', async (_label, fail) => {
+      fail();
+      await send(ask);
+      expect(lastPrompt()).toContain('(no documents sampled)');
+      expect(post).toHaveBeenLastCalledWith({ type: 'aiDone', id: 'a1', model: 'claude-sonnet-test' });
+    });
   });
 
   describe('mongoExplainQuery', () => {

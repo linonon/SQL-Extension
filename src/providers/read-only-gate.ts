@@ -28,7 +28,7 @@ const READ_ONLY_POLICY: Record<WebviewMessage['type'], 'read' | ((reason: string
   // 连接表单 / Ask AI / 握手: 不碰库里的数据
   ready: 'read', testConnection: 'read', saveConnection: 'read', updateConnection: 'read',
   aiAsk: 'read', aiCancel: 'read', aiListModels: 'read', aiSetModel: 'read',
-  mongoFindDocuments: 'read', mongoListAllCollections: 'read', mongoExplainQuery: 'read', mongoExportCollection: 'read',
+  mongoFindDocuments: 'read', mongoListAllCollections: 'read', mongoExplainQuery: 'read', mongoExportCollection: 'read', mongoAiAsk: 'read',
   mongoInsertDocument: failed('mongoOperationResult'),
   mongoUpdateDocument: failed('mongoOperationResult'),
   mongoCloneDocument: failed('mongoOperationResult'),

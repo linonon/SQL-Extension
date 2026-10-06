@@ -350,7 +350,7 @@ export class TableViewProvider implements vscode.Disposable {
           }
 
           if (message.type.startsWith('mongo')) {
-            await handleMongoMessage(message, this.connectionManager.getMongoDriver(connectionId!), post);
+            await handleMongoMessage(message, this.connectionManager.getMongoDriver(connectionId!), post, panel);
             return;
           }
 

@@ -1,13 +1,20 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createElement } from 'react';
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import { AiAskBar, applySql, extractSqlBlock } from './AiAskBar';
+import { AiAskBar, applySql, extractBlock, extractMongoBlocks } from './AiAskBar';
 import { mockPostMessage } from '../../__test__/setup';
 
 describe('AiAskBar helpers', () => {
   it('extracts the first sql block', () => {
-    expect(extractSqlBlock('说明\n```sql\nSELECT 1;\n```\n')).toBe('SELECT 1;');
-    expect(extractSqlBlock('no code')).toBeNull();
+    expect(extractBlock('说明\n```sql\nSELECT 1;\n```\n', 'sql')).toBe('SELECT 1;');
+    expect(extractBlock('no code', 'sql')).toBeNull();
+  });
+
+  it('Mongo: 按输入框名提取, 缺块的输入框清空; pipeline 等其他块不提取, 一个命名块都没有返回 null', () => {
+    const answer = '说明\n```filter\n{"lv": {"$gte": 30}}\n```\n```limit\n20\n```\n```javascript\n[{"$group": {}}]\n```';
+    expect(extractMongoBlocks(answer)).toEqual({ filter: '{"lv": {"$gte": 30}}', sort: '', projection: '', limit: '20', skip: '' });
+    expect(extractMongoBlocks('```javascript\ndb.c.aggregate([])\n```')).toBeNull();
+    expect(extractMongoBlocks('```filters\n{}\n```')).toBeNull();
   });
 
   it('replaces the selection at its original position, keeping surrounding whitespace', () => {
@@ -28,7 +35,7 @@ describe('AiAskBar helpers', () => {
 describe('AiAskBar 输入框', () => {
   const setup = () => {
     const onClose = vi.fn();
-    render(createElement(AiAskBar, { database: 'db', sql: 'SELECT 1', selection: '', selectionStart: 0, onApply: vi.fn(), onClose }));
+    render(createElement(AiAskBar, { target: 'sql', database: 'db', sql: 'SELECT 1', selection: '', selectionStart: 0, onApply: vi.fn(), onClose }));
     const input = screen.getByTestId('ai-ask-input') as HTMLTextAreaElement;
     fireEvent.change(input, { target: { value: 'first line' } });
     const asked = () => mockPostMessage.mock.calls.map(([m]) => m).filter((m) => m.type === 'aiAsk');

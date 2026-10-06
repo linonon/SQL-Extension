@@ -478,6 +478,32 @@ function inferSchema(docs: Record<string, unknown>[]): ColumnInfo[] {
   return columns;
 }
 
+/**
+ * 采样文档的字段路径 -> BSON 类型, 浅层在前 (同层按首次出现); 只取 key 与类型, 不含任何值.
+ * 数组标成 array<元素类型>, 元素子文档的字段沿用数组的路径; 纯数字 key 归并为 <n>, 24-hex key 归并为 <id>:
+ * 以 id 作 key 的 map 里 key 本身是数据, 不归并还会让路径数随文档数膨胀
+ */
+export function fieldPathTypes(docs: readonly Document[]): [string, string[]][] {
+  const types = new Map<string, Set<string>>();
+  const label = (v: unknown): string => {
+    if (!Array.isArray(v)) { return bsonTypeName(v); }
+    const elements = [...new Set(v.map(label))];
+    return elements.length ? `array<${elements.join('|')}>` : 'array';
+  };
+  const walk = (doc: Record<string, unknown>, prefix: string): void => {
+    for (const [k, v] of Object.entries(doc)) {
+      const path = prefix + (/^\d+$/.test(k) ? '<n>' : /^[0-9a-f]{24}$/i.test(k) ? '<id>' : k);
+      types.set(path, (types.get(path) ?? new Set<string>()).add(label(v)));
+      for (const child of Array.isArray(v) ? v : [v]) {
+        if (bsonTypeName(child) === 'object') { walk(child as Record<string, unknown>, `${path}.`); }
+      }
+    }
+  };
+  for (const doc of docs) { walk(doc, ''); }
+  const depth = (path: string) => path.split('.').length;
+  return [...types].map(([path, t]): [string, string[]] => [path, [...t]]).sort((a, b) => depth(a[0]) - depth(b[0]));
+}
+
 function bsonTypeName(value: unknown): string {
   if (value === null || value === undefined) { return 'null'; }
   if (value instanceof ObjectId) { return 'ObjectId'; }

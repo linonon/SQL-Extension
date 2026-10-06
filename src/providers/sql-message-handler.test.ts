@@ -4,6 +4,17 @@ import type { IDatabaseDriver } from '../types/driver';
 import type { WebviewMessage } from '../types/messages';
 import type { StatementOutcome } from '../types/query';
 import * as vscode from 'vscode';
+import { runClaudeCode } from '../services/claude-code.js';
+
+// Ask AI 不起真 claude 子进程: 本机 Claude Code 视为已登录, 回答由 runClaudeCode 替身给出
+vi.mock('../services/claude-code.js', async (orig) => ({
+  ...(await orig<typeof import('../services/claude-code.js')>()),
+  claudeCodeAvailable: vi.fn(async () => '/bin/claude'),
+  runClaudeCode: vi.fn(async (_bin: string, _alias: string, _prompt: string, _signal: AbortSignal, onChunk: (t: string) => void) => {
+    onChunk('```sql\nSELECT 1\n```');
+    return 'claude-sonnet-test';
+  }),
+}));
 
 function createMysqlDriver(queue: Array<
   | { columns: unknown[]; rows: unknown[]; affectedRows: number; executionTime: number }
@@ -509,5 +520,54 @@ describe('handleSqlMessage Edit Table / CSV', () => {
       createCtx(createMysqlDriver([]), [])
     );
     expect(save.mock.lastCall?.[0]?.defaultUri?.path).toBe('/ws/export.csv');
+  });
+});
+
+describe('handleSqlMessage aiAsk', () => {
+  it('prompt 用 panel 绑定的库与 schema, 回答以 aiChunk / aiDone 带 id 回给 webview', async () => {
+    const posts: unknown[] = [];
+    const getSchema = vi.fn(async () => ({
+      t_user: [
+        { table: 't_user', name: 'id', type: 'bigint(20)', comment: '' },
+        { table: 't_user', name: 'status', type: 'tinyint(4)', comment: '0 normal' },
+      ],
+      t_order: [{ table: 't_order', name: 'id', type: 'bigint(20)', comment: '' }],
+    }));
+    await handleSqlMessage(
+      { type: 'aiAsk', id: 'q1', database: 'other', question: 'banned users', sql: 'SELECT * FROM t_user', selection: 't_user', lastError: 'boom' },
+      { ...createCtx(createMysqlDriver([]), posts), getSchema },
+    );
+    expect(getSchema).toHaveBeenCalledWith('AGENT_NEW', false);
+    const [bin, alias, prompt] = vi.mocked(runClaudeCode).mock.calls[0];
+    expect([bin, alias]).toEqual(['/bin/claude', 'sonnet']);
+    expect(prompt).toBe([
+      'You are a MySQL assistant embedded in a SQL editor. Current database: AGENT_NEW.',
+      'Answer concisely in the language of the question.',
+      'When the answer involves SQL, put exactly one complete runnable statement set in a single ```sql code block;',
+      'it replaces the selected SQL if any, otherwise the whole editor content, so keep unrelated statements the user has.',
+      'Only use tables/columns from the schema below (if it is truncated, other tables may exist).',
+      '',
+      'Schema (tables mentioned below list "column type -- comment" per line; other tables are table(columns)):',
+      't_user:',
+      '  id bigint(20)',
+      '  status tinyint(4) -- 0 normal',
+      't_order(id)',
+      '',
+      'Editor content:',
+      'SELECT * FROM t_user',
+      '',
+      'Selected SQL:',
+      't_user',
+      '',
+      'Last error (the previous execution in this editor failed with):',
+      'boom',
+      '',
+      'Question:',
+      'banned users',
+    ].join('\n'));
+    expect(posts).toEqual([
+      { type: 'aiChunk', id: 'q1', text: '```sql\nSELECT 1\n```' },
+      { type: 'aiDone', id: 'q1', model: 'claude-sonnet-test' },
+    ]);
   });
 });

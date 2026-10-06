@@ -9,7 +9,7 @@ import { isWholeTableWrite, splitSqlStatements } from '../utils/destructive-sql.
 import type { ExtensionMessage, QueryHistoryEntry, StatementResult } from '../types/messages.js';
 import type { SchemaColumn } from '../types/query.js';
 import { sanitizeErrorMessage } from '../utils/sanitize-error.js';
-import { cancelAiAsk, listAiModels, runAiAsk, setAiModel } from '../services/ai-assist.js';
+import { buildAiPrompt, cancelAiAsk, listAiModels, setAiModel, streamAiAnswer } from '../services/ai-assist.js';
 
 // SQL (MySQL/PostgreSQL) CRUD 消息处理. 与 handleMongoMessage / handleRedisMessage 等对齐:
 // 由 provider 解析依赖后调用, 返回 true 表示已处理 (provider 即停止路由), false 表示非 SQL 消息.
@@ -208,23 +208,15 @@ export async function handleSqlMessage(
 
       case 'aiAsk': {
         const db = ctx.database ?? message.database;
-        const { id } = message;
-        // panel 关闭后 webview.postMessage 会抛, 回执丢掉即可
-        const send = (msg: ExtensionMessage) => { try { ctx.post(msg); } catch { /* panel 已关闭 */ } };
-        try {
-          const model = await runAiAsk(ctx.panel, async () => ({
-            dialect: ctx.getDriver().driverType === 'postgresql' ? 'PostgreSQL' : 'MySQL',
-            database: db,
-            schema: await ctx.getSchema(db, false),
-            question: message.question,
-            sql: message.sql,
-            selection: message.selection,
-            lastError: message.lastError,
-          }), (text) => send({ type: 'aiChunk', id, text }));
-          send({ type: 'aiDone', id, model });
-        } catch (err) {
-          send({ type: 'aiDone', id, error: err instanceof Error ? err.message : String(err) });
-        }
+        await streamAiAnswer(ctx.panel, message.id, ctx.post, async () => buildAiPrompt({
+          dialect: ctx.getDriver().driverType === 'postgresql' ? 'PostgreSQL' : 'MySQL',
+          database: db,
+          schema: await ctx.getSchema(db, false),
+          question: message.question,
+          sql: message.sql,
+          selection: message.selection,
+          lastError: message.lastError,
+        }));
         return true;
       }
 

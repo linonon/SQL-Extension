@@ -1,8 +1,10 @@
-import { render, screen, fireEvent, within } from '@testing-library/react';
+import { act, render, screen, fireEvent, within } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { ChangeEvent, KeyboardEvent, RefObject } from 'react';
+import type { ChangeEvent, FC, KeyboardEvent, ReactNode, RefObject } from 'react';
 import { MongoDocumentTable } from './MongoDocumentTable';
 import { parseShellJson } from '../../../../src/utils/mongo-shell-syntax';
+import { mockPostMessage } from '../../__test__/setup';
+import { ReadOnlyContext } from '../../hooks/useReadOnly';
 
 // 卡片编辑器 / filter 输入用 autocomplete hook, mock 掉避免 DOM 测量; 保留 "Enter 触发 onApply"
 vi.mock('../../hooks/useMongoAutocomplete', () => ({
@@ -19,7 +21,7 @@ vi.mock('../../hooks/useMongoAutocomplete', () => ({
 
 const col = (name: string) => ({ name, dataType: 'string', nullable: true, isPrimaryKey: name === '_id', defaultValue: null, extra: '' });
 
-function renderTable(over: Record<string, unknown> = {}) {
+function renderTable(over: Record<string, unknown> = {}, wrapper?: FC<{ children: ReactNode }>) {
   const props = {
     database: 'game_s1',
     collection: 'users',
@@ -50,7 +52,7 @@ function renderTable(over: Record<string, unknown> = {}) {
     queryError: null,
     ...over,
   };
-  return { props, ...render(<MongoDocumentTable {...(props as any)} />) };
+  return { props, ...render(<MongoDocumentTable {...(props as any)} />, { wrapper }) };
 }
 
 beforeEach(() => vi.clearAllMocks());
@@ -361,5 +363,71 @@ describe('MongoDocumentTable - handleSave insert/update/clone 分流', () => {
     fireEvent.change(textarea, { target: { value: '{"name": "new"}' } });
     fireEvent.click(screen.getByText('Save'));
     expect(onInsertDocument).toHaveBeenCalledWith({ name: 'new' });
+  });
+});
+
+describe('MongoDocumentTable - Ask AI', () => {
+  const send = (data: unknown) => act(() => { window.dispatchEvent(new MessageEvent('message', { data })); });
+  const posted = (type: string) => mockPostMessage.mock.calls.map(([m]) => m).filter((m) => m.type === type);
+  const answer = (text: string) => {
+    const { id } = posted('mongoAiAsk').at(-1);
+    send({ type: 'aiChunk', id, text });
+    send({ type: 'aiDone', id, model: 'Sonnet' });
+  };
+  const current = { filter: '{"lv": 1}', sort: '{"_id": -1}', projection: '{"name": 1}', customLimit: '10', customSkip: '5' };
+
+  function openAndAsk(over: Record<string, unknown> = {}, wrapper?: FC<{ children: ReactNode }>) {
+    const r = renderTable({ ...current, ...over }, wrapper);
+    fireEvent.click(screen.getByRole('button', { name: 'Ask AI' }));
+    const input = screen.getByTestId('ai-ask-input');
+    fireEvent.change(input, { target: { value: 'top players' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+    return r;
+  }
+
+  it('只读连接也能问: 提问带库 / 集合, 五个输入框原文与上次 Apply 的报错', () => {
+    openAndAsk({ queryError: 'Filter: Unexpected token' }, ({ children }) => <ReadOnlyContext.Provider value={true}>{children}</ReadOnlyContext.Provider>);
+    expect(screen.queryByRole('button', { name: '+ New Document' })).toBeNull();
+    expect(posted('mongoAiAsk')).toEqual([{
+      type: 'mongoAiAsk', id: expect.any(String), database: 'game_s1', collection: 'users', question: 'top players',
+      filter: '{"lv": 1}', sort: '{"_id": -1}', projection: '{"name": 1}', limit: '10', skip: '5', lastError: 'Filter: Unexpected token',
+    }]);
+  });
+
+  it('Fill 按块填五个输入框 (缺块的清空), 不 Apply 也不发查询; Undo 恢复填入前的五个输入框', () => {
+    const { props } = openAndAsk();
+    answer('```filter\n{"level": {"$gte": 30}}\n```\n```limit\n20\n```');
+    fireEvent.click(screen.getByRole('button', { name: 'Fill query' }));
+    expect(props.onFilterChange).toHaveBeenLastCalledWith('{"level": {"$gte": 30}}');
+    expect(props.onSortChange).toHaveBeenLastCalledWith('');
+    expect(props.onProjectionChange).toHaveBeenLastCalledWith('');
+    expect(props.onLimitChange).toHaveBeenLastCalledWith('20');
+    expect(props.onSkipChange).toHaveBeenLastCalledWith('');
+    expect(props.onApply).not.toHaveBeenCalled();
+    expect(posted('mongoFindDocuments')).toEqual([]);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Undo fill' }));
+    expect(props.onFilterChange).toHaveBeenLastCalledWith('{"lv": 1}');
+    expect(props.onSortChange).toHaveBeenLastCalledWith('{"_id": -1}');
+    expect(props.onProjectionChange).toHaveBeenLastCalledWith('{"name": 1}');
+    expect(props.onLimitChange).toHaveBeenLastCalledWith('10');
+    expect(props.onSkipChange).toHaveBeenLastCalledWith('5');
+    expect(props.onApply).not.toHaveBeenCalled();
+  });
+
+  it('回答里没有命名块 (只有供复制的 pipeline): 不给 Fill, 回答留作文本', () => {
+    openAndAsk();
+    answer('Needs grouping:\n```javascript\ndb.users.aggregate([{"$group": {"_id": "$lv"}}])\n```');
+    expect(screen.queryByRole('button', { name: 'Fill query' })).toBeNull();
+    expect(screen.getByText(/\$group/)).toBeInTheDocument();
+  });
+
+  it('切集合时提问栏按 database/collection 重挂载: 进行中的提问被取消, 旧回答清掉', () => {
+    const { props, rerender } = openAndAsk();
+    send({ type: 'aiChunk', id: posted('mongoAiAsk').at(-1).id, text: 'partial' });
+    rerender(<MongoDocumentTable {...(props as any)} collection="orders" />);
+    expect(posted('aiCancel')).toHaveLength(1);
+    expect(screen.queryByText('partial')).toBeNull();
+    expect(screen.getByTestId('ai-ask-input')).toHaveValue('');
   });
 });

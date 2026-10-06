@@ -1,18 +1,30 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { useVSCodeMessage } from '../../hooks/useVSCodeMessage';
 import { usePostMessage } from '../../hooks/usePostMessage';
-import type { ExtensionMessage } from '../../../../src/types/messages';
+import type { ExtensionMessage, MongoQueryInputs } from '../../../../src/types/messages';
 
-interface AiAskBarProps {
+// target 'sql': SQL 编辑器, 回答里的 ```sql 块替换选区或整个编辑器.
+// target 'mongo': Mongo 查询栏, 回答里按输入框命名的块 (```filter 等) 填进五个输入框, 不自动 Apply
+type AiAskBarProps = {
   readonly database: string;
-  readonly sql: string;
-  readonly selection: string;
-  readonly selectionStart: number;
-  // 编辑器上一次执行失败时的报错, 随提问发出
+  // 上一次执行 (Mongo: 上一次 Apply 的查询) 失败时的报错, 随提问发出
   readonly lastError?: string;
-  readonly onApply: (sql: string) => void;
   readonly onClose: () => void;
-}
+} & (
+  | {
+    readonly target: 'sql';
+    readonly sql: string;
+    readonly selection: string;
+    readonly selectionStart: number;
+    readonly onApply: (sql: string) => void;
+  }
+  | {
+    readonly target: 'mongo';
+    readonly collection: string;
+    readonly inputs: MongoQueryInputs;
+    readonly onFill: (inputs: MongoQueryInputs) => void;
+  }
+);
 
 /** 提问那一刻的选区; selection 为空表示针对整个编辑器 */
 export interface SelectionSnapshot {
@@ -20,9 +32,23 @@ export interface SelectionSnapshot {
   readonly start: number;
 }
 
-export function extractSqlBlock(answer: string): string | null {
-  const m = /```sql[^\n]*\n([\s\S]*?)```/i.exec(answer);
+/** 回答里第一个 info string 为 name 的 fenced 块的内容 */
+export function extractBlock(answer: string, name: string): string | null {
+  const m = new RegExp('```' + name + '\\b[^\\n]*\\n([\\s\\S]*?)```', 'i').exec(answer);
   return m ? m[1].trim() : null;
+}
+
+const MONGO_BOXES = ['filter', 'sort', 'projection', 'limit', 'skip'] as const;
+
+/**
+ * 回答里按输入框命名的块合起来就是完整查询: 缺块的输入框清空 (Limit / Skip 回到默认). 一个块都没有返回 null.
+ * 只提取不校验: 写错的在 Apply 时由宿主解析报错, 下次提问带上它
+ */
+export function extractMongoBlocks(answer: string): MongoQueryInputs | null {
+  const found = MONGO_BOXES.map((box) => extractBlock(answer, box));
+  if (found.every((b) => b === null)) return null;
+  const [filter, sort, projection, limit, skip] = found.map((b) => b ?? '');
+  return { filter, sort, projection, limit, skip };
 }
 
 /**
@@ -44,8 +70,9 @@ export function applySql(current: string, snap: SelectionSnapshot, generated: st
 // 同一 webview 内唯一即可: 扩展回执带回 id, 旧提问的残余 chunk 不会串进新回答
 let askSeq = 0;
 
-// 编辑器内联提问: 问题 + 当前 SQL + 上次报错 + 表结构交给 AI 模型, 回答里的 ```sql 块可一键套用
-export function AiAskBar({ database, sql, selection, selectionStart, lastError, onApply, onClose }: AiAskBarProps) {
+// 内联提问: 问题 + 当前查询 + 上次报错 + 结构 (SQL 表结构 / Mongo 采样字段类型) 交给 AI 模型, 回答里的查询可一键套用
+export function AiAskBar(props: AiAskBarProps) {
+  const { database, lastError, onClose } = props;
   const postMessage = usePostMessage();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const reqId = useRef('');
@@ -58,15 +85,15 @@ export function AiAskBar({ database, sql, selection, selectionStart, lastError, 
   const [snap, setSnap] = useState<SelectionSnapshot>({ selection: '', start: 0 });
   const [models, setModels] = useState<{ id: string; name: string }[]>([]);
   const [modelId, setModelId] = useState('');
-  // 套用前的编辑器内容, 供一键撤回 (受控 textarea 整段赋值会丢原生 undo 栈)
-  const [beforeApply, setBeforeApply] = useState<string | null>(null);
+  // 套用 / 填入前的内容, 供一次撤回 (受控输入整段赋值会丢原生 undo 栈)
+  const [undo, setUndo] = useState<(() => void) | null>(null);
 
   useEffect(() => {
     inputRef.current?.focus();
     postMessage({ type: 'aiListModels' });
   }, [postMessage]);
 
-  // 卸载时 (关闭 / 切表重挂载) 取消进行中的提问
+  // 卸载时 (关闭 / 切表或切集合重挂载) 取消进行中的提问
   useEffect(() => () => {
     if (busyRef.current) postMessage({ type: 'aiCancel' });
   }, [postMessage]);
@@ -99,17 +126,22 @@ export function AiAskBar({ database, sql, selection, selectionStart, lastError, 
   const ask = useCallback(() => {
     const q = question.trim();
     if (!q || busy) return;
-    const s = { selection: selection.trim() ? selection : '', start: selectionStart };
     reqId.current = String(++askSeq);
     busyRef.current = true;
-    setSnap(s);
     setAnswer('');
     setError('');
     setModel('');
-    setBeforeApply(null);
+    setUndo(null);
     setBusy(true);
-    postMessage({ type: 'aiAsk', id: reqId.current, database, question: q, sql, selection: s.selection, ...(lastError ? { lastError } : {}) });
-  }, [question, busy, selection, selectionStart, database, sql, lastError, postMessage]);
+    const err = lastError ? { lastError } : {};
+    if (props.target === 'sql') {
+      const s = { selection: props.selection.trim() ? props.selection : '', start: props.selectionStart };
+      setSnap(s);
+      postMessage({ type: 'aiAsk', id: reqId.current, database, question: q, sql: props.sql, selection: s.selection, ...err });
+    } else {
+      postMessage({ type: 'mongoAiAsk', id: reqId.current, database, collection: props.collection, question: q, ...props.inputs, ...err });
+    }
+  }, [question, busy, props, database, lastError, postMessage]);
 
   const handleKeyDown = useCallback((e: KeyboardEvent<HTMLTextAreaElement>) => {
     // 输入法组字中的 Enter / Esc 属于输入法, 不提交也不关闭
@@ -119,8 +151,24 @@ export function AiAskBar({ database, sql, selection, selectionStart, lastError, 
     if (e.key === 'Escape') { e.preventDefault(); onClose(); }
   }, [ask, onClose]);
 
-  const generated = busy ? null : extractSqlBlock(answer);
-  const applied = generated ? applySql(sql, snap, generated) : null;
+  // 回答里可套用的查询 (流式输出中不给); run 缺省表示不可套用
+  let action: { label: string; title?: string; run?: () => void } | null = null;
+  if (!busy && props.target === 'sql') {
+    const generated = extractBlock(answer, 'sql');
+    const applied = generated ? applySql(props.sql, snap, generated) : null;
+    const { sql, onApply } = props;
+    if (generated) {
+      action = applied === null
+        ? { label: 'Selection changed', title: 'The selected SQL changed since you asked; copy the answer manually' }
+        : { label: snap.selection ? 'Replace selection' : 'Replace editor', run: () => { setUndo(() => () => onApply(sql)); onApply(applied); } };
+    }
+  } else if (!busy && props.target === 'mongo') {
+    const filled = extractMongoBlocks(answer);
+    const { inputs, onFill } = props;
+    if (filled) {
+      action = { label: 'Fill query', title: 'Fill the query inputs; click Apply to run it', run: () => { setUndo(() => () => onFill(inputs)); onFill(filled); } };
+    }
+  }
 
   return (
     <div className="ai-ask-bar">
@@ -132,7 +180,9 @@ export function AiAskBar({ database, sql, selection, selectionStart, lastError, 
           value={question}
           onChange={(e) => setQuestion(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={selection ? 'Ask about the selected SQL...' : 'Ask or describe the query you want...'}
+          placeholder={props.target === 'mongo'
+            ? 'Describe the documents you want...'
+            : props.selection ? 'Ask about the selected SQL...' : 'Ask or describe the query you want...'}
           data-testid="ai-ask-input"
         />
         {models.length > 0 && (
@@ -156,19 +206,13 @@ export function AiAskBar({ database, sql, selection, selectionStart, lastError, 
           {answer && <pre>{answer}</pre>}
         </div>
       )}
-      {(generated || beforeApply !== null || model) && (
+      {(action || undo || model) && (
         <div className="ai-ask-row">
-          {generated && beforeApply === null && (
-            <button
-              disabled={applied === null}
-              title={applied === null ? 'The selected SQL changed since you asked; copy the answer manually' : undefined}
-              onClick={() => { if (applied !== null) { setBeforeApply(sql); onApply(applied); } }}
-            >
-              {applied === null ? 'Selection changed' : snap.selection ? 'Replace selection' : 'Replace editor'}
-            </button>
+          {action && !undo && (
+            <button disabled={!action.run} title={action.title} onClick={action.run}>{action.label}</button>
           )}
-          {beforeApply !== null && (
-            <button onClick={() => { onApply(beforeApply); setBeforeApply(null); }}>Undo apply</button>
+          {undo && (
+            <button onClick={() => { undo(); setUndo(null); }}>{props.target === 'sql' ? 'Undo apply' : 'Undo fill'}</button>
           )}
           {model && <span className="hint">{model}</span>}
         </div>

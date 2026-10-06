@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { MongoDriver, deepFormatValue, deepFormatDocument, buildUri, userFilter } from './mongo-driver';
+import { MongoDriver, deepFormatValue, deepFormatDocument, buildUri, fieldPathTypes, userFilter } from './mongo-driver';
 import { ObjectId, Long, Binary, UUID, Timestamp } from 'mongodb';
 // 'mongodb' 在本文件被 mock 成假类; 往返测试用 bson 包里的真实类
 import {
@@ -644,5 +644,33 @@ describe('buildUri', () => {
   it('不走 tunnel 时不加 directConnection', () => {
     expect(buildUri({ ...base, authSource: 'admin' })).toBe('mongodb://u:p%40ss@127.0.0.1:40001/game?authSource=admin');
     expect(buildUri({ ...base, ssh: { ...ssh, enabled: false } })).toBe('mongodb://u:p%40ss@127.0.0.1:40001/game');
+  });
+});
+
+describe('fieldPathTypes', () => {
+  it('数组元素的字段沿用数组路径; 数字 / 24-hex key 归并为 <n> / <id>; 浅层在前', () => {
+    const hex = '5f1d7a2b3c4d5e6f70819203';
+    const docs = [
+      {
+        heroes: { [hex]: { star: new RealInt32(5) }, '10086': { star: new RealLong(1) } },
+        bag: [{ itemId: 'a', n: new RealInt32(3) }, { itemId: 'b' }],
+        _id: new RealObjectId('a'.repeat(24)),
+      },
+      { bag: [], tags: ['x', new RealInt32(1)], at: new Date(0), uid: new RealLong(9) },
+    ];
+    expect(fieldPathTypes(docs)).toEqual([
+      ['heroes', ['object']],
+      ['bag', ['array<object>', 'array']],
+      ['_id', ['ObjectId']],
+      ['tags', ['array<string|Int32>']],
+      ['at', ['date']],
+      ['uid', ['Long']],
+      ['heroes.<n>', ['object']],
+      ['heroes.<id>', ['object']],
+      ['bag.itemId', ['string']],
+      ['bag.n', ['Int32']],
+      ['heroes.<n>.star', ['Long']],
+      ['heroes.<id>.star', ['Int32']],
+    ]);
   });
 });

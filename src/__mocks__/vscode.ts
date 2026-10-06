@@ -97,3 +97,25 @@ export const workspace = {
 export const lm = {
   selectChatModels: async () => [],
 };
+
+export class CancellationError extends Error {
+  constructor() { super('Canceled'); }
+}
+
+export class CancellationTokenSource {
+  private readonly listeners: Array<() => void> = [];
+  readonly token = {
+    isCancellationRequested: false,
+    onCancellationRequested: (cb: () => void) => { this.listeners.push(cb); return { dispose: () => {} }; },
+  };
+  cancel() {
+    if (this.token.isCancellationRequested) { return; }
+    this.token.isCancellationRequested = true;
+    for (const cb of this.listeners) { cb(); }
+  }
+  dispose() {}
+}
+
+export const LanguageModelChatMessage = {
+  User: (content: string) => ({ role: 1, content }),
+};

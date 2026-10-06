@@ -467,6 +467,7 @@ export function QueryEditor({ connectionName, database, driverType, initialSql, 
       </div>
       {showAsk && (
         <AiAskBar
+          target="sql"
           database={database}
           sql={sqlText}
           selection={selectedText}
