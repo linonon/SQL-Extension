@@ -90,7 +90,7 @@ describe('handleRedisMessage', () => {
         keys: [{ key: 'k1', type: 'string', ttl: -1 }],
       });
 
-      const msg = { type: 'redisScan', database: 2, pattern: '*', cursor: '0', count: 100 } as WebviewMessage;
+      const msg = { type: 'redisScan', requestId: 7, database: 2, pattern: '*', cursor: '0', count: 100 } as WebviewMessage;
       const handled = await handleRedisMessage(msg, driver, postMessage);
 
       expect(handled).toBe(true);
@@ -98,9 +98,24 @@ describe('handleRedisMessage', () => {
       expect(driver.scan).toHaveBeenCalledWith('*', '0', 100);
       expect(postMessage).toHaveBeenCalledWith({
         type: 'redisScanResult',
+        requestId: 7,
         keys: [{ key: 'k1', type: 'string', ttl: -1 }],
         cursor: '5',
         done: false,
+      });
+    });
+  });
+
+  describe('redisHashScan', () => {
+    it('回执带回 key 与 database, webview 据此丢弃已切走的 key 的分页', async () => {
+      (driver.hashScan as any).mockResolvedValue({ cursor: '0', fields: { f2: 'v2' } });
+
+      const msg = { type: 'redisHashScan', key: 'h', database: 5, cursor: '9', count: 100 } as WebviewMessage;
+      await handleRedisMessage(msg, driver, postMessage);
+
+      expect(driver.selectDatabase).toHaveBeenCalledWith(5);
+      expect(postMessage).toHaveBeenCalledWith({
+        type: 'redisHashScanResult', key: 'h', database: 5, cursor: '0', fields: { f2: 'v2' }, done: true,
       });
     });
   });
@@ -111,12 +126,13 @@ describe('handleRedisMessage', () => {
       (driver.getString as any).mockResolvedValue('hello');
       (driver.getTTL as any).mockResolvedValue(300);
 
-      const msg = { type: 'redisGetValue', key: 'mykey', database: 0 } as WebviewMessage;
+      const msg = { type: 'redisGetValue', key: 'mykey', database: 4 } as WebviewMessage;
       await handleRedisMessage(msg, driver, postMessage);
 
       expect(postMessage).toHaveBeenCalledWith({
         type: 'redisValueResult',
         key: 'mykey',
+        database: 4,
         keyType: 'string',
         value: { type: 'string', value: 'hello' },
         ttl: 300,

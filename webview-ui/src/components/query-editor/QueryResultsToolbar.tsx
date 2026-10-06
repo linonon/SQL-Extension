@@ -3,6 +3,7 @@ interface QueryResultsToolbarProps {
   readonly executionTime: number;
   readonly pendingCount: number;
   readonly editable: boolean;
+  readonly readOnlyReason?: string;
   readonly saving: boolean;
   readonly onSave: () => void;
   readonly onDiscard: () => void;
@@ -13,6 +14,7 @@ export function QueryResultsToolbar({
   executionTime,
   pendingCount,
   editable,
+  readOnlyReason,
   saving,
   onSave,
   onDiscard,
@@ -22,6 +24,9 @@ export function QueryResultsToolbar({
       <span className="query-results-toolbar-info">
         {rowCount} rows in {executionTime}ms
       </span>
+      {readOnlyReason && (
+        <span className="query-results-toolbar-info">{readOnlyReason}</span>
+      )}
       {editable && pendingCount > 0 && (
         <span className="query-results-toolbar-pending">
           {pendingCount} pending change{pendingCount > 1 ? 's' : ''}

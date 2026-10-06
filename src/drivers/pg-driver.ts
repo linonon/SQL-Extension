@@ -280,7 +280,8 @@ export class PgDriver implements IDatabaseDriver {
       try {
         const start = Date.now();
         const result = await client.query(sql, params);
-        return this.toQueryResult(result, Date.now() - start);
+        const out = this.toQueryResult(result, Date.now() - start);
+        return { ...out, columns: await this.withSources(client, result.fields ?? [], out.columns) };
       } finally {
         client.release();
       }
@@ -295,6 +296,31 @@ export class PgDriver implements IDatabaseDriver {
     };
 
     return { promise, cancel };
+  }
+
+  // RowDescription 只带 tableID / columnID (表 OID + attnum), 查 catalog 还原 schema.table 与原列名.
+  // 只给未改名的原始列挂 source; 查询失败时不挂 (结果网格只读)
+  private async withSources(client: pg.PoolClient, fields: pg.FieldDef[], columns: readonly ColumnInfo[]): Promise<readonly ColumnInfo[]> {
+    const oids = [...new Set(fields.map((f) => f.tableID).filter((id) => id > 0))];
+    if (oids.length === 0) { return columns; }
+    try {
+      const { rows } = await client.query(
+        `SELECT a.attrelid AS oid, a.attnum, a.attname, c.relname, n.nspname
+         FROM pg_attribute a
+         JOIN pg_class c ON c.oid = a.attrelid
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE a.attrelid = ANY($1::oid[]) AND a.attnum > 0`,
+        [oids]
+      );
+      const byKey = new Map(rows.map((r) => [`${r.oid}.${r.attnum}`, r]));
+      return columns.map((col, i) => {
+        const f = fields[i];
+        const r = byKey.get(`${f.tableID}.${f.columnID}`);
+        return r && r.attname === f.name ? { ...col, source: { schema: String(r.nspname), table: String(r.relname) } } : col;
+      });
+    } catch {
+      return columns;
+    }
   }
 
   private async query(sql: string, params?: unknown[]): Promise<Record<string, unknown>[]> {

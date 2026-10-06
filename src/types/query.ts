@@ -5,6 +5,9 @@ export interface ColumnInfo {
   readonly isPrimaryKey: boolean;
   readonly defaultValue: string | null;
   readonly extra: string;
+  // 查询结果列的来源: 只在列是某张真实表未改名的原始列时存在 (表达式 / 别名列 / 无法判定时缺省),
+  // 结果网格据此判定能否写回. schema 在 MySQL 是 database, 在 PG 是 namespace
+  readonly source?: { readonly schema: string; readonly table: string };
 }
 
 export interface TableInfo {

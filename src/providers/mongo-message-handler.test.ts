@@ -84,6 +84,7 @@ describe('handleMongoMessage', () => {
 
       const msg = {
         type: 'mongoFindDocuments',
+        requestId: 3,
         database: 'mydb',
         collection: 'users',
         filter: '',
@@ -98,6 +99,7 @@ describe('handleMongoMessage', () => {
       expect(handled).toBe(true);
       expect(postMessage).toHaveBeenCalledWith({
         type: 'mongoDocumentList',
+        requestId: 3,
         columns: docsResult.columns,
         rows: docsResult.rows,
         total: 1,
@@ -110,6 +112,7 @@ describe('handleMongoMessage', () => {
 
       const msg = {
         type: 'mongoFindDocuments',
+        requestId: 4,
         database: 'mydb',
         collection: 'users',
         filter: '',
@@ -123,6 +126,7 @@ describe('handleMongoMessage', () => {
       expect(handled).toBe(true);
       expect(postMessage).toHaveBeenCalledWith({
         type: 'mongoDocumentList',
+        requestId: 4,
         columns: [],
         rows: [],
         total: 0,

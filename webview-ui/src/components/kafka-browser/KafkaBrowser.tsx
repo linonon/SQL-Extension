@@ -31,7 +31,9 @@ export function KafkaBrowser({ connectionId }: KafkaBrowserProps) {
       case 'kafkaTopicList':
         setTopics(msg.topics);
         break;
+      // 回执带回 topic / partition, 与当前选中的对不上就是切换前的旧请求晚到, 丢弃 (否则显示在新 topic 标题下)
       case 'kafkaPartitionList':
+        if (msg.topic !== selectedTopic) { break; }
         setPartitions((prev) => {
           // 如果是刷新 (partition 数量不变), 保留当前选中和消息列表
           if (prev.length > 0 && prev.length === msg.partitions.length) {
@@ -45,6 +47,7 @@ export function KafkaBrowser({ connectionId }: KafkaBrowserProps) {
         });
         break;
       case 'kafkaMessageList':
+        if (msg.topic !== selectedTopic || msg.partition !== selectedPartition) { break; }
         setMessages(msg.messages);
         setLoading(false);
         break;
@@ -55,7 +58,7 @@ export function KafkaBrowser({ connectionId }: KafkaBrowserProps) {
         }
         break;
     }
-  }, [selectedTopic, postMessage]);
+  }, [selectedTopic, selectedPartition, postMessage]);
 
   useVSCodeMessage(handleMessage);
 
@@ -77,9 +80,11 @@ export function KafkaBrowser({ connectionId }: KafkaBrowserProps) {
     setSelectedTopic(topic);
   }, []);
 
+  // 换 partition 即放弃进行中的拉取 (其回执会被丢弃), 结束 loading 以免 Fetch 按钮一直禁用
   const handlePartitionChange = useCallback((partition: number) => {
     setSelectedPartition(partition);
     setMessages([]);
+    setLoading(false);
   }, []);
 
   const handleFetch = useCallback((offset: string) => {

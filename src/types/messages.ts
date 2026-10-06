@@ -58,9 +58,9 @@ export interface StatementResult {
 
 // Extension -> Webview
 export type ExtensionMessage =
-  | { type: 'queryResult'; columns: ColumnInfo[]; rows: Record<string, unknown>[]; affectedRows: number; executionTime: number; error?: string }
-  | { type: 'queryBatchResult'; statements: StatementResult[] }
-  | { type: 'columnsResult'; columns: ColumnInfo[] }
+  | { type: 'queryResult'; requestId: number; columns: ColumnInfo[]; rows: Record<string, unknown>[]; affectedRows: number; executionTime: number; error?: string }
+  | { type: 'queryBatchResult'; requestId: number; statements: StatementResult[] }
+  | { type: 'columnsResult'; requestId: number; columns: ColumnInfo[] }
   | { type: 'batchUpdateResult'; success: boolean; error?: string }
   | { type: 'insertRowResult'; success: boolean; error?: string }
   | { type: 'connectionTestResult'; success: boolean; error?: string }
@@ -73,20 +73,20 @@ export type ExtensionMessage =
   | { type: 'aiModels'; models: { id: string; name: string }[]; selected: string; error?: string }
   | { type: 'tableDetails'; columns: DetailedColumnInfo[]; tableName: string }
   | { type: 'alterTableResult'; success: boolean; error?: string; ddlPreview?: string }
-  | { type: 'redisScanResult'; keys: readonly RedisKeyInfo[]; cursor: string; done: boolean }
-  | { type: 'redisValueResult'; key: string; keyType: RedisKeyType; value: RedisValue; ttl: number }
+  | { type: 'redisScanResult'; requestId: number; keys: readonly RedisKeyInfo[]; cursor: string; done: boolean }
+  | { type: 'redisValueResult'; key: string; database: number; keyType: RedisKeyType; value: RedisValue; ttl: number }
   | { type: 'redisOperationResult'; success: boolean; error?: string }
   | { type: 'redisDbList'; databases: readonly { readonly index: number; readonly keyCount: number }[] }
   | { type: 'redisDeleteKeysResult'; success: boolean; deletedKeys: readonly string[] }
   | { type: 'redisCommandResult'; output: string }
-  | { type: 'redisHashScanResult'; key: string; cursor: string; fields: Record<string, string>; done: boolean }
+  | { type: 'redisHashScanResult'; key: string; database: number; cursor: string; fields: Record<string, string>; done: boolean }
   | { type: 'redisImportResult'; success: boolean; importedCount?: number; error?: string }
   | { type: 'redisAddKeyResult'; key: string }
   | { type: 'kafkaTopicList'; topics: readonly KafkaTopicInfo[] }
   | { type: 'kafkaPartitionList'; topic: string; partitions: readonly KafkaPartitionInfo[] }
   | { type: 'kafkaMessageList'; topic: string; partition: number; messages: readonly KafkaMessage[] }
   | { type: 'kafkaProduceResult'; success: boolean; partition?: number; offset?: string; error?: string }
-  | { type: 'mongoDocumentList'; columns: readonly ColumnInfo[]; rows: readonly Record<string, unknown>[]; total: number; error?: string }
+  | { type: 'mongoDocumentList'; requestId: number; columns: readonly ColumnInfo[]; rows: readonly Record<string, unknown>[]; total: number; error?: string }
   | { type: 'mongoAllCollectionList'; collections: readonly { readonly database: string; readonly name: string; readonly count: number }[] }
   | { type: 'mongoOperationResult'; success: boolean; error?: string; affectedRows?: number }
   | { type: 'mongoExportResult'; success: boolean; count?: number; error?: string }
@@ -100,7 +100,7 @@ export type ExtensionMessage =
 export type WebviewMessage =
   | { type: 'insertRow'; database: string; table: string; row: Record<string, unknown> }
   | { type: 'deleteRows'; database: string; table: string; primaryKeys: Record<string, unknown>[] }
-  | { type: 'executeQuery'; database: string; sql: string }
+  | { type: 'executeQuery'; requestId: number; database: string; sql: string }
   | { type: 'cancelQuery' }
   | { type: 'aiAsk'; id: string; database: string; question: string; sql: string; selection: string }
   | { type: 'aiCancel' }
@@ -111,14 +111,14 @@ export type WebviewMessage =
   | { type: 'testConnection'; config: ConnectionFormBase }
   | { type: 'saveConnection'; config: SaveConnectionConfig }
   | { type: 'updateConnection'; config: UpdateConnectionConfig }
-  | { type: 'listColumns'; database: string; table: string }
+  | { type: 'listColumns'; requestId: number; database: string; table: string }
   | { type: 'batchUpdate'; database: string; table: string; updates: { primaryKeys: Record<string, unknown>; changes: Record<string, unknown> }[] }
   | { type: 'fetchTableDetails'; database: string; table: string }
   | { type: 'previewAlterTable'; database: string; table: string; changes: AlterTableChanges }
   | { type: 'alterTable'; database: string; table: string; changes: AlterTableChanges }
   | { type: 'exportCsv'; content: string; defaultFileName: string }
   | { type: 'ready' }
-  | { type: 'redisScan'; database: number; pattern: string; cursor: string; count: number }
+  | { type: 'redisScan'; requestId: number; database: number; pattern: string; cursor: string; count: number }
   | { type: 'redisGetValue'; key: string; database: number; setCursor?: string; listStart?: number; zsetStart?: number }
   | { type: 'redisSetString'; key: string; value: string; database: number; ttl?: number }
   | { type: 'redisHashDelete'; key: string; field: string; database: number }
@@ -147,7 +147,7 @@ export type WebviewMessage =
   | { type: 'kafkaFetchMessages'; topic: string; partition: number; offset: string; limit: number }
   | { type: 'kafkaFetchByTimestamp'; topic: string; partition: number; timestamp: number; limit: number }
   | { type: 'kafkaProduceMessage'; topic: string; key: string | null; value: string; headers: Record<string, string>; partition?: number }
-  | { type: 'mongoFindDocuments'; database: string; collection: string; filter: string; sort: string; projection?: string; skip: number; limit: number }
+  | { type: 'mongoFindDocuments'; requestId: number; database: string; collection: string; filter: string; sort: string; projection?: string; skip: number; limit: number }
   | { type: 'mongoListAllCollections' }
   | { type: 'mongoInsertDocument'; database: string; collection: string; document: Record<string, unknown> }
   | { type: 'mongoUpdateDocument'; database: string; collection: string; id: string; document: Record<string, unknown> }

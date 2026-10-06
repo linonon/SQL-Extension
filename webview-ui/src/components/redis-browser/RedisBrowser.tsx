@@ -13,6 +13,9 @@ const LIST_PAGE_SIZE = 100;
 const ZSET_PAGE_SIZE = 100;
 const HASH_SCAN_COUNT = 100;
 
+// redisScan 的请求序号: 回执 requestId 不是最近一次的 (换 pattern / 换库 / 刷新后旧 SCAN 晚到) 即丢弃, 不并进当前列表
+let scanSeq = 0;
+
 interface RedisBrowserProps {
   readonly connectionId: string;
   readonly database: number;
@@ -95,6 +98,7 @@ export function RedisBrowser({ database: initialDb, separator = ':' }: RedisBrow
   const listLoadingMore = useRef(false);
   const zsetLoadingMore = useRef(false);
   const selectedKeyRef = useRef<string | null>(null);
+  const scanIdRef = useRef(0);
 
   // 扫描 keys
   const doScan = useCallback((pat: string, cur: string, append: boolean) => {
@@ -102,7 +106,8 @@ export function RedisBrowser({ database: initialDb, separator = ':' }: RedisBrow
       setKeys([]);
       setCursor('0');
     }
-    postMessage({ type: 'redisScan', database: db, pattern: pat, cursor: cur, count: PAGE_SIZE });
+    scanIdRef.current = ++scanSeq;
+    postMessage({ type: 'redisScan', requestId: scanIdRef.current, database: db, pattern: pat, cursor: cur, count: PAGE_SIZE });
   }, [db, postMessage]);
 
   // 初始加载数据库列表
@@ -119,6 +124,7 @@ export function RedisBrowser({ database: initialDb, separator = ':' }: RedisBrow
   const handleMessage = useCallback((message: ExtensionMessage) => {
     switch (message.type) {
       case 'redisScanResult': {
+        if (message.requestId !== scanIdRef.current) { break; }
         setHasMore(!message.done);
         setCursor(message.cursor);
         setKeys((prev) => {
@@ -129,6 +135,8 @@ export function RedisBrowser({ database: initialDb, separator = ':' }: RedisBrow
         break;
       }
       case 'redisValueResult': {
+        // 只认当前选中 key 的回执: 晚到的旧 key 值显示在新 key 下, Save 会把它写进新 key
+        if (message.key !== selectedKeyRef.current || message.database !== db) { break; }
         setCommandOutput(null);
         setSelectedKeyType(message.keyType);
         setSelectedTTL(message.ttl);
@@ -207,6 +215,7 @@ export function RedisBrowser({ database: initialDb, separator = ':' }: RedisBrow
         break;
       }
       case 'redisHashScanResult': {
+        if (message.key !== selectedKeyRef.current || message.database !== db) { break; }
         setHashCursor(message.cursor);
         setHashDone(message.done);
         setValue((prev) => {
@@ -315,6 +324,10 @@ export function RedisBrowser({ database: initialDb, separator = ':' }: RedisBrow
 
   const handleSelectKey = useCallback((key: string) => {
     selectedKeyRef.current = key;
+    // 上一个 key 的 Load More 回执会被丢弃, 不能把追加标记留给新 key 的首屏
+    setLoadingMore.current = false;
+    listLoadingMore.current = false;
+    zsetLoadingMore.current = false;
     setSelectedKey(key);
     setCommandOutput(null);
     setListOffset(0);

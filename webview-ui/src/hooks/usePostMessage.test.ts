@@ -33,6 +33,7 @@ describe('usePostMessage', () => {
 
     const message: WebviewMessage = {
       type: 'executeQuery',
+      requestId: 1,
       database: 'test_db',
       sql: 'SELECT * FROM users',
     };

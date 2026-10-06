@@ -134,6 +134,12 @@ export class MySQLDriver implements IDatabaseDriver {
     executionTime: number
   ): QueryResult {
     if (Array.isArray(result)) {
+      // 自连接时同一张表以多个别名 (f.table) 出现, 各列分属不同行实例, 按主键写回会写错行, 这张表的列都不挂 source
+      const aliasesByTable = new Map<string, Set<string>>();
+      for (const f of fields ?? []) {
+        const key = `${f.db}.${f.orgTable}`;
+        aliasesByTable.set(key, (aliasesByTable.get(key) ?? new Set()).add(f.table));
+      }
       const columns: ColumnInfo[] = (fields ?? []).map((f: mysql.FieldPacket) => ({
         name: f.name,
         dataType: String(f.type),
@@ -141,6 +147,10 @@ export class MySQLDriver implements IDatabaseDriver {
         isPrimaryKey: false,
         defaultValue: null,
         extra: '',
+        // 表达式列 orgTable 为空; 别名列 orgName != name, 写回会落到别的列, 都不算来源列
+        source: f.orgTable && f.db && f.orgName === f.name && aliasesByTable.get(`${f.db}.${f.orgTable}`)!.size === 1
+          ? { schema: f.db, table: f.orgTable }
+          : undefined,
       }));
       return { columns, rows: result as Record<string, unknown>[], affectedRows: 0, executionTime };
     }

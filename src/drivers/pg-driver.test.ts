@@ -453,6 +453,60 @@ describe('PgDriver', () => {
     });
   });
 
+  describe('executeCancellable 结果列来源 (source)', () => {
+    it('按 tableID/columnID 查 catalog, 只给未改名的原始列挂 schema.table', async () => {
+      const client = {
+        release: vi.fn(),
+        query: vi.fn()
+          .mockResolvedValueOnce({
+            rows: [{ id: 1, nick: 'a', n: 2 }],
+            rowCount: 1,
+            fields: [
+              { name: 'id', tableID: 16384, columnID: 1, dataTypeID: 23 },
+              { name: 'nick', tableID: 16384, columnID: 2, dataTypeID: 25 },
+              { name: 'n', tableID: 0, columnID: 0, dataTypeID: 23 },
+            ],
+          })
+          .mockResolvedValueOnce({
+            rows: [
+              { oid: 16384, attnum: 1, attname: 'id', relname: 'users', nspname: 'public' },
+              { oid: 16384, attnum: 2, attname: 'name', relname: 'users', nspname: 'public' },
+            ],
+          }),
+      };
+      mockPool.connect.mockResolvedValue(client);
+      await driver.connect({
+        id: 'test-id', name: 'test', driverType: 'postgresql', host: 'localhost', port: 5432,
+        username: 'postgres', password: 'secret', database: 'testdb',
+      });
+
+      const result = await driver.executeCancellable('SELECT id, name AS nick, 2 AS n FROM users').promise;
+
+      expect(client.query).toHaveBeenLastCalledWith(expect.stringContaining('pg_attribute'), [[16384]]);
+      expect(result.columns.map((c) => c.source)).toEqual([{ schema: 'public', table: 'users' }, undefined, undefined]);
+      expect(client.release).toHaveBeenCalled();
+    });
+
+    it('catalog 查询失败时不挂 source, 查询结果照常返回', async () => {
+      const client = {
+        release: vi.fn(),
+        query: vi.fn()
+          .mockResolvedValueOnce({ rows: [{ id: 1 }], rowCount: 1, fields: [{ name: 'id', tableID: 16384, columnID: 1, dataTypeID: 23 }] })
+          .mockRejectedValueOnce(new Error('permission denied')),
+      };
+      mockPool.connect.mockResolvedValue(client);
+      await driver.connect({
+        id: 'test-id', name: 'test', driverType: 'postgresql', host: 'localhost', port: 5432,
+        username: 'postgres', password: 'secret', database: 'testdb',
+      });
+
+      const result = await driver.executeCancellable('SELECT id FROM users').promise;
+
+      expect(result.rows).toEqual([{ id: 1 }]);
+      expect(result.columns[0].source).toBeUndefined();
+    });
+  });
+
   describe('driverType', () => {
     it('应该返回 postgresql', () => {
       expect(driver.driverType).toBe('postgresql');

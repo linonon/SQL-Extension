@@ -366,6 +366,47 @@ describe('MySQLDriver', () => {
     });
   });
 
+  describe('结果列来源 (source)', () => {
+    it('只给未改名的真实表列挂 schema.table; 表达式列和别名列不挂', async () => {
+      mockPool.getConnection.mockResolvedValue({ release: vi.fn() });
+      mockPool.query.mockResolvedValue([
+        [{ id: 1, nick: 'a', cnt: 2 }],
+        [
+          { name: 'id', orgName: 'id', table: 'u', orgTable: 'users', db: 'app', type: 3 },
+          { name: 'nick', orgName: 'name', table: 'u', orgTable: 'users', db: 'app', type: 253 },
+          { name: 'cnt', orgName: '', table: '', orgTable: '', db: '', type: 8 },
+        ],
+      ]);
+      await driver.connect({
+        id: 'test-id', name: 'test', driverType: 'mysql', host: 'localhost', port: 3306,
+        username: 'root', password: 'secret', database: 'testdb',
+      });
+
+      const result = await driver.execute('SELECT u.id, u.name AS nick, COUNT(*) AS cnt FROM users u');
+
+      expect(result.columns.map((c) => c.source)).toEqual([{ schema: 'app', table: 'users' }, undefined, undefined]);
+    });
+
+    it('自连接 (同表多个别名): 该表的列都不挂 source', async () => {
+      mockPool.getConnection.mockResolvedValue({ release: vi.fn() });
+      mockPool.query.mockResolvedValue([
+        [{ id: 1, name: 'p' }],
+        [
+          { name: 'id', orgName: 'id', table: 'a', orgTable: 't', db: 'app', type: 3 },
+          { name: 'name', orgName: 'name', table: 'b', orgTable: 't', db: 'app', type: 253 },
+        ],
+      ]);
+      await driver.connect({
+        id: 'test-id', name: 'test', driverType: 'mysql', host: 'localhost', port: 3306,
+        username: 'root', password: 'secret', database: 'testdb',
+      });
+
+      const result = await driver.execute('SELECT a.id, b.name FROM t a JOIN t b ON a.parent_id = b.id');
+
+      expect(result.columns.map((c) => c.source)).toEqual([undefined, undefined]);
+    });
+  });
+
   describe('driverType', () => {
     it('应该返回 mysql', () => {
       expect(driver.driverType).toBe('mysql');

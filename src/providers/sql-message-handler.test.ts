@@ -114,6 +114,54 @@ describe('handleSqlMessage executeQuery mysql batch', () => {
   });
 });
 
+describe('handleSqlMessage 回执身份与 cancel 槽位', () => {
+  beforeEach(() => {
+    vi.spyOn(vscode.window, 'showWarningMessage').mockResolvedValue(undefined as never);
+  });
+
+  it('executeQuery / listColumns 回执带回 requestId, 驱动不可用时也回带 id 的 queryResult', async () => {
+    const posts: unknown[] = [];
+    const driver = createMysqlDriver([]);
+    const ctx = createCtx(driver, posts);
+    await handleSqlMessage({ type: 'executeQuery', requestId: 11, database: 'db', sql: 'SELECT 1' }, ctx);
+    await handleSqlMessage({ type: 'listColumns', requestId: 12, database: 'db', table: 't' }, ctx);
+    await handleSqlMessage(
+      { type: 'executeQuery', requestId: 13, database: 'db', sql: 'SELECT 1' },
+      { ...ctx, getDriver: () => { throw new Error('not connected'); } },
+    );
+    expect(posts).toEqual([
+      expect.objectContaining({ type: 'queryBatchResult', requestId: 11 }),
+      expect.objectContaining({ type: 'columnsResult', requestId: 12 }),
+      expect.objectContaining({ type: 'queryResult', requestId: 13, error: expect.any(String) }),
+    ]);
+  });
+
+  it('旧执行晚结束不清掉新执行的 cancel', async () => {
+    const runs: Array<{ resolve: () => void; cancel: () => void }> = [];
+    const driver = createMysqlDriver([]);
+    (driver.executeCancellable as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      let resolve!: () => void;
+      const promise = new Promise((r) => { resolve = () => r({ columns: [], rows: [], affectedRows: 0, executionTime: 0 }); });
+      const run = { resolve, cancel: vi.fn() };
+      runs.push(run);
+      return { promise, cancel: run.cancel };
+    });
+    const ctx = createCtx(driver, []);
+    const first = handleSqlMessage({ type: 'executeQuery', requestId: 1, database: 'db', sql: 'SELECT 1' }, ctx);
+    await vi.waitFor(() => expect(runs).toHaveLength(1));
+    const second = handleSqlMessage({ type: 'executeQuery', requestId: 2, database: 'db', sql: 'SELECT 2' }, ctx);
+    await vi.waitFor(() => expect(runs).toHaveLength(2));
+
+    runs[0].resolve();
+    await first;
+    expect(ctx.pendingCancels.get(ctx.panel)).toBe(runs[1].cancel);
+
+    runs[1].resolve();
+    await second;
+    expect(ctx.pendingCancels.has(ctx.panel)).toBe(false);
+  });
+});
+
 describe('handleSqlMessage dumpTable', () => {
   it('取消 Dump Struct and Data: 不写文件, 提示 Dump cancelled', async () => {
     const driver = createMysqlDriver([]);

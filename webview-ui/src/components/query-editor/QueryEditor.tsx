@@ -60,6 +60,31 @@ function lastResultSetFromBatch(statements: readonly StatementResult[]): ResultS
   return null;
 }
 
+// db-browser 结果网格写回的是 panel 表, 所以只在结果确实就是这张表的行时可编辑:
+// 每列都是 schema.table 的原始同名列, 且表的全部主键列都在结果里 (否则 UPDATE 的 WHERE 拼不全).
+// 返回只读原因, null 表示可编辑
+// ponytail: 自连接 (同表多别名) 只有 MySQL driver 能按别名识别并去掉 source; PG RowDescription 不带别名,
+// 自连接结果仍判为可编辑, 改非主键所在别名的列会写到主键那一行. 要堵住需解析 SQL 的 FROM 子句
+export function readOnlyReason(
+  resultColumns: readonly ColumnInfo[],
+  tableColumns: readonly ColumnInfo[],
+  schema: string,
+  table: string,
+): string | null {
+  const pkColumns = tableColumns.filter((c) => c.isPrimaryKey);
+  if (pkColumns.length === 0) return `Read-only: ${table} has no primary key`;
+  if (!resultColumns.every((c) => c.source?.schema === schema && c.source.table === table)) {
+    return `Read-only: result is not a plain selection from ${table}`;
+  }
+  if (!pkColumns.every((pk) => resultColumns.some((c) => c.name === pk.name))) {
+    return `Read-only: primary key of ${table} is not in the result`;
+  }
+  return null;
+}
+
+// 请求序号在整个 webview 内递增: db-browser 切表会重挂载编辑器, 旧实例的请求不能与新实例的撞号
+let requestSeq = 0;
+
 export function QueryEditor({ database, driverType, initialSql, autoExecute, table }: QueryEditorProps) {
   const [sqlText, setSqlText] = useState(initialSql ?? '');
   const [executing, setExecuting] = useState(false);
@@ -78,11 +103,27 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
   const postMessage = usePostMessage();
   const { entries: historyEntries, addEntry: addHistoryEntry } = useQueryHistory();
   const lastSqlRef = useRef<string>('');
+  // 最近一次 executeQuery / listColumns 的 requestId, 回执对不上即是过期回包, 丢弃
+  const queryIdRef = useRef(0);
+  const columnsIdRef = useRef(0);
+  // 发 Save / Insert 时网格结果所属的 query requestId: 成功回执到达时若已有新查询替换了网格, 不重跑 lastSql
+  // (lastSql 此时是用户新跑的语句, 可能是 UPDATE, 重跑即重复写)
+  const saveQueryIdRef = useRef(0);
   const inputRef = useRef<HTMLDivElement>(null);
   const [inputHeight, setInputHeight] = useState<number | undefined>(undefined);
   const resizingRef = useRef(false);
 
+  const sendQuery = useCallback((sql: string) => {
+    queryIdRef.current = ++requestSeq;
+    lastSqlRef.current = sql;
+    setExecuting(true);
+    setResult(null);
+    postMessage({ type: 'executeQuery', requestId: queryIdRef.current, database, sql });
+  }, [database, postMessage]);
+
   const handleMessage = useCallback((message: ExtensionMessage) => {
+    if ((message.type === 'queryBatchResult' || message.type === 'queryResult') && message.requestId !== queryIdRef.current) return;
+    if (message.type === 'columnsResult' && message.requestId !== columnsIdRef.current) return;
     if (message.type === 'queryBatchResult') {
       setBatchStatements(message.statements);
       const derived = lastResultSetFromBatch(message.statements);
@@ -111,10 +152,8 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
       if (message.success) {
         setSaveError(null);
         // 重新执行原始 SQL 刷新数据
-        if (lastSqlRef.current) {
-          setExecuting(true);
-          setResult(null);
-          postMessage({ type: 'executeQuery', database, sql: lastSqlRef.current });
+        if (lastSqlRef.current && queryIdRef.current === saveQueryIdRef.current) {
+          sendQuery(lastSqlRef.current);
         }
       }
       if (message.error) {
@@ -123,17 +162,17 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
       }
     }
     if (message.type === 'insertRowResult') {
-      if (message.success && lastSqlRef.current) {
+      if (message.success) {
         setSaveError(null);
-        setExecuting(true);
-        setResult(null);
-        postMessage({ type: 'executeQuery', database, sql: lastSqlRef.current });
+        if (lastSqlRef.current && queryIdRef.current === saveQueryIdRef.current) {
+          sendQuery(lastSqlRef.current);
+        }
       }
       if (message.error) {
         setSaveError(message.error);
       }
     }
-  }, [database, postMessage]);
+  }, [sendQuery]);
 
   useVSCodeMessage(handleMessage);
 
@@ -152,17 +191,15 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
   // mount 时: 有 table 就请求完整列信息
   useEffect(() => {
     if (table) {
-      postMessage({ type: 'listColumns', database, table });
+      columnsIdRef.current = ++requestSeq;
+      postMessage({ type: 'listColumns', requestId: columnsIdRef.current, database, table });
     }
   }, [table, database, postMessage]);
 
   // mount 时自动执行一次 (Table 点击场景)
   useEffect(() => {
     if (autoExecute && initialSql) {
-      setExecuting(true);
-      setResult(null);
-      lastSqlRef.current = initialSql;
-      postMessage({ type: 'executeQuery', database, sql: initialSql });
+      sendQuery(initialSql);
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -174,15 +211,14 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
   }, [selectedText, selectionStart, sqlText]);
 
   const executeQuery = useCallback(() => {
+    // 执行中再按 Ctrl+Enter 不发新请求: 前一条会失去回执和 Cancel, 成为孤儿查询
+    if (executing) return;
     const trimmed = resolveSql();
     if (!trimmed) return;
-    setExecuting(true);
     setSaveError(null);
-    setResult(null);
     setBatchStatements(null);
-    lastSqlRef.current = trimmed;
-    postMessage({ type: 'executeQuery', database, sql: trimmed });
-  }, [resolveSql, database, postMessage]);
+    sendQuery(trimmed);
+  }, [executing, resolveSql, sendQuery]);
 
   const cancelQuery = useCallback(() => {
     postMessage({ type: 'cancelQuery' });
@@ -207,15 +243,20 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
     setShowHistory((prev) => !prev);
   }, []);
 
-  // 仅当浏览单表 (db-browser 点表) 且表有 PK 时可编辑
-  const hasPK = fullColumns.some((c) => c.isPrimaryKey);
-  const editable = !!table && hasPK;
+  // 仅 db-browser 点表 (有 table) 且表结构已到达时判定; PG 的 db-browser 只列 public schema 的表
+  const lockReason = table && fullColumns.length > 0 && result
+    ? readOnlyReason(result.columns, fullColumns, driverType === 'postgresql' ? 'public' : database, table)
+    : undefined;
+  const editable = lockReason === null;
+  // Insert / Clone 显式写 panel 表, 不依赖结果来源, 只要求表有主键
+  const canInsert = !!table && fullColumns.some((c) => c.isPrimaryKey);
 
   const handleBatchSave = useCallback(
     (updates: { primaryKeys: Record<string, unknown>; changes: Record<string, unknown> }[]) => {
       if (!table || updates.length === 0) return;
       setSaving(true);
       setSaveError(null);
+      saveQueryIdRef.current = queryIdRef.current;
       postMessage({ type: 'batchUpdate', database, table, updates });
     },
     [database, table, postMessage]
@@ -225,6 +266,7 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
     (row: Record<string, unknown>) => {
       if (!table) return;
       setSaveError(null);
+      saveQueryIdRef.current = queryIdRef.current;
       postMessage({ type: 'insertRow', database, table, row });
     },
     [table, database, postMessage]
@@ -274,12 +316,9 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
       setSortState(next);
       const newSql = buildSelectSql(driverType, table, undefined, next);
       setSqlText(newSql);
-      setExecuting(true);
-      setResult(null);
-      lastSqlRef.current = newSql;
-      postMessage({ type: 'executeQuery', database, sql: newSql });
+      sendQuery(newSql);
     },
-    [table, driverType, database, sortState, postMessage]
+    [table, driverType, sortState, sendQuery]
   );
 
   // 合并 fullColumns 的元信息到 result.columns
@@ -363,12 +402,13 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
           saveError={saveError ?? undefined}
           onDismissSaveError={() => setSaveError(null)}
           editable={editable}
+          readOnlyReason={lockReason ?? undefined}
           saving={saving}
           onSave={handleBatchSave}
           sortState={table ? sortState : undefined}
           onSort={table ? handleSort : undefined}
           onExportCsv={handleExportCsv}
-          onInsertRow={editable ? handleInsertRow : undefined}
+          onInsertRow={canInsert ? handleInsertRow : undefined}
         />
       )}
     </div>

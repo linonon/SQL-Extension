@@ -15,7 +15,8 @@ export async function handleMongoMessage(
     }
 
     case 'mongoFindDocuments': {
-      const { database, collection, filter, sort, projection, skip, limit } = message;
+      // 回执 (含出错) 带回 requestId, webview 只认最近一次查询的回执
+      const { requestId, database, collection, filter, sort, projection, skip, limit } = message;
       try {
         const pipeline = buildAggregatePipeline(filter, sort, projection, skip, limit);
         const countFilter = filter.trim() ? convertShellToJson(filter.trim()) : '{}';
@@ -33,13 +34,14 @@ export async function handleMongoMessage(
 
         post({
           type: 'mongoDocumentList',
+          requestId,
           columns: docsResult.columns,
           rows: docsResult.rows,
           total,
         });
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
-        post({ type: 'mongoDocumentList', columns: [], rows: [], total: 0, error: errorMsg });
+        post({ type: 'mongoDocumentList', requestId, columns: [], rows: [], total: 0, error: errorMsg });
       }
       return true;
     }

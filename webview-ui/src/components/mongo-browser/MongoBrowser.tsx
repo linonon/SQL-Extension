@@ -24,6 +24,10 @@ interface SelectedCollection {
 
 const PAGE_SIZE = 50;
 
+// mongoFindDocuments 的请求序号: 回执 requestId 不是最近一次的 (切集合 / 翻页后旧查询晚到) 即丢弃,
+// 否则旧集合的行会顶替当前集合, 随后的 Edit / Delete 按当前集合写进去
+let findSeq = 0;
+
 function resolveLimit(input: string, fallback: number): number {
   if (!input.trim()) { return fallback; }
   const n = parseInt(input, 10);
@@ -58,6 +62,7 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
   // 看的是产出当前 rows 的那次查询, 不是输入框里尚未 Apply 的文本
   const [projected, setProjected] = useState(false);
   const requestedProjectionRef = useRef('');
+  const findIdRef = useRef(0);
   const pendingSwitchTarget = useRef<{ database: string; name: string } | null>(null);
 
   const postMessage = usePostMessage();
@@ -83,8 +88,10 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
     setQueryError(null);
     setLoading(true);
     requestedProjectionRef.current = projectionRef.current;
+    findIdRef.current = ++findSeq;
     postMessage({
       type: 'mongoFindDocuments',
+      requestId: findIdRef.current,
       database: selected.database,
       collection: selected.name,
       filter: filterRef.current,
@@ -105,6 +112,7 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
         }
         break;
       case 'mongoDocumentList': {
+        if (msg.requestId !== findIdRef.current) { break; }
         const p = requestedProjectionRef.current.trim();
         setProjected(p !== '' && p !== '{}');
         setColumns(msg.columns);
@@ -177,8 +185,10 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
       setLoading(true);
       setPage(0);
       requestedProjectionRef.current = '';
+      findIdRef.current = ++findSeq;
       postMessage({
         type: 'mongoFindDocuments',
+        requestId: findIdRef.current,
         database: selected.database,
         collection: selected.name,
         filter: '',
@@ -219,8 +229,10 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
     setPage(0);
     const effectiveLimit = resolveLimit(customLimit, PAGE_SIZE);
     requestedProjectionRef.current = projection;
+    findIdRef.current = ++findSeq;
     postMessage({
       type: 'mongoFindDocuments',
+      requestId: findIdRef.current,
       database: selected.database,
       collection: selected.name,
       filter,
@@ -238,8 +250,10 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
     setLoading(true);
     setPage(newPage);
     requestedProjectionRef.current = projection;
+    findIdRef.current = ++findSeq;
     postMessage({
       type: 'mongoFindDocuments',
+      requestId: findIdRef.current,
       database: selected.database,
       collection: selected.name,
       filter,

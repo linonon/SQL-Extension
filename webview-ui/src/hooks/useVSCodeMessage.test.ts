@@ -48,6 +48,7 @@ describe('useVSCodeMessage', () => {
     const message1: ExtensionMessage = { type: 'error', message: 'Test error' };
     const message2: ExtensionMessage = {
       type: 'queryResult',
+      requestId: 1,
       columns: [],
       rows: [],
       affectedRows: 0,

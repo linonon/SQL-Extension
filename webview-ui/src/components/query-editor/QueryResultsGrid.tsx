@@ -31,6 +31,8 @@ interface QueryResultsGridProps {
   readonly saveError?: string;
   readonly onDismissSaveError?: () => void;
   readonly editable: boolean;
+  // 不可编辑时展示给用户的原因
+  readonly readOnlyReason?: string;
   readonly saving: boolean;
   readonly onSave: (updates: { primaryKeys: Record<string, unknown>; changes: Record<string, unknown> }[]) => void;
   readonly sortState?: SortState | null;
@@ -54,6 +56,7 @@ export function QueryResultsGrid({
   saveError,
   onDismissSaveError,
   editable,
+  readOnlyReason,
   saving,
   onSave,
   sortState,
@@ -189,14 +192,14 @@ export function QueryResultsGrid({
     return [
       {
         label: 'Insert New Row',
-        disabled: !editable || !onInsertRow,
+        disabled: !onInsertRow,
         action: () => {
           setCloneRow(emptyRow);
         },
       },
       {
         label: 'Clone as New Row',
-        disabled: rowIndex === null || !editable || !onInsertRow,
+        disabled: rowIndex === null || !onInsertRow,
         action: () => {
           if (rowIndex !== null) {
             setCloneRow(rows[rowIndex]);
@@ -214,7 +217,7 @@ export function QueryResultsGrid({
         ],
       },
     ];
-  }, [contextMenu?.rowIndex, editable, onInsertRow, emptyRow, rows, selectedIndices.length, onExportCsv, handleExportCsv]);
+  }, [contextMenu?.rowIndex, onInsertRow, emptyRow, rows, selectedIndices.length, onExportCsv, handleExportCsv]);
 
   if (error) {
     return <div className="query-results-error">{error}</div>;
@@ -239,6 +242,7 @@ export function QueryResultsGrid({
         executionTime={executionTime}
         pendingCount={pendingCount}
         editable={editable}
+        readOnlyReason={readOnlyReason}
         saving={saving}
         onSave={handleSave}
         onDiscard={handleDiscard}

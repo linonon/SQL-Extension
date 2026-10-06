@@ -66,6 +66,7 @@ export async function handleRedisMessage(
         const result = await driver.scan(message.pattern, message.cursor, message.count);
         postMessage({
           type: 'redisScanResult',
+          requestId: message.requestId,
           keys: result.keys,
           cursor: result.cursor,
           done: result.cursor === '0',
@@ -117,6 +118,7 @@ export async function handleRedisMessage(
         postMessage({
           type: 'redisValueResult',
           key: message.key,
+          database: message.database,
           keyType,
           value,
           ttl,
@@ -130,6 +132,7 @@ export async function handleRedisMessage(
         postMessage({
           type: 'redisHashScanResult',
           key: message.key,
+          database: message.database,
           cursor: hashScanResult.cursor,
           fields: hashScanResult.fields,
           done: hashScanResult.cursor === '0',

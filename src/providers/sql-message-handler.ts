@@ -74,7 +74,7 @@ export async function handleSqlMessage(
 
       case 'listColumns': {
         const cols = await ctx.getDriver().listColumns(message.database, message.table);
-        ctx.post({ type: 'columnsResult', columns: cols });
+        ctx.post({ type: 'columnsResult', requestId: message.requestId, columns: cols });
         return true;
       }
 
@@ -95,93 +95,14 @@ export async function handleSqlMessage(
       }
 
       case 'executeQuery': {
-        // 破坏性操作确认网: DROP/TRUNCATE 及无 WHERE 的整表 DELETE/UPDATE
-        const driver = ctx.getDriver();
-        const isMysql = driver.driverType === 'mysql';
-        if (isWholeTableWrite(message.sql)) {
-          const confirm = await vscode.window.showWarningMessage(
-            'This query contains a destructive operation (DROP/TRUNCATE, or DELETE/UPDATE without WHERE). Continue?',
-            { modal: true },
-            'Execute'
-          );
-          if (confirm !== 'Execute') {
-            if (isMysql) {
-              ctx.post({ type: 'queryBatchResult', statements: [] });
-            } else {
-              ctx.post({ type: 'queryResult', columns: [], rows: [], affectedRows: 0, executionTime: 0 });
-            }
-            return true;
-          }
+        // 回执 (含出错) 一律带回 requestId, webview 只认最近一次请求的回执
+        let reply: object;
+        try {
+          reply = await runQuery(message.sql, ctx.database ?? message.database, ctx);
+        } catch (err) {
+          reply = { type: 'queryResult', columns: [], rows: [], affectedRows: 0, executionTime: 0, error: sanitizeErrorMessage(err) };
         }
-        const db = ctx.database ?? message.database;
-
-        // 非 MySQL: 保持单次 queryResult
-        if (!isMysql) {
-          const { promise, cancel } = driver.executeCancellable(message.sql, undefined, db);
-          ctx.pendingCancels.set(ctx.panel, cancel);
-          try {
-            const result = await promise;
-            ctx.post({
-              type: 'queryResult',
-              columns: result.columns,
-              rows: result.rows,
-              affectedRows: result.affectedRows,
-              executionTime: result.executionTime,
-            });
-          } catch (err) {
-            ctx.post({
-              type: 'queryResult',
-              columns: [], rows: [], affectedRows: 0, executionTime: 0,
-              error: sanitizeErrorMessage(err),
-            });
-          } finally {
-            ctx.pendingCancels.delete(ctx.panel);
-          }
-          return true;
-        }
-
-        // MySQL: 按 ; 切分后顺序执行, 遇错即停, 回 queryBatchResult
-        const stmts = splitSqlStatements(message.sql);
-        if (stmts.length === 0) {
-          ctx.post({ type: 'queryBatchResult', statements: [] });
-          return true;
-        }
-
-        const statements: StatementResult[] = [];
-        let stopped = false;
-        for (let i = 0; i < stmts.length; i++) {
-          const sql = stmts[i];
-          const index = i + 1;
-          if (stopped) {
-            statements.push({ index, sql, status: 'skipped' });
-            continue;
-          }
-          const { promise, cancel } = driver.executeCancellable(sql, undefined, db);
-          ctx.pendingCancels.set(ctx.panel, cancel);
-          try {
-            const result = await promise;
-            statements.push({
-              index,
-              sql,
-              status: 'ok',
-              executionTime: result.executionTime,
-              affectedRows: result.affectedRows,
-              columns: result.columns,
-              rows: result.rows,
-            });
-          } catch (err) {
-            statements.push({
-              index,
-              sql,
-              status: 'error',
-              error: sanitizeErrorMessage(err),
-            });
-            stopped = true;
-          } finally {
-            ctx.pendingCancels.delete(ctx.panel);
-          }
-        }
-        ctx.post({ type: 'queryBatchResult', statements });
+        ctx.post({ ...reply, requestId: message.requestId });
         return true;
       }
 
@@ -382,6 +303,91 @@ export async function handleSqlMessage(
     ctx.post({ type: 'error', message: sanitizeErrorMessage(err) });
     return true;
   }
+}
+
+// executeQuery 的执行体, 返回待发的回执 (queryResult / queryBatchResult, 不含 requestId).
+// cancel 槽位每个 panel 一个: 执行结束只清自己放进去的 cancel, 晚结束的旧执行不能清掉新执行的
+async function runQuery(sql: string, db: string, ctx: SqlMessageContext): Promise<object> {
+  const releaseCancel = (cancel: () => void) => {
+    if (ctx.pendingCancels.get(ctx.panel) === cancel) { ctx.pendingCancels.delete(ctx.panel); }
+  };
+  // 破坏性操作确认网: DROP/TRUNCATE 及无 WHERE 的整表 DELETE/UPDATE
+  const driver = ctx.getDriver();
+  const isMysql = driver.driverType === 'mysql';
+  if (isWholeTableWrite(sql)) {
+    const confirm = await vscode.window.showWarningMessage(
+      'This query contains a destructive operation (DROP/TRUNCATE, or DELETE/UPDATE without WHERE). Continue?',
+      { modal: true },
+      'Execute'
+    );
+    if (confirm !== 'Execute') {
+      return isMysql
+        ? { type: 'queryBatchResult', statements: [] }
+        : { type: 'queryResult', columns: [], rows: [], affectedRows: 0, executionTime: 0 };
+    }
+  }
+
+  // 非 MySQL: 保持单次 queryResult
+  if (!isMysql) {
+    const { promise, cancel } = driver.executeCancellable(sql, undefined, db);
+    ctx.pendingCancels.set(ctx.panel, cancel);
+    try {
+      const result = await promise;
+      return {
+        type: 'queryResult',
+        columns: result.columns,
+        rows: result.rows,
+        affectedRows: result.affectedRows,
+        executionTime: result.executionTime,
+      };
+    } catch (err) {
+      return {
+        type: 'queryResult',
+        columns: [], rows: [], affectedRows: 0, executionTime: 0,
+        error: sanitizeErrorMessage(err),
+      };
+    } finally {
+      releaseCancel(cancel);
+    }
+  }
+
+  // MySQL: 按 ; 切分后顺序执行, 遇错即停, 回 queryBatchResult
+  const stmts = splitSqlStatements(sql);
+  const statements: StatementResult[] = [];
+  let stopped = false;
+  for (let i = 0; i < stmts.length; i++) {
+    const stmt = stmts[i];
+    const index = i + 1;
+    if (stopped) {
+      statements.push({ index, sql: stmt, status: 'skipped' });
+      continue;
+    }
+    const { promise, cancel } = driver.executeCancellable(stmt, undefined, db);
+    ctx.pendingCancels.set(ctx.panel, cancel);
+    try {
+      const result = await promise;
+      statements.push({
+        index,
+        sql: stmt,
+        status: 'ok',
+        executionTime: result.executionTime,
+        affectedRows: result.affectedRows,
+        columns: result.columns,
+        rows: result.rows,
+      });
+    } catch (err) {
+      statements.push({
+        index,
+        sql: stmt,
+        status: 'error',
+        error: sanitizeErrorMessage(err),
+      });
+      stopped = true;
+    } finally {
+      releaseCancel(cancel);
+    }
+  }
+  return { type: 'queryBatchResult', statements };
 }
 
 // db-browser 左侧列表: 列出所有 database 及其 table
