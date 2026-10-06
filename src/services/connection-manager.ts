@@ -46,7 +46,9 @@ export class ConnectionManager implements vscode.Disposable {
     let changed = false;
     for (let i = 0; i < entries.length; i++) {
       if (results[i].status === 'rejected') {
-        const id = entries[i][0];
+        const [id, driver] = entries[i];
+        // ping 失败也要关掉 driver, 否则它的 client 会对已关闭的 tunnel 无限重连
+        void driver.disconnect().catch(() => undefined);
         this.drivers.delete(id);
         this.closeTunnel(id);
         this.states.set(id, 'disconnected');

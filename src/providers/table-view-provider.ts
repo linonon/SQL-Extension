@@ -399,20 +399,31 @@ export class TableViewProvider implements vscode.Disposable {
             const redisDriver = this.connectionManager.getRedisDriver(connectionId!);
             const post = (msg: unknown) => panel.webview.postMessage(msg);
 
-            if (message.type === 'redisExportKeys') {
-              const exportMsg = message as { keys: readonly string[]; database: number };
+            if (message.type === 'redisExportPattern' || message.type === 'redisExportKey') {
+              const { database } = message;
+              const target = message.type === 'redisExportKey' ? { key: message.key } : { pattern: message.pattern };
               try {
-                const result = await exportRedisKeys(redisDriver, exportMsg.database, exportMsg.keys);
-                if (result.errors.length > 0) {
-                  vscode.window.showWarningMessage(`Export completed with errors: ${result.errors.join('; ')}`);
-                }
                 const uri = await vscode.window.showSaveDialog({
                   filters: { 'JSON Files': ['json'] },
-                  defaultUri: vscode.Uri.file(`redis-export-db${exportMsg.database}.json`),
+                  defaultUri: vscode.Uri.file(`redis-export-db${database}.json`),
                 });
-                if (uri) {
-                  await vscode.workspace.fs.writeFile(uri, Buffer.from(result.json, 'utf-8'));
-                  vscode.window.showInformationMessage(`Exported ${result.keyCount} key(s) to ${uri.fsPath}`);
+                if (!uri) { return; }
+                const result = await vscode.window.withProgress(
+                  { location: vscode.ProgressLocation.Notification, title: `Exporting Redis db ${database}`, cancellable: true },
+                  (progress, token) => exportRedisKeys(redisDriver, database, target, (done, total) => {
+                    if (token.isCancellationRequested) { throw new Error('Export cancelled'); }
+                    if (done % 100 === 0 || done === total) { progress.report({ message: `${done}/${total} keys` }); }
+                  })
+                );
+                await vscode.workspace.fs.writeFile(uri, Buffer.from(result.json, 'utf-8'));
+                const summary = `Exported ${result.keyCount} key(s) from db ${database} to ${uri.fsPath}`;
+                if (result.skipped) {
+                  vscode.window.showWarningMessage(`${summary}; ${result.skipped}`);
+                } else {
+                  vscode.window.showInformationMessage(summary);
+                }
+                if (result.errors.length > 0) {
+                  vscode.window.showWarningMessage(`Export completed with errors: ${result.errors.join('; ')}`);
                 }
               } catch (e) {
                 const msg = e instanceof Error ? e.message : String(e);
@@ -422,7 +433,7 @@ export class TableViewProvider implements vscode.Disposable {
             }
 
             if (message.type === 'redisImport') {
-              const importMsg = message as { database: number };
+              const { database } = message;
               try {
                 const fileUris = await vscode.window.showOpenDialog({
                   filters: { 'JSON Files': ['json'] },
@@ -430,19 +441,20 @@ export class TableViewProvider implements vscode.Disposable {
                 });
                 if (!fileUris || fileUris.length === 0) { return; }
                 const content = Buffer.from(await vscode.workspace.fs.readFile(fileUris[0])).toString('utf-8');
-                const parsed = JSON.parse(content) as { keys?: unknown[] };
-                const keyCount = Array.isArray(parsed.keys) ? parsed.keys.length : 0;
-                const confirm = await vscode.window.showWarningMessage(
-                  `Import ${keyCount} key(s)? Existing keys will be overwritten.`,
-                  { modal: true },
-                  'Import'
-                );
-                if (confirm !== 'Import') { return; }
-                const result = await importRedisKeys(redisDriver, importMsg.database, content);
+                // 导入会先删后写同名 key: 有已存在的就在这里确认
+                const result = await importRedisKeys(redisDriver, database, content, async (existing) => {
+                  const confirm = await vscode.window.showWarningMessage(
+                    `${existing} key(s) already exist in db ${database} and will be replaced. Continue?`,
+                    { modal: true },
+                    'Replace'
+                  );
+                  return confirm === 'Replace';
+                });
+                if (!result) { return; }
                 if (result.errors.length > 0) {
                   vscode.window.showWarningMessage(`Import completed with errors: ${result.errors.join('; ')}`);
                 }
-                vscode.window.showInformationMessage(`Imported ${result.importedCount} key(s)`);
+                vscode.window.showInformationMessage(`Imported ${result.importedCount} key(s) into db ${database}`);
                 post({ type: 'redisImportResult', success: true, importedCount: result.importedCount });
               } catch (e) {
                 const msg = e instanceof Error ? e.message : String(e);

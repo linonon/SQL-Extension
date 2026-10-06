@@ -36,11 +36,26 @@ const mockClient = {
   call: vi.fn().mockResolvedValue('OK'),
   lset: vi.fn().mockResolvedValue('OK'),
   lrem: vi.fn().mockResolvedValue(1),
+  multi: vi.fn(),
+  getBuffer: vi.fn().mockResolvedValue(null),
+  hscanBuffer: vi.fn(),
+  scanBuffer: vi.fn(),
 };
+
+// 每个 new Redis / duplicate 出来的实例, 按创建顺序
+const instances: { options: Record<string, unknown> }[] = [];
 
 vi.mock('ioredis', () => {
   // 用 class 模拟, 这样 new Redis() 能正常工作
   class MockRedis {
+    options: Record<string, unknown>;
+    constructor(options: Record<string, unknown>) {
+      this.options = options;
+      instances.push(this);
+    }
+    duplicate(override: Record<string, unknown>) {
+      return new MockRedis({ ...this.options, ...override });
+    }
     connect = mockClient.connect;
     disconnect = mockClient.disconnect;
     ping = mockClient.ping;
@@ -74,6 +89,10 @@ vi.mock('ioredis', () => {
     call = mockClient.call;
     lset = mockClient.lset;
     lrem = mockClient.lrem;
+    multi = mockClient.multi;
+    getBuffer = mockClient.getBuffer;
+    hscanBuffer = mockClient.hscanBuffer;
+    scanBuffer = mockClient.scanBuffer;
   }
   return { default: MockRedis };
 });
@@ -95,6 +114,7 @@ describe('RedisDriver', () => {
   beforeEach(() => {
     driver = new RedisDriver();
     vi.clearAllMocks();
+    instances.length = 0;
     mockClient.status = 'ready';
   });
 
@@ -143,16 +163,6 @@ describe('RedisDriver', () => {
     });
   });
 
-  describe('selectDatabase', () => {
-    it('应该调用 client.select(db)', async () => {
-      await driver.connect(TEST_CONFIG);
-
-      await driver.selectDatabase(3);
-
-      expect(mockClient.select).toHaveBeenCalledWith(3);
-    });
-  });
-
   describe('listDatabases', () => {
     it('应该解析 INFO keyspace 输出', async () => {
       await driver.connect(TEST_CONFIG);
@@ -186,7 +196,7 @@ describe('RedisDriver', () => {
       };
       mockClient.pipeline.mockReturnValue(mockPipeline);
 
-      const result = await driver.scan('*', '0', 100);
+      const result = await driver.scan(0, '*', '0', 100);
 
       expect(result.cursor).toBe('5');
       expect(result.keys).toEqual([
@@ -199,7 +209,7 @@ describe('RedisDriver', () => {
       await driver.connect(TEST_CONFIG);
       mockClient.scan.mockResolvedValue(['0', []]);
 
-      const result = await driver.scan('*', '0', 100);
+      const result = await driver.scan(0, '*', '0', 100);
 
       expect(result.cursor).toBe('0');
       expect(result.keys).toEqual([]);
@@ -216,7 +226,7 @@ describe('RedisDriver', () => {
       };
       mockClient.pipeline.mockReturnValue(mockPipeline);
 
-      const result = await driver.scan('*', '0', 100);
+      const result = await driver.scan(0, '*', '0', 100);
 
       expect(result.cursor).toBe('3');
       expect(result.keys).toEqual([
@@ -230,31 +240,10 @@ describe('RedisDriver', () => {
       await driver.connect(TEST_CONFIG);
       mockClient.get.mockResolvedValue('hello');
 
-      const val = await driver.getString('mykey');
+      const val = await driver.getString(0, 'mykey');
 
       expect(val).toBe('hello');
       expect(mockClient.get).toHaveBeenCalledWith('mykey');
-    });
-  });
-
-  describe('getHash', () => {
-    it('应该返回 hash 对象', async () => {
-      await driver.connect(TEST_CONFIG);
-      mockClient.hgetall.mockResolvedValue({ field1: 'val1', field2: 'val2' });
-
-      const val = await driver.getHash('myhash');
-
-      expect(val).toEqual({ field1: 'val1', field2: 'val2' });
-    });
-
-    it('不存在的 key 返回空对象 (#9)', async () => {
-      await driver.connect(TEST_CONFIG);
-      mockClient.hgetall.mockResolvedValue({});
-
-      const val = await driver.getHash('nonexistent');
-
-      // ioredis hgetall 对不存在 key 返回 {}, 这是预期行为
-      expect(val).toEqual({});
     });
   });
 
@@ -263,7 +252,7 @@ describe('RedisDriver', () => {
       await driver.connect(TEST_CONFIG);
       mockClient.lrange.mockResolvedValue(['a', 'b', 'c']);
 
-      const val = await driver.getList('mylist', 0, 99);
+      const val = await driver.getList(0, 'mylist', 0, 99);
 
       expect(val).toEqual(['a', 'b', 'c']);
       expect(mockClient.lrange).toHaveBeenCalledWith('mylist', 0, 99);
@@ -275,7 +264,7 @@ describe('RedisDriver', () => {
       await driver.connect(TEST_CONFIG);
       mockClient.sscan.mockResolvedValue(['5', ['m1', 'm2']]);
 
-      const val = await driver.getSet('myset', '0', 100);
+      const val = await driver.getSet(0, 'myset', '0', 100);
 
       expect(val).toEqual({ cursor: '5', members: ['m1', 'm2'] });
     });
@@ -286,7 +275,7 @@ describe('RedisDriver', () => {
       await driver.connect(TEST_CONFIG);
       mockClient.zrange.mockResolvedValue(['alice', '10', 'bob', '20']);
 
-      const val = await driver.getZSet('myzset', 0, 99);
+      const val = await driver.getZSet(0, 'myzset', 0, 99);
 
       expect(val).toEqual([
         { member: 'alice', score: 10 },
@@ -299,7 +288,7 @@ describe('RedisDriver', () => {
     it('key 无 TTL 时只设值', async () => {
       await driver.connect(TEST_CONFIG);
 
-      await driver.setString('k', 'v');
+      await driver.setString(0, 'k', 'v');
 
       expect(mockClient.set).toHaveBeenCalledWith('k', 'v');
     });
@@ -308,7 +297,7 @@ describe('RedisDriver', () => {
       await driver.connect(TEST_CONFIG);
       mockClient.pttl.mockResolvedValueOnce(42000);
 
-      await driver.setString('k', 'v');
+      await driver.setString(0, 'k', 'v');
 
       expect(mockClient.pttl).toHaveBeenCalledWith('k');
       expect(mockClient.set).toHaveBeenCalledWith('k', 'v', 'PX', 42000);
@@ -317,7 +306,7 @@ describe('RedisDriver', () => {
     it('有 TTL 时用 EX 参数', async () => {
       await driver.connect(TEST_CONFIG);
 
-      await driver.setString('k', 'v', 60);
+      await driver.setString(0, 'k', 'v', 60);
 
       expect(mockClient.set).toHaveBeenCalledWith('k', 'v', 'EX', 60);
     });
@@ -329,57 +318,57 @@ describe('RedisDriver', () => {
     });
 
     it('setHashField 应该调用 hset', async () => {
-      await driver.setHashField('h', 'f', 'v');
+      await driver.setHashField(0, 'h', 'f', 'v');
       expect(mockClient.hset).toHaveBeenCalledWith('h', 'f', 'v');
     });
 
     it('deleteHashField 应该调用 hdel', async () => {
-      await driver.deleteHashField('h', 'f');
+      await driver.deleteHashField(0, 'h', 'f');
       expect(mockClient.hdel).toHaveBeenCalledWith('h', 'f');
     });
 
     it('listPush head 调用 lpush', async () => {
-      await driver.listPush('l', 'v', 'head');
+      await driver.listPush(0, 'l', 'v', 'head');
       expect(mockClient.lpush).toHaveBeenCalledWith('l', 'v');
     });
 
     it('listPush tail 调用 rpush', async () => {
-      await driver.listPush('l', 'v', 'tail');
+      await driver.listPush(0, 'l', 'v', 'tail');
       expect(mockClient.rpush).toHaveBeenCalledWith('l', 'v');
     });
 
     it('setAdd 调用 sadd', async () => {
-      await driver.setAdd('s', 'm');
+      await driver.setAdd(0, 's', 'm');
       expect(mockClient.sadd).toHaveBeenCalledWith('s', 'm');
     });
 
     it('setRemove 调用 srem', async () => {
-      await driver.setRemove('s', 'm');
+      await driver.setRemove(0, 's', 'm');
       expect(mockClient.srem).toHaveBeenCalledWith('s', 'm');
     });
 
     it('zsetAdd 调用 zadd', async () => {
-      await driver.zsetAdd('z', 'm', 1.5);
+      await driver.zsetAdd(0, 'z', 'm', 1.5);
       expect(mockClient.zadd).toHaveBeenCalledWith('z', 1.5, 'm');
     });
 
     it('zsetRemove 调用 zrem', async () => {
-      await driver.zsetRemove('z', 'm');
+      await driver.zsetRemove(0, 'z', 'm');
       expect(mockClient.zrem).toHaveBeenCalledWith('z', 'm');
     });
 
     it('deleteKey 调用 del', async () => {
-      await driver.deleteKey('k');
+      await driver.deleteKey(0, 'k');
       expect(mockClient.del).toHaveBeenCalledWith('k');
     });
 
     it('setTTL 调用 expire', async () => {
-      await driver.setTTL('k', 300);
+      await driver.setTTL(0, 'k', 300);
       expect(mockClient.expire).toHaveBeenCalledWith('k', 300);
     });
 
     it('removeTTL 调用 persist', async () => {
-      await driver.removeTTL('k');
+      await driver.removeTTL(0, 'k');
       expect(mockClient.persist).toHaveBeenCalledWith('k');
     });
   });
@@ -387,7 +376,7 @@ describe('RedisDriver', () => {
   describe('listSet', () => {
     it('应该调用 lset', async () => {
       await driver.connect(TEST_CONFIG);
-      await driver.listSet('mylist', 2, 'newval');
+      await driver.listSet(0, 'mylist', 2, 'newval');
       expect(mockClient.lset).toHaveBeenCalledWith('mylist', 2, 'newval');
     });
   });
@@ -395,7 +384,7 @@ describe('RedisDriver', () => {
   describe('listRemove', () => {
     it('应该调用 lset + lrem (tombstone 模式)', async () => {
       await driver.connect(TEST_CONFIG);
-      await driver.listRemove('mylist', 1);
+      await driver.listRemove(0, 'mylist', 1);
 
       expect(mockClient.lset).toHaveBeenCalledWith('mylist', 1, expect.stringMatching(/^__DEL_.+__$/));
       expect(mockClient.lrem).toHaveBeenCalledWith('mylist', 1, expect.stringMatching(/^__DEL_.+__$/));
@@ -405,40 +394,10 @@ describe('RedisDriver', () => {
     });
   });
 
-  describe('executeCommand', () => {
-    it('空 args 应该抛错', async () => {
-      await driver.connect(TEST_CONFIG);
-
-      await expect(driver.executeCommand([])).rejects.toThrow('No command provided');
-    });
-
-    it('正常调用 client.call', async () => {
-      await driver.connect(TEST_CONFIG);
-      mockClient.call.mockResolvedValue('PONG');
-
-      const result = await driver.executeCommand(['PING']);
-
-      expect(result).toBe('PONG');
-      expect(mockClient.call).toHaveBeenCalledWith('PING');
-    });
-
-    it('带参数的命令', async () => {
-      await driver.connect(TEST_CONFIG);
-      mockClient.call.mockResolvedValue('OK');
-
-      const result = await driver.executeCommand(['SET', 'key', 'value']);
-
-      expect(result).toBe('OK');
-      expect(mockClient.call).toHaveBeenCalledWith('SET', 'key', 'value');
-    });
-  });
-
   describe('assertConnected', () => {
     it('未连接时所有操作抛错', async () => {
-      await expect(driver.getString('k')).rejects.toThrow('Redis driver is not connected');
-      await expect(driver.getHash('k')).rejects.toThrow('Redis driver is not connected');
-      await expect(driver.scan('*', '0', 100)).rejects.toThrow('Redis driver is not connected');
-      await expect(driver.selectDatabase(0)).rejects.toThrow('Redis driver is not connected');
+      await expect(driver.getString(0, 'k')).rejects.toThrow('Redis driver is not connected');
+      await expect(driver.scan(0, '*', '0', 100)).rejects.toThrow('Redis driver is not connected');
       await expect(driver.listDatabases()).rejects.toThrow('Redis driver is not connected');
     });
   });
@@ -450,26 +409,166 @@ describe('RedisDriver', () => {
 
     it('getKeyType 返回正确类型', async () => {
       mockClient.type.mockResolvedValue('hash');
-      const t = await driver.getKeyType('k');
+      const t = await driver.getKeyType(0, 'k');
       expect(t).toBe('hash');
     });
 
     it('getTTL 返回秒数', async () => {
       mockClient.ttl.mockResolvedValue(120);
-      const t = await driver.getTTL('k');
+      const t = await driver.getTTL(0, 'k');
       expect(t).toBe(120);
     });
 
     it('getListLength 返回长度', async () => {
       mockClient.llen.mockResolvedValue(5);
-      const l = await driver.getListLength('k');
+      const l = await driver.getListLength(0, 'k');
       expect(l).toBe(5);
     });
 
     it('getZSetLength 返回长度', async () => {
       mockClient.zcard.mockResolvedValue(10);
-      const l = await driver.getZSetLength('k');
+      const l = await driver.getZSetLength(0, 'k');
       expect(l).toBe(10);
+    });
+  });
+
+  describe('按库分 client', () => {
+    // 每次调用落在哪个实例上, 用该实例连的库号表示
+    const dbsOf = (fn: { mock: { contexts: unknown[] } }) =>
+      fn.mock.contexts.map((c) => (c as { options: { db: number } }).options.db);
+
+    it('两个库两条 client, 操作落在各自库的 client 上, disconnect 全部断开', async () => {
+      await driver.connect(TEST_CONFIG);
+
+      await driver.getString(0, 'a');
+      await driver.getString(3, 'b');
+      await driver.getString(3, 'c');
+
+      // db0 是连接配置的库, 走主 client; db3 只 duplicate 一次并显式 SELECT 校验库号
+      expect(instances.map((c) => c.options.db)).toEqual([0, 3]);
+      expect(dbsOf(mockClient.select)).toEqual([3]);
+      expect(dbsOf(mockClient.get)).toEqual([0, 3, 3]);
+
+      await driver.disconnect();
+      expect(dbsOf(mockClient.disconnect).sort()).toEqual([0, 3]);
+      expect(driver.isConnected()).toBe(false);
+    });
+
+    it('库号越界: SELECT 失败的 client 断开且不缓存, 下次重建', async () => {
+      await driver.connect(TEST_CONFIG);
+      mockClient.select.mockRejectedValueOnce(new Error('ERR DB index is out of range'));
+
+      await expect(driver.getString(99, 'k')).rejects.toThrow('out of range');
+      expect(dbsOf(mockClient.disconnect)).toEqual([99]);
+
+      await driver.getString(99, 'k');
+      expect(instances.map((c) => c.options.db)).toEqual([0, 99, 99]);
+    });
+
+    it('connect 失败时断开 client, 不留后台重连的僵尸连接', async () => {
+      mockClient.ping.mockRejectedValueOnce(new Error('NOAUTH'));
+
+      await expect(driver.connect(TEST_CONFIG)).rejects.toThrow('NOAUTH');
+
+      expect(mockClient.disconnect).toHaveBeenCalledTimes(1);
+      expect(driver.isConnected()).toBe(false);
+    });
+  });
+
+  describe('executeCommandInDb (CLI / MCP)', () => {
+    it('每条命令在带超时的一次性连接上跑, 用完即断, 不进按库缓存', async () => {
+      await driver.connect(TEST_CONFIG);
+      mockClient.call.mockResolvedValue('v');
+
+      expect(await driver.executeCommandInDb(3, ['GET', 'k'])).toBe('v');
+      await driver.executeCommandInDb(undefined, ['PING']);
+
+      expect(instances.slice(1).map((c) => [c.options.db, c.options.commandTimeout])).toEqual([[3, 30000], [0, 30000]]);
+      expect(mockClient.call.mock.contexts).toEqual([instances[1], instances[2]]);
+      expect(mockClient.disconnect.mock.contexts).toEqual([instances[1], instances[2]]);
+      // 之后 db3 的浏览操作另建常驻 client, 不复用 CLI 那条
+      await driver.getString(3, 'k');
+      expect(instances).toHaveLength(4);
+    });
+
+    it('拒绝 SUBSCRIBE / PSUBSCRIBE / SSUBSCRIBE / MONITOR, 不建连接', async () => {
+      await driver.connect(TEST_CONFIG);
+      for (const cmd of ['subscribe', 'PSUBSCRIBE', 'SSUBSCRIBE', 'monitor']) {
+        await expect(driver.executeCommandInDb(0, [cmd, 'ch'])).rejects.toThrow('streams replies');
+      }
+      expect(instances).toHaveLength(1);
+    });
+
+    it('空 args 抛错', async () => {
+      await driver.connect(TEST_CONFIG);
+      await expect(driver.executeCommandInDb(0, [])).rejects.toThrow('No command provided');
+    });
+  });
+
+  describe('readKeyRaw / writeKeyRaw', () => {
+    beforeEach(async () => {
+      await driver.connect(TEST_CONFIG);
+    });
+
+    it('hash 按 Buffer 跑完整轮 HSCAN', async () => {
+      mockClient.type.mockResolvedValueOnce('hash');
+      mockClient.hscanBuffer
+        .mockResolvedValueOnce([Buffer.from('7'), [Buffer.from('f1'), Buffer.from([0xff])]])
+        .mockResolvedValueOnce([Buffer.from('0'), [Buffer.from('f2'), Buffer.from('v2')]]);
+      mockClient.ttl.mockResolvedValueOnce(60);
+
+      const raw = await driver.readKeyRaw(0, Buffer.from('h'));
+
+      expect(mockClient.hscanBuffer).toHaveBeenNthCalledWith(2, Buffer.from('h'), '7', 'COUNT', 1000);
+      expect(raw).toEqual({ type: 'hash', ttl: 60, items: [Buffer.from('f1'), Buffer.from([0xff]), Buffer.from('f2'), Buffer.from('v2')] });
+    });
+
+    it('scanAllKeys 跑完整轮 SCAN 并去掉重复返回的 key', async () => {
+      mockClient.scanBuffer
+        .mockResolvedValueOnce([Buffer.from('5'), [Buffer.from('a'), Buffer.from([0xff])]])
+        .mockResolvedValueOnce([Buffer.from('0'), [Buffer.from('a'), Buffer.from('b')]]);
+
+      const keys = await driver.scanAllKeys(0, 'p:*');
+
+      expect(mockClient.scanBuffer).toHaveBeenNthCalledWith(2, '5', 'MATCH', 'p:*', 'COUNT', 1000);
+      expect(keys).toEqual([Buffer.from('a'), Buffer.from([0xff]), Buffer.from('b')]);
+    });
+
+    it('TYPE 之后 key 消失时 type 为 none', async () => {
+      mockClient.type.mockResolvedValueOnce('string');
+      mockClient.getBuffer.mockResolvedValueOnce(null);
+
+      expect((await driver.readKeyRaw(0, Buffer.from('gone'))).type).toBe('none');
+    });
+
+    it('zset: 一个 MULTI 里 DEL + ZADD (score 在前) + EXPIRE', async () => {
+      const tx = {
+        del: vi.fn().mockReturnThis(), call: vi.fn().mockReturnThis(), expire: vi.fn().mockReturnThis(),
+        exec: vi.fn().mockResolvedValue([[null, 1], [null, 2], [null, 1]]),
+      };
+      mockClient.multi.mockReturnValue(tx);
+      const key = Buffer.from('z');
+
+      await driver.writeKeyRaw(0, key, { type: 'zset', ttl: 60, items: ['m1', '1', 'm2', '2'].map((v) => Buffer.from(v)) });
+
+      expect(tx.del).toHaveBeenCalledWith(key);
+      expect(tx.call).toHaveBeenCalledWith('ZADD', key, ...['1', 'm1', '2', 'm2'].map((v) => Buffer.from(v)));
+      expect(tx.expire).toHaveBeenCalledWith(key, 60);
+    });
+
+    it('MULTI 内某条命令出错时抛出; 不支持的类型不开 MULTI', async () => {
+      const tx = {
+        del: vi.fn().mockReturnThis(), call: vi.fn().mockReturnThis(), expire: vi.fn().mockReturnThis(),
+        exec: vi.fn().mockResolvedValue([[null, 0], [new Error('OOM'), null]]),
+      };
+      mockClient.multi.mockReturnValue(tx);
+
+      await expect(driver.writeKeyRaw(0, Buffer.from('s'), { type: 'set', ttl: -1, items: [Buffer.from('a')] })).rejects.toThrow('OOM');
+      expect(tx.expire).not.toHaveBeenCalled();
+
+      mockClient.multi.mockClear();
+      await expect(driver.writeKeyRaw(0, Buffer.from('x'), { type: 'stream', ttl: -1, items: [] })).rejects.toThrow('Unsupported type: stream');
+      expect(mockClient.multi).not.toHaveBeenCalled();
     });
   });
 });

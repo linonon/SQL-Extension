@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { RedisBrowser } from './RedisBrowser';
 import { mockPostMessage } from '../../__test__/setup';
 import type { ExtensionMessage } from '../../types/messages';
@@ -8,6 +8,8 @@ vi.mock('./RedisToolbar', () => ({
   RedisToolbar: (props: any) => (
     <div data-testid="redis-toolbar" data-db={props.database}>
       <button data-testid="refresh" onClick={props.onRefresh}>Refresh</button>
+      <button data-testid="search" onClick={() => props.onSearch('user:*')}>Search</button>
+      <button data-testid="export" onClick={props.onExport}>Export</button>
     </div>
   ),
 }));
@@ -335,5 +337,21 @@ describe('RedisBrowser', () => {
 
     await waitFor(() => expect(screen.getByTestId('redis-value-viewer').getAttribute('data-value')).toContain('b1'));
     expect(JSON.parse(screen.getByTestId('redis-value-viewer').getAttribute('data-value')!).value).toEqual(['b1']);
+  });
+
+  it('导入完成后按最近一次搜索的 pattern 重扫; Export 发当前库与 pattern', async () => {
+    render(<RedisBrowser connectionId="conn1" database={0} />);
+    fireEvent.click(screen.getByTestId('search'));
+    mockPostMessage.mockClear();
+
+    window.dispatchEvent(new MessageEvent('message', { data: {
+      type: 'redisImportResult', success: true, importedCount: 1,
+    } satisfies ExtensionMessage }));
+
+    await waitFor(() => expect(mockPostMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'redisScan', pattern: 'user:*' }),
+    ));
+    fireEvent.click(screen.getByTestId('export'));
+    expect(mockPostMessage).toHaveBeenCalledWith({ type: 'redisExportPattern', database: 0, pattern: 'user:*' });
   });
 });

@@ -107,7 +107,7 @@ export function RedisToolbar({
             <path d="M8 1.5a.5.5 0 0 1 .5.5v5.5H14a.5.5 0 0 1 0 1H8.5V14a.5.5 0 0 1-1 0V8.5H2a.5.5 0 0 1 0-1h5.5V2a.5.5 0 0 1 .5-.5z"/>
           </svg>
         </button>
-        <button className="text-btn" title="Export Keys" onClick={onExport}>Export</button>
+        <button className="text-btn" title="Export all keys matching the current pattern" onClick={onExport}>Export</button>
         <button className="text-btn" title="Import Keys" onClick={onImport}>Import</button>
       </div>
     </div>

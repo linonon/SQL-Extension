@@ -139,7 +139,8 @@ export type WebviewMessage =
   | { type: 'redisExecuteCommand'; command: string; database: number }
   | { type: 'redisHashScan'; key: string; database: number; cursor: string; count: number }
   | { type: 'redisListDatabases' }
-  | { type: 'redisExportKeys'; keys: readonly string[]; database: number }
+  | { type: 'redisExportPattern'; database: number; pattern: string }
+  | { type: 'redisExportKey'; database: number; key: string }
   | { type: 'redisImport'; database: number }
   | { type: 'redisAddKeyPrompt'; database: number }
   | { type: 'kafkaListTopics' }

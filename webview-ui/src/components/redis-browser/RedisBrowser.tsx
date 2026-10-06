@@ -278,7 +278,7 @@ export function RedisBrowser({ database: initialDb, separator = ':' }: RedisBrow
       default:
         break;
     }
-  }, [db, postMessage]);
+  }, [db, doScan, pattern, postMessage]);
 
   useVSCodeMessage(handleMessage);
 
@@ -358,14 +358,13 @@ export function RedisBrowser({ database: initialDb, separator = ':' }: RedisBrow
     postMessage({ type: 'redisSetTTLPrompt', key: target, database: db });
   }, [db, postMessage]);
 
+  // 导出当前库里匹配当前 pattern 的全部 key (extension host 跑完整轮 SCAN), 不只是已加载的
   const handleExportAll = useCallback(() => {
-    const keyNames = keys.map((k) => k.key);
-    if (keyNames.length === 0) { return; }
-    postMessage({ type: 'redisExportKeys', keys: keyNames, database: db });
-  }, [keys, db, postMessage]);
+    postMessage({ type: 'redisExportPattern', database: db, pattern });
+  }, [db, pattern, postMessage]);
 
   const handleExportKey = useCallback((key: string) => {
-    postMessage({ type: 'redisExportKeys', keys: [key], database: db });
+    postMessage({ type: 'redisExportKey', database: db, key });
   }, [db, postMessage]);
 
   const handleImport = useCallback(() => {
