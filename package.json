@@ -77,17 +77,6 @@
         "icon": "$(debug-disconnect)"
       },
       {
-        "command": "sqlext.openTable",
-        "title": "Open Table",
-        "category": "Database"
-      },
-      {
-        "command": "sqlext.newQuery",
-        "title": "New Query",
-        "icon": "$(terminal)",
-        "category": "Database"
-      },
-      {
         "command": "sqlext.editConnection",
         "title": "Edit Connection",
         "icon": "$(edit)",
@@ -97,31 +86,6 @@
         "command": "sqlext.refreshConnections",
         "title": "Refresh",
         "icon": "$(refresh)",
-        "category": "Database"
-      },
-      {
-        "command": "sqlext.showTableDDL",
-        "title": "Show Table DDL",
-        "category": "Database"
-      },
-      {
-        "command": "sqlext.dumpStruct",
-        "title": "Dump Struct",
-        "category": "Database"
-      },
-      {
-        "command": "sqlext.dumpStructAndData",
-        "title": "Dump Struct and Data",
-        "category": "Database"
-      },
-      {
-        "command": "sqlext.importSql",
-        "title": "Import SQL",
-        "category": "Database"
-      },
-      {
-        "command": "sqlext.editTable",
-        "title": "Edit Table",
         "category": "Database"
       },
       {
@@ -154,11 +118,6 @@
           "command": "sqlext.cancelConnect",
           "when": "viewItem == connection-connecting",
           "group": "context"
-        },
-        {
-          "command": "sqlext.refreshConnections",
-          "when": "viewItem =~ /^connection-connected/",
-          "group": "inline"
         },
         {
           "command": "sqlext.disconnect",

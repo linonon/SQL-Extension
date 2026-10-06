@@ -20,23 +20,6 @@ describe('handleMongoMessage', () => {
     expect(postMessage).not.toHaveBeenCalled();
   });
 
-  describe('mongoListDatabases', () => {
-    it('调用 driver.listDatabases, 返回 mongoDatabaseList', async () => {
-      const databases = ['admin', 'test', 'mydb'];
-      (driver.listDatabases as any).mockResolvedValue(databases);
-
-      const msg = { type: 'mongoListDatabases' } as WebviewMessage;
-      const handled = await handleMongoMessage(msg, driver, postMessage);
-
-      expect(handled).toBe(true);
-      expect(driver.listDatabases).toHaveBeenCalledTimes(1);
-      expect(postMessage).toHaveBeenCalledWith({
-        type: 'mongoDatabaseList',
-        databases,
-      });
-    });
-  });
-
   describe('mongoListAllCollections', () => {
     it('遍历所有 database 获取 collections', async () => {
       (driver.listDatabases as any).mockResolvedValue(['db1', 'db2']);
@@ -75,28 +58,6 @@ describe('handleMongoMessage', () => {
       expect(postMessage).toHaveBeenCalledWith({
         type: 'mongoAllCollectionList',
         collections: [{ database: 'db1', name: 'col1', count: 0 }],
-      });
-    });
-  });
-
-  describe('mongoListCollections', () => {
-    it('调用 driver.listTables, 返回 mongoCollectionList', async () => {
-      (driver.listTables as any).mockResolvedValue([
-        { name: 'users', schema: '', rowCount: 42 },
-        { name: 'posts', schema: '', rowCount: 0 },
-      ]);
-
-      const msg = { type: 'mongoListCollections', database: 'mydb' } as WebviewMessage;
-      const handled = await handleMongoMessage(msg, driver, postMessage);
-
-      expect(handled).toBe(true);
-      expect(driver.listTables).toHaveBeenCalledWith('mydb');
-      expect(postMessage).toHaveBeenCalledWith({
-        type: 'mongoCollectionList',
-        collections: [
-          { name: 'users', count: 42 },
-          { name: 'posts', count: 0 },
-        ],
       });
     });
   });
@@ -576,111 +537,6 @@ describe('handleMongoMessage', () => {
 
       await handleMongoMessage(msg, driver, postMessage);
       expect(postMessage).toHaveBeenCalledWith({ type: 'mongoExplainResult', error: 'explain failed' });
-    });
-  });
-
-  describe('mongoCountDocuments', () => {
-    it('正常路径: 返回 total', async () => {
-      (driver.executeCancellable as any).mockReturnValue({
-        promise: Promise.resolve({
-          columns: [],
-          rows: [{ count: 42 }],
-          affectedRows: 0,
-          executionTime: 5,
-        }),
-        cancel: vi.fn(),
-      });
-
-      const msg = {
-        type: 'mongoCountDocuments',
-        database: 'mydb',
-        collection: 'users',
-        filter: '',
-      } as WebviewMessage;
-
-      const handled = await handleMongoMessage(msg, driver, postMessage);
-
-      expect(handled).toBe(true);
-      expect(postMessage).toHaveBeenCalledWith({
-        type: 'mongoDocumentList',
-        columns: [],
-        rows: [],
-        total: 42,
-      });
-    });
-
-    it('空 rows 时 total = 0', async () => {
-      (driver.executeCancellable as any).mockReturnValue({
-        promise: Promise.resolve({
-          columns: [],
-          rows: [],
-          affectedRows: 0,
-          executionTime: 5,
-        }),
-        cancel: vi.fn(),
-      });
-
-      const msg = {
-        type: 'mongoCountDocuments',
-        database: 'mydb',
-        collection: 'users',
-        filter: '',
-      } as WebviewMessage;
-
-      await handleMongoMessage(msg, driver, postMessage);
-
-      expect(postMessage).toHaveBeenCalledWith({
-        type: 'mongoDocumentList',
-        columns: [],
-        rows: [],
-        total: 0,
-      });
-    });
-
-    it('driver 抛错时返回 error', async () => {
-      (driver.executeCancellable as any).mockReturnValue({
-        promise: Promise.reject(new Error('count failed')),
-        cancel: vi.fn(),
-      });
-
-      const msg = {
-        type: 'mongoCountDocuments',
-        database: 'mydb',
-        collection: 'users',
-        filter: '{ invalid }',
-      } as WebviewMessage;
-
-      await handleMongoMessage(msg, driver, postMessage);
-
-      expect(postMessage).toHaveBeenCalledWith({
-        type: 'mongoDocumentList',
-        columns: [],
-        rows: [],
-        total: 0,
-        error: 'count failed',
-      });
-    });
-
-    it('带 filter 时构建 countDocuments query', async () => {
-      (driver.executeCancellable as any).mockReturnValue({
-        promise: Promise.resolve({ columns: [], rows: [{ count: 5 }], affectedRows: 0, executionTime: 0 }),
-        cancel: vi.fn(),
-      });
-
-      const msg = {
-        type: 'mongoCountDocuments',
-        database: 'mydb',
-        collection: 'users',
-        filter: '{"age": 25}',
-      } as WebviewMessage;
-
-      await handleMongoMessage(msg, driver, postMessage);
-
-      expect(driver.executeCancellable).toHaveBeenCalledWith(
-        expect.stringContaining('countDocuments'),
-        undefined,
-        'mydb'
-      );
     });
   });
 });

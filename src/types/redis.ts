@@ -16,15 +16,6 @@ export interface RedisDbInfo {
   readonly keyCount: number;
 }
 
-export interface RedisServerInfo {
-  readonly version: string;
-  readonly mode: string;
-  readonly connectedClients: number;
-  readonly usedMemory: string;
-  readonly totalKeys: number;
-  readonly raw: string;
-}
-
 export type RedisValue =
   | { readonly type: 'string'; readonly value: string }
   | { readonly type: 'hash'; readonly value: Record<string, string>; readonly cursor: string }

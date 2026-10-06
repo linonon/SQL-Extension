@@ -16,24 +16,6 @@ describe('buildAlterTableStatements', () => {
   describe('MySQL', () => {
     const driver = 'mysql';
 
-    describe('rename table', () => {
-      it('应该生成 RENAME TO 语句', () => {
-        const changes = emptyChanges({ renamedTable: 'new_users' });
-        const stmts = buildAlterTableStatements(driver, 'users', changes);
-        expect(stmts).toEqual(['ALTER TABLE `users` RENAME TO `new_users`;']);
-      });
-
-      it('rename 后续操作应该使用新表名', () => {
-        const changes = emptyChanges({
-          renamedTable: 'new_users',
-          droppedColumns: ['age'],
-        });
-        const stmts = buildAlterTableStatements(driver, 'users', changes);
-        expect(stmts[0]).toBe('ALTER TABLE `users` RENAME TO `new_users`;');
-        expect(stmts[1]).toBe('ALTER TABLE `new_users` DROP COLUMN `age`;');
-      });
-    });
-
     describe('add column', () => {
       it('基础 add column: 仅 name + dataType', () => {
         const changes = emptyChanges({
@@ -222,14 +204,6 @@ describe('buildAlterTableStatements', () => {
 
   describe('PostgreSQL', () => {
     const driver = 'postgresql';
-
-    describe('rename table', () => {
-      it('应该生成 RENAME TO 语句', () => {
-        const changes = emptyChanges({ renamedTable: 'new_users' });
-        const stmts = buildAlterTableStatements(driver, 'users', changes);
-        expect(stmts).toEqual(['ALTER TABLE "users" RENAME TO "new_users";']);
-      });
-    });
 
     describe('add column', () => {
       it('基础 add column', () => {

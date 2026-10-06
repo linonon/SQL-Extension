@@ -31,25 +31,6 @@ export async function handleSqlMessage(
 ): Promise<boolean> {
   try {
     switch (message.type) {
-      case 'fetchRows': {
-        const result = await ctx.queryService.fetchRows(
-          ctx.getDriver(),
-          message.database,
-          message.table,
-          message.offset,
-          message.limit
-        );
-        ctx.post({
-          type: 'tableData',
-          columns: result.columns,
-          rows: result.rows,
-          total: result.total,
-          offset: result.page.offset,
-          limit: result.page.limit,
-        });
-        return true;
-      }
-
       case 'insertRow': {
         try {
           await ctx.queryService.insertRow(ctx.getDriver(), message.database, message.table, message.row);
@@ -57,26 +38,6 @@ export async function handleSqlMessage(
         } catch (err) {
           ctx.post({
             type: 'insertRowResult',
-            success: false,
-            error: err instanceof Error ? err.message : String(err),
-          });
-        }
-        return true;
-      }
-
-      case 'updateRow': {
-        try {
-          await ctx.queryService.updateRow(
-            ctx.getDriver(),
-            message.database,
-            message.table,
-            message.primaryKeys,
-            message.changes
-          );
-          ctx.post({ type: 'updateRowResult', success: true });
-        } catch (err) {
-          ctx.post({
-            type: 'updateRowResult',
             success: false,
             error: err instanceof Error ? err.message : String(err),
           });
@@ -262,11 +223,10 @@ export async function handleSqlMessage(
             : base;
           ctx.post({ type: 'alterTableResult', success: false, error: detail });
         }
-        // 无论成败都刷新列信息, 让 UI 基线与 DB 实际状态一致 (rename 后用新表名)
-        const refreshTable = message.changes.renamedTable ?? message.table;
+        // 无论成败都刷新列信息, 让 UI 基线与 DB 实际状态一致
         try {
-          const freshColumns = await driver.getDetailedColumns(message.database, refreshTable);
-          ctx.post({ type: 'tableDetails', columns: freshColumns, tableName: refreshTable });
+          const freshColumns = await driver.getDetailedColumns(message.database, message.table);
+          ctx.post({ type: 'tableDetails', columns: freshColumns, tableName: message.table });
         } catch { /* 刷新失败忽略: 主操作结果已回报 */ }
         return true;
       }
@@ -384,7 +344,7 @@ export async function handleSqlMessage(
       }
 
       case 'importSql': {
-        const { database } = message as { database: string; table?: string };
+        const { database } = message;
         const uris = await vscode.window.showOpenDialog({
           filters: { 'SQL Files': ['sql'] },
           canSelectMany: false,

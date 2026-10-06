@@ -136,13 +136,6 @@ export async function handleRedisMessage(
         return true;
       }
 
-      case 'redisHashSet': {
-        await driver.selectDatabase(message.database);
-        await driver.setHashField(message.key, message.field, message.value);
-        postMessage({ type: 'redisOperationResult', success: true });
-        return true;
-      }
-
       case 'redisHashDelete': {
         await driver.selectDatabase(message.database);
         await driver.deleteHashField(message.key, message.field);
@@ -153,13 +146,6 @@ export async function handleRedisMessage(
       case 'redisListPush': {
         await driver.selectDatabase(message.database);
         await driver.listPush(message.key, message.value, message.position);
-        postMessage({ type: 'redisOperationResult', success: true });
-        return true;
-      }
-
-      case 'redisListSet': {
-        await driver.selectDatabase(message.database);
-        await driver.listSet(message.key, message.index, message.value);
         postMessage({ type: 'redisOperationResult', success: true });
         return true;
       }
@@ -214,32 +200,6 @@ export async function handleRedisMessage(
         await driver.selectDatabase(message.database);
         await driver.zsetRemove(message.key, message.member);
         postMessage({ type: 'redisOperationResult', success: true });
-        return true;
-      }
-
-      case 'redisSetEdit': {
-        await driver.selectDatabase(message.database);
-        await driver.setRemove(message.key, message.oldMember);
-        await driver.setAdd(message.key, message.newMember);
-        postMessage({ type: 'redisOperationResult', success: true });
-        return true;
-      }
-
-      case 'redisHashBatchSet': {
-        await driver.selectDatabase(message.database);
-        const errors: string[] = [];
-        for (const entry of message.entries) {
-          try {
-            await driver.setHashField(message.key, entry.field, entry.value);
-          } catch (e) {
-            errors.push(`${entry.field}: ${e instanceof Error ? e.message : String(e)}`);
-          }
-        }
-        if (errors.length > 0) {
-          postMessage({ type: 'redisOperationResult', success: false, error: `Failed fields: ${errors.join('; ')}` });
-        } else {
-          postMessage({ type: 'redisOperationResult', success: true });
-        }
         return true;
       }
 

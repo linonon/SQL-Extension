@@ -203,12 +203,6 @@ describe('handleRedisMessage', () => {
       expect(postMessage).toHaveBeenCalledWith({ type: 'redisOperationResult', success: true });
     });
 
-    it('redisHashSet', async () => {
-      const msg = { type: 'redisHashSet', key: 'h', field: 'f', value: 'v', database: 0 } as WebviewMessage;
-      await handleRedisMessage(msg, driver, postMessage);
-      expect(driver.setHashField).toHaveBeenCalledWith('h', 'f', 'v');
-    });
-
     it('redisHashDelete', async () => {
       const msg = { type: 'redisHashDelete', key: 'h', field: 'f', database: 0 } as WebviewMessage;
       await handleRedisMessage(msg, driver, postMessage);
@@ -245,14 +239,6 @@ describe('handleRedisMessage', () => {
       expect(driver.zsetRemove).toHaveBeenCalledWith('z', 'm');
     });
 
-    it('redisSetEdit 原子 SREM+SADD', async () => {
-      const msg = { type: 'redisSetEdit', key: 's', oldMember: 'old', newMember: 'new', database: 0 } as WebviewMessage;
-      await handleRedisMessage(msg, driver, postMessage);
-      expect(driver.setRemove).toHaveBeenCalledWith('s', 'old');
-      expect(driver.setAdd).toHaveBeenCalledWith('s', 'new');
-      expect(postMessage).toHaveBeenCalledWith({ type: 'redisOperationResult', success: true });
-    });
-
     it('redisDeleteKeys 多 key', async () => {
       const msg = { type: 'redisDeleteKeys', keys: ['a', 'b', 'c'], database: 0 } as WebviewMessage;
       await handleRedisMessage(msg, driver, postMessage);
@@ -269,15 +255,6 @@ describe('handleRedisMessage', () => {
       const msg = { type: 'redisRemoveTTL', key: 'k', database: 0 } as WebviewMessage;
       await handleRedisMessage(msg, driver, postMessage);
       expect(driver.removeTTL).toHaveBeenCalledWith('k');
-    });
-  });
-
-  describe('redisListSet', () => {
-    it('调用 driver.listSet', async () => {
-      const msg = { type: 'redisListSet', key: 'l', index: 2, value: 'new', database: 0 } as WebviewMessage;
-      await handleRedisMessage(msg, driver, postMessage);
-      expect(driver.listSet).toHaveBeenCalledWith('l', 2, 'new');
-      expect(postMessage).toHaveBeenCalledWith({ type: 'redisOperationResult', success: true });
     });
   });
 

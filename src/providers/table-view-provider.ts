@@ -11,10 +11,8 @@ import type { DriverType, SSHTunnelConfig } from '../types/connection.js';
 import type { AlterTableChanges } from '../types/query.js';
 import { handleRedisMessage, exportRedisKeys, importRedisKeys } from './redis-message-handler.js';
 import { handleKafkaMessage } from './kafka-message-handler.js';
-import { handleRabbitMQMessage } from './rabbitmq-message-handler.js';
 import { handleMongoMessage, buildExportPipeline } from './mongo-message-handler.js';
 import { getWebviewContent, getWebviewOptions } from './webview-helper.js';
-import { buildDefaultSelectSql } from '../utils/sql-builder.js';
 import { handleSqlMessage, type SqlMessageContext } from './sql-message-handler.js';
 import { cancelAiAsk } from '../services/ai-assist.js';
 import { sanitizeErrorMessage } from '../utils/sanitize-error.js';
@@ -46,27 +44,6 @@ export class TableViewProvider implements vscode.Disposable {
     private readonly credentialStore: CredentialStore
   ) {}
 
-  openTableView(connectionId: string, database: string, table: string): void {
-    const panelKey = `table:${connectionId}:${database}:${table}`;
-    const existing = this.panels.get(panelKey);
-    if (existing) {
-      existing.reveal();
-      return;
-    }
-
-    const driver = this.connectionManager.getDriver(connectionId);
-    const initialSql = buildDefaultSelectSql(driver.driverType, table);
-
-    this.createPanel(panelKey, `${table} - ${database}`, 'query', {
-      connectionId,
-      database,
-      table,
-      initialSql,
-      autoExecute: true,
-      driverType: driver.driverType,
-    });
-  }
-
   openQueryEditor(connectionId: string, database: string): void {
     const panelKey = `query:${connectionId}:${database}:${Date.now()}`;
     const driver = this.connectionManager.getDriver(connectionId);
@@ -74,15 +51,6 @@ export class TableViewProvider implements vscode.Disposable {
       connectionId,
       database,
       driverType: driver.driverType,
-    });
-  }
-
-  openMongoQueryEditor(connectionId: string, database: string, connectionName: string): void {
-    const panelKey = `mongo-query:${connectionId}:${database}:${Date.now()}`;
-    this.createPanel(panelKey, `Query - ${connectionName}/${database}`, 'mongo-query', {
-      connectionId,
-      database,
-      connectionName,
     });
   }
 
@@ -150,17 +118,9 @@ export class TableViewProvider implements vscode.Disposable {
     });
   }
 
-  openKafkaBrowser(connectionId: string, topic?: string): void {
+  openKafkaBrowser(connectionId: string): void {
     this.openBrowser(`kafka:${connectionId}`, 'Kafka Browser', 'kafka-browser', {
       connectionId,
-      topic,
-    });
-  }
-
-  openRabbitMQBrowser(connectionId: string, queue?: string): void {
-    this.openBrowser(`rabbitmq:${connectionId}`, 'RabbitMQ Browser', 'rmq-browser', {
-      connectionId,
-      queue,
     });
   }
 
@@ -327,13 +287,6 @@ export class TableViewProvider implements vscode.Disposable {
             return;
           }
 
-          if (message.type.startsWith('rmq')) {
-            const rmqDriver = this.connectionManager.getRabbitMQDriver(connectionId!);
-            const post = (msg: unknown) => panel.webview.postMessage(msg);
-            await handleRabbitMQMessage(message, rmqDriver, post);
-            return;
-          }
-
           if (message.type.startsWith('kafka')) {
             const kafkaDriver = this.connectionManager.getKafkaDriver(connectionId!);
             const post = (msg: unknown) => panel.webview.postMessage(msg);
@@ -369,42 +322,6 @@ export class TableViewProvider implements vscode.Disposable {
               );
               if (confirm !== 'Drop') { return; }
               // fall through to handleMongoMessage
-            }
-
-            if (message.type === 'mongoRunQuery') {
-              const { database, query } = message as { database: string; query: string };
-              const mongoDriver = this.connectionManager.getDriver(connectionId!);
-              const { promise, cancel } = mongoDriver.executeCancellable(query, undefined, database);
-              this.pendingCancels.set(panel, cancel);
-              try {
-                const result = await promise;
-                const ROW_LIMIT = 500;
-                const truncated = (result.rows?.length ?? 0) > ROW_LIMIT;
-                panel.webview.postMessage({
-                  type: 'mongoQueryResult',
-                  columns: result.columns ?? [],
-                  rows: truncated ? result.rows.slice(0, ROW_LIMIT) : (result.rows ?? []),
-                  affectedRows: result.affectedRows ?? 0,
-                  executionTime: result.executionTime ?? 0,
-                  truncated,
-                });
-              } catch (err) {
-                panel.webview.postMessage({
-                  type: 'mongoQueryResult',
-                  columns: [], rows: [], affectedRows: 0,
-                  executionTime: 0, truncated: false,
-                  error: err instanceof Error ? err.message : String(err),
-                });
-              } finally {
-                this.pendingCancels.delete(panel);
-              }
-              return;
-            }
-
-            if (message.type === 'mongoCancelQuery') {
-              const cancel = this.pendingCancels.get(panel);
-              if (cancel) { cancel(); this.pendingCancels.delete(panel); }
-              return;
             }
 
             if (message.type === 'mongoDeleteDocument') {

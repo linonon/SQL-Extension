@@ -9,12 +9,11 @@ import '../../styles/kafka-browser.css';
 
 interface KafkaBrowserProps {
   readonly connectionId: string;
-  readonly topic?: string;
 }
 
-export function KafkaBrowser({ connectionId, topic: initialTopic }: KafkaBrowserProps) {
+export function KafkaBrowser({ connectionId }: KafkaBrowserProps) {
   const [topics, setTopics] = useState<readonly KafkaTopicInfo[]>([]);
-  const [selectedTopic, setSelectedTopic] = useState<string | null>(initialTopic ?? null);
+  const [selectedTopic, setSelectedTopic] = useState<string | null>(null);
   const [partitions, setPartitions] = useState<readonly KafkaPartitionInfo[]>([]);
   const [selectedPartition, setSelectedPartition] = useState(0);
   const [messages, setMessages] = useState<readonly KafkaMessage[]>([]);

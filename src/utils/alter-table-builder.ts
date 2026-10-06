@@ -39,14 +39,6 @@ export function buildAlterTableStatements(
   const tbl = escId(driverType, table);
   const statements: string[] = [];
 
-  // Rename table (MySQL 与 PG 语法一致)
-  if (changes.renamedTable) {
-    const newName = escId(driverType, changes.renamedTable);
-    statements.push(`ALTER TABLE ${tbl} RENAME TO ${newName};`);
-  }
-
-  const targetTable = changes.renamedTable ? escId(driverType, changes.renamedTable) : tbl;
-
   // Add columns
   for (const col of changes.addedColumns) {
     const colName = escId(driverType, col.name);
@@ -55,25 +47,25 @@ export function buildAlterTableStatements(
 
     if (driverType === 'mysql') {
       const comment = col.comment ? ` COMMENT '${col.comment.replace(/'/g, "''")}'` : '';
-      statements.push(`ALTER TABLE ${targetTable} ADD COLUMN ${colName} ${col.dataType}${notNull}${def}${comment};`);
+      statements.push(`ALTER TABLE ${tbl} ADD COLUMN ${colName} ${col.dataType}${notNull}${def}${comment};`);
     } else {
-      statements.push(`ALTER TABLE ${targetTable} ADD COLUMN ${colName} ${col.dataType}${notNull}${def};`);
+      statements.push(`ALTER TABLE ${tbl} ADD COLUMN ${colName} ${col.dataType}${notNull}${def};`);
       if (col.comment) {
-        statements.push(`COMMENT ON COLUMN ${targetTable}.${colName} IS '${col.comment.replace(/'/g, "''")}';`);
+        statements.push(`COMMENT ON COLUMN ${tbl}.${colName} IS '${col.comment.replace(/'/g, "''")}';`);
       }
     }
   }
 
   // Drop columns
   for (const colName of changes.droppedColumns) {
-    statements.push(`ALTER TABLE ${targetTable} DROP COLUMN ${escId(driverType, colName)};`);
+    statements.push(`ALTER TABLE ${tbl} DROP COLUMN ${escId(driverType, colName)};`);
   }
 
   // Rename columns (MySQL 8+ 与 PG 语法一致)
   for (const rename of changes.renamedColumns) {
     const oldName = escId(driverType, rename.from);
     const newName = escId(driverType, rename.to);
-    statements.push(`ALTER TABLE ${targetTable} RENAME COLUMN ${oldName} TO ${newName};`);
+    statements.push(`ALTER TABLE ${tbl} RENAME COLUMN ${oldName} TO ${newName};`);
   }
 
   // Modify columns
@@ -88,29 +80,29 @@ export function buildAlterTableStatements(
       if (mod.defaultValue !== undefined) { parts.push(buildDefaultClause(mod.defaultValue)); }
       if (mod.comment !== undefined) { parts.push(`COMMENT '${mod.comment.replace(/'/g, "''")}'`); }
       if (parts.length > 0) {
-        statements.push(`ALTER TABLE ${targetTable} MODIFY COLUMN ${colName} ${parts.join(' ')};`);
+        statements.push(`ALTER TABLE ${tbl} MODIFY COLUMN ${colName} ${parts.join(' ')};`);
       }
     } else {
       // PG 每个属性单独 ALTER
       if (mod.dataType !== undefined) {
-        statements.push(`ALTER TABLE ${targetTable} ALTER COLUMN ${colName} TYPE ${mod.dataType};`);
+        statements.push(`ALTER TABLE ${tbl} ALTER COLUMN ${colName} TYPE ${mod.dataType};`);
       }
       if (mod.nullable !== undefined) {
         statements.push(
           mod.nullable
-            ? `ALTER TABLE ${targetTable} ALTER COLUMN ${colName} DROP NOT NULL;`
-            : `ALTER TABLE ${targetTable} ALTER COLUMN ${colName} SET NOT NULL;`
+            ? `ALTER TABLE ${tbl} ALTER COLUMN ${colName} DROP NOT NULL;`
+            : `ALTER TABLE ${tbl} ALTER COLUMN ${colName} SET NOT NULL;`
         );
       }
       if (mod.defaultValue !== undefined) {
         if (mod.defaultValue === null) {
-          statements.push(`ALTER TABLE ${targetTable} ALTER COLUMN ${colName} DROP DEFAULT;`);
+          statements.push(`ALTER TABLE ${tbl} ALTER COLUMN ${colName} DROP DEFAULT;`);
         } else {
-          statements.push(`ALTER TABLE ${targetTable} ALTER COLUMN ${colName} SET ${buildDefaultClause(mod.defaultValue)};`);
+          statements.push(`ALTER TABLE ${tbl} ALTER COLUMN ${colName} SET ${buildDefaultClause(mod.defaultValue)};`);
         }
       }
       if (mod.comment !== undefined) {
-        statements.push(`COMMENT ON COLUMN ${targetTable}.${colName} IS '${mod.comment.replace(/'/g, "''")}';`);
+        statements.push(`COMMENT ON COLUMN ${tbl}.${colName} IS '${mod.comment.replace(/'/g, "''")}';`);
       }
     }
   }

@@ -1,30 +1,3 @@
-.data-grid-container {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  overflow: hidden;
-}
-
-.data-grid-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px;
-  border-bottom: 1px solid var(--vscode-panel-border);
-  flex-shrink: 0;
-}
-
-.data-grid-toolbar .table-name {
-  font-weight: bold;
-  margin-right: auto;
-}
-
-.data-grid-wrapper {
-  flex: 1;
-  overflow: auto;
-  position: relative;
-}
-
 .data-grid-table {
   width: 100%;
   border-collapse: collapse;
@@ -100,48 +73,6 @@
 
 .data-grid-table td.pk-column {
   font-weight: 600;
-}
-
-.data-grid-pagination {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px;
-  border-top: 1px solid var(--vscode-panel-border);
-  flex-shrink: 0;
-  font-size: 12px;
-}
-
-.data-grid-pagination .page-info {
-  color: var(--vscode-descriptionForeground);
-}
-
-.data-grid-pagination .page-controls {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.data-grid-pagination button {
-  padding: 2px 8px;
-  font-size: 12px;
-}
-
-.data-grid-loading {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  color: var(--vscode-descriptionForeground);
-}
-
-.data-grid-error {
-  padding: 16px;
-  color: var(--vscode-errorForeground);
-  background-color: var(--vscode-inputValidation-errorBackground);
-  border: 1px solid var(--vscode-inputValidation-errorBorder);
-  border-radius: 4px;
-  margin: 8px;
 }
 
 /* 写操作失败的非致命行内提示 (保留网格, 不整屏替换) */

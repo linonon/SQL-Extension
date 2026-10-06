@@ -20,7 +20,7 @@ describe('useVSCodeMessage', () => {
 
     const message: ExtensionMessage = {
       type: 'viewInit',
-      view: 'table',
+      view: 'query',
       context: { connectionId: 'test-conn' },
     };
 

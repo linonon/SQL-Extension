@@ -28,24 +28,6 @@ describe('usePostMessage', () => {
     expect(mockPostMessage).toHaveBeenCalledWith(message);
   });
 
-  it('应该正确发送 fetchRows 消息', () => {
-    const { result } = renderHook(() => usePostMessage());
-
-    const message: WebviewMessage = {
-      type: 'fetchRows',
-      database: 'test_db',
-      table: 'users',
-      offset: 0,
-      limit: 100,
-    };
-
-    act(() => {
-      result.current(message);
-    });
-
-    expect(mockPostMessage).toHaveBeenCalledWith(message);
-  });
-
   it('应该正确发送 executeQuery 消息', () => {
     const { result } = renderHook(() => usePostMessage());
 

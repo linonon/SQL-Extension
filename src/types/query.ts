@@ -20,17 +20,11 @@ export interface QueryResult {
   readonly executionTime: number;
 }
 
-export interface PageRequest {
-  readonly offset: number;
-  readonly limit: number;
-}
-
 export interface DetailedColumnInfo extends ColumnInfo {
   readonly comment: string;
 }
 
 export interface AlterTableChanges {
-  readonly renamedTable?: string;
   readonly addedColumns: readonly AddColumnDef[];
   readonly droppedColumns: readonly string[];
   readonly modifiedColumns: readonly ModifyColumnDef[];
@@ -51,11 +45,4 @@ export interface ModifyColumnDef {
   readonly nullable?: boolean;
   readonly defaultValue?: string | null;
   readonly comment?: string;
-}
-
-export interface PagedResult {
-  readonly columns: readonly ColumnInfo[];
-  readonly rows: readonly Record<string, unknown>[];
-  readonly total: number;
-  readonly page: PageRequest;
 }

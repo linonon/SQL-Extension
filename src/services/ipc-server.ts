@@ -26,14 +26,8 @@ interface IpcResponse {
 
 export class IpcServer {
   private server: net.Server | null = null;
-  // 正在由外部 agent 发起连接的 id: onDidChange 监听方据此不自动弹出 browser
-  private readonly agentConnecting = new Set<string>();
 
   constructor(private readonly connectionManager: ConnectionManager) {}
-
-  isAgentConnect(id: string): boolean {
-    return this.agentConnecting.has(id);
-  }
 
   start(): void {
     // 目录收紧到 0700 (mode 对已存在目录无效, 故再 chmod); 锁不住就不开 IPC, 不拖垮扩展
@@ -92,12 +86,7 @@ export class IpcServer {
   // 未连接则按需连接 (连接状态按窗口保存, agent 无从得知要先 db_connect)
   private async ensureConnected(id: string): Promise<void> {
     if (this.connectionManager.getState(id) === 'connected') { return; }
-    this.agentConnecting.add(id);
-    try {
-      await this.connectionManager.connect(id);
-    } finally {
-      this.agentConnecting.delete(id);
-    }
+    await this.connectionManager.connect(id);
   }
 
   private findConfig(id: string) {

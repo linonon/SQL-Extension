@@ -1,16 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useVSCodeMessage } from './hooks/useVSCodeMessage';
 import { usePostMessage } from './hooks/usePostMessage';
-import { DataGrid } from './components/data-grid/DataGrid';
 import { ConnectionForm, type ConnectionFormProps } from './components/connection-form/ConnectionForm';
 import { QueryEditor } from './components/query-editor/QueryEditor';
 import { EditTable } from './components/edit-table/EditTable';
 import { RedisBrowser } from './components/redis-browser/RedisBrowser';
 import { KafkaBrowser } from './components/kafka-browser/KafkaBrowser';
-import { RmqBrowser } from './components/rmq-browser/RmqBrowser';
 import { MongoBrowser } from './components/mongo-browser/MongoBrowser';
 import { DatabaseBrowser } from './components/db-browser/DatabaseBrowser';
-import { MongoQueryEditor } from './components/mongo-browser/MongoQueryEditor';
 import type { ExtensionMessage, ViewType } from './types/messages';
 
 export function App() {
@@ -37,14 +34,6 @@ export function App() {
   }
 
   switch (view) {
-    case 'table':
-      return (
-        <DataGrid
-          connectionId={viewContext.connectionId as string}
-          database={viewContext.database as string}
-          table={viewContext.table as string}
-        />
-      );
     case 'query':
       return (
         <QueryEditor
@@ -53,7 +42,6 @@ export function App() {
           driverType={viewContext.driverType as string | undefined}
           initialSql={viewContext.initialSql as string | undefined}
           autoExecute={viewContext.autoExecute as boolean | undefined}
-          table={viewContext.table as string | undefined}
         />
       );
     case 'connection-form':
@@ -77,13 +65,6 @@ export function App() {
       return (
         <KafkaBrowser
           connectionId={viewContext.connectionId as string}
-          topic={viewContext.topic as string | undefined}
-        />
-      );
-    case 'rmq-browser':
-      return (
-        <RmqBrowser
-          connectionId={viewContext.connectionId as string}
         />
       );
     case 'db-browser':
@@ -97,14 +78,6 @@ export function App() {
       return (
         <MongoBrowser
           connectionId={viewContext.connectionId as string}
-        />
-      );
-    case 'mongo-query':
-      return (
-        <MongoQueryEditor
-          connectionId={viewContext.connectionId as string}
-          database={viewContext.database as string}
-          connectionName={viewContext.connectionName as string}
         />
       );
     default:

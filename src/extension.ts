@@ -7,7 +7,6 @@ import { CredentialStore } from './services/credential-store.js';
 import { ConnectionTreeProvider } from './providers/connection-tree-provider.js';
 import { TableViewProvider } from './providers/table-view-provider.js';
 import { ConnectionTreeItem, setResourcesPath } from './providers/tree-items.js';
-import { DumpService } from './services/dump-service.js';
 import { IpcServer, SOCKET_PATH } from './services/ipc-server.js';
 import type { DriverType } from './types/connection.js';
 
@@ -35,8 +34,6 @@ export function activate(context: vscode.ExtensionContext): void {
     credentialStore
   );
 
-  const dumpService = new DumpService();
-
   function openBrowserForConnection(id: string, name: string, dt: DriverType): void {
     switch (dt) {
       case 'mysql':
@@ -50,7 +47,8 @@ export function activate(context: vscode.ExtensionContext): void {
         viewProvider.openKafkaBrowser(id);
         break;
       case 'rabbitmq':
-        viewProvider.openRabbitMQBrowser(id);
+        // 直接打开官方 management UI; URL 取 driver 实际连的地址 (走 SSH 时为本地隧道端口, 仅连接期间有效)
+        void vscode.env.openExternal(vscode.Uri.parse(connectionManager.getRabbitMQDriver(id).managementUrl()));
         break;
       case 'mongodb':
         viewProvider.openMongoBrowser(id, name, dt);
@@ -97,6 +95,10 @@ export function activate(context: vscode.ExtensionContext): void {
         }
         try {
           await connectionManager.connect(item.connectionId);
+          // connecting 期间被 Cancel 时 connect 静默返回, 不提示也不打开 browser
+          if (connectionManager.getState(item.connectionId) !== 'connected') {
+            return;
+          }
           vscode.window.showInformationMessage(`Connected to ${item.connectionName}`);
         } catch (err) {
           vscode.window.showErrorMessage(
@@ -104,6 +106,7 @@ export function activate(context: vscode.ExtensionContext): void {
           );
           return;
         }
+        // browser 只由 UI 点击打开, agent 经 IPC 的按需连接不弹
         openBrowserForConnection(item.connectionId, item.connectionName, item.driverType);
       }
     }],
@@ -121,103 +124,9 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }],
 
-    ['sqlext.openTable', (item: unknown) => {
-      const args = item as { connectionId?: string; database?: string; table?: string };
-      if (args.connectionId && args.database && args.table) {
-        viewProvider.openTableView(args.connectionId, args.database, args.table);
-      }
-    }],
-
-    ['sqlext.newQuery', (item: unknown) => {
-      const args = item as { connectionId?: string; database?: string };
-      if (args.connectionId && args.database) {
-        const conn = connectionManager.getConnections().find((c) => c.id === args.connectionId);
-        if (conn?.driverType === 'mongodb') {
-          viewProvider.openMongoQueryEditor(args.connectionId, args.database, conn.name);
-        } else {
-          viewProvider.openQueryEditor(args.connectionId, args.database);
-        }
-      }
-    }],
-
     ['sqlext.editConnection', (item: unknown) => {
       if (item instanceof ConnectionTreeItem) {
         viewProvider.openConnectionForm(item.connectionId);
-      }
-    }],
-
-    ['sqlext.editTable', (item: unknown) => {
-      const args = item as { connectionId?: string; database?: string; table?: string };
-      if (args.connectionId && args.database && args.table) {
-        viewProvider.openEditTable(args.connectionId, args.database, args.table);
-      }
-    }],
-
-    ['sqlext.showTableDDL', (item: unknown) => {
-      const args = item as { connectionId?: string; database?: string; table?: string };
-      if (args.connectionId && args.database && args.table) {
-        viewProvider.showTableDDL(args.connectionId, args.database, args.table);
-      }
-    }],
-
-    ['sqlext.dumpStruct', async (item: unknown) => {
-      const args = item as { connectionId?: string; database?: string; table?: string };
-      if (!args.connectionId || !args.database || !args.table) { return; }
-      const baseDir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? require('os').homedir();
-      const ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
-      const uri = await vscode.window.showSaveDialog({
-        filters: { 'SQL Files': ['sql'] },
-        defaultUri: vscode.Uri.file(`${baseDir}/${args.table}_${ts}.sql`),
-      });
-      if (!uri) { return; }
-      const driver = connectionManager.getDriver(args.connectionId);
-      const content = await dumpService.dumpStruct(driver, args.database, args.table);
-      await vscode.workspace.fs.writeFile(uri, Buffer.from(content, 'utf-8'));
-      vscode.window.showInformationMessage(`Struct dumped to ${uri.fsPath}`);
-    }],
-
-    ['sqlext.dumpStructAndData', async (item: unknown) => {
-      const args = item as { connectionId?: string; database?: string; table?: string };
-      if (!args.connectionId || !args.database || !args.table) { return; }
-      const baseDir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? require('os').homedir();
-      const ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
-      const uri = await vscode.window.showSaveDialog({
-        filters: { 'SQL Files': ['sql'] },
-        defaultUri: vscode.Uri.file(`${baseDir}/${args.table}_${ts}.sql`),
-      });
-      if (!uri) { return; }
-      const driver = connectionManager.getDriver(args.connectionId);
-      await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: `Dumping ${args.table}...`, cancellable: true },
-        async (progress, token) => {
-          const content = await dumpService.dumpStructAndData(
-            driver, args.database!, args.table!,
-            (current, total) => { progress.report({ increment: 0, message: `${current}/${total} rows` }); },
-            token
-          );
-          await vscode.workspace.fs.writeFile(uri, Buffer.from(content, 'utf-8'));
-          vscode.window.showInformationMessage(`Data dumped to ${uri.fsPath}`);
-        }
-      );
-    }],
-
-    ['sqlext.importSql', async (item: unknown) => {
-      const args = item as { connectionId?: string; database?: string };
-      if (!args.connectionId || !args.database) { return; }
-      const uris = await vscode.window.showOpenDialog({
-        filters: { 'SQL Files': ['sql'] },
-        canSelectMany: false,
-      });
-      if (!uris || uris.length === 0) { return; }
-      const fileContent = await vscode.workspace.fs.readFile(uris[0]);
-      const sql = Buffer.from(fileContent).toString('utf-8');
-      const driver = connectionManager.getDriver(args.connectionId);
-      try {
-        const { promise } = driver.executeCancellable(sql, undefined, args.database);
-        const result = await promise;
-        vscode.window.showInformationMessage(`SQL imported. Affected rows: ${result.affectedRows}`);
-      } catch (err) {
-        vscode.window.showErrorMessage(`Import failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }],
 
@@ -231,18 +140,6 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.commands.registerCommand(id, handler)
     );
   }
-
-  const previousStates = new Map<string, string>();
-  connectionManager.onDidChange(() => {
-    for (const info of connectionManager.getConnectionInfo()) {
-      const prev = previousStates.get(info.config.id);
-      // 外部 agent 经 IPC 发起的连接不弹 browser
-      if (prev !== 'connected' && info.state === 'connected' && !ipcServer.isAgentConnect(info.config.id)) {
-        openBrowserForConnection(info.config.id, info.config.name, info.config.driverType);
-      }
-      previousStates.set(info.config.id, info.state);
-    }
-  });
 
   // 向 Copilot Chat / Agent 注册 MCP server, 用户无需手写 mcp.json; 钉到本窗口的 socket
   const mcpServerPath = path.join(context.extensionPath, 'dist', 'mcp-server.js');

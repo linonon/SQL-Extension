@@ -12,7 +12,6 @@ export interface DetailedColumnInfo extends ColumnInfo {
 }
 
 export interface AlterTableChanges {
-  readonly renamedTable?: string;
   readonly addedColumns: readonly AddColumnDef[];
   readonly droppedColumns: readonly string[];
   readonly modifiedColumns: readonly ModifyColumnDef[];
@@ -33,10 +32,4 @@ export interface ModifyColumnDef {
   readonly nullable?: boolean;
   readonly defaultValue?: string | null;
   readonly comment?: string;
-}
-
-export interface PageInfo {
-  readonly offset: number;
-  readonly limit: number;
-  readonly total: number;
 }

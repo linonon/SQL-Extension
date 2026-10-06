@@ -54,8 +54,8 @@ export function DatabaseBrowser({ connectionId, driverType }: DatabaseBrowserPro
     postMessage({ type: 'newQuery', database });
   }, [postMessage]);
 
-  const handleImportSql = useCallback((database: string, table?: string) => {
-    postMessage({ type: 'importSql', database, table });
+  const handleImportSql = useCallback((database: string) => {
+    postMessage({ type: 'importSql', database });
   }, [postMessage]);
 
   const handleEditTable = useCallback((database: string, table: string) => {

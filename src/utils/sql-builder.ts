@@ -37,49 +37,6 @@ function qualifyTable(driverType: string, table: string, database?: string): str
   return escapeIdentifier(driverType, table);
 }
 
-// 生成人类可读 SQL, 用于预填到 QueryEditor 给用户编辑
-export function buildDefaultSelectSql(
-  driverType: string,
-  table: string,
-  database?: string,
-  limit: number = 50
-): string {
-  if (driverType === 'mongodb') {
-    return `db.${validateMongoCollection(table)}.find({})`;
-  }
-  return `SELECT * FROM ${qualifyTable(driverType, table, database)} LIMIT ${limit} OFFSET 0`;
-}
-
-export function buildSelect(
-  driverType: string,
-  table: string,
-  offset: number,
-  limit: number,
-  database?: string
-): BuiltSQL {
-  if (driverType === 'mongodb') {
-    return {
-      sql: `db.${validateMongoCollection(table)}.aggregate([{"$skip":${offset}},{"$limit":${limit}}])`,
-      params: [],
-    };
-  }
-  const ph = getPlaceholder(driverType);
-  return {
-    sql: `SELECT * FROM ${qualifyTable(driverType, table, database)} LIMIT ${ph(1)} OFFSET ${ph(2)}`,
-    params: [limit, offset],
-  };
-}
-
-export function buildCount(driverType: string, table: string, database?: string): BuiltSQL {
-  if (driverType === 'mongodb') {
-    return { sql: `db.${validateMongoCollection(table)}.countDocuments({})`, params: [] };
-  }
-  return {
-    sql: `SELECT COUNT(*) as count FROM ${qualifyTable(driverType, table, database)}`,
-    params: [],
-  };
-}
-
 export function buildInsert(
   driverType: string,
   table: string,
@@ -146,27 +103,6 @@ export function buildUpdate(
   return {
     sql: `UPDATE ${qualifyTable(driverType, table, database)} SET ${setClauses.join(', ')} WHERE ${whereClauses.join(' AND ')}`,
     params: [...changeKeys.map((k) => changes[k]), ...pkKeys.map((k) => primaryKeys[k])],
-  };
-}
-
-export function buildDelete(
-  driverType: string,
-  table: string,
-  primaryKeys: Record<string, unknown>,
-  database?: string
-): BuiltSQL {
-  if (driverType === 'mongodb') {
-    return { sql: `db.${validateMongoCollection(table)}.deleteOne(${JSON.stringify(primaryKeys)})`, params: [] };
-  }
-  const ph = getPlaceholder(driverType);
-  const keys = Object.keys(primaryKeys);
-  if (keys.length === 0) {
-    throw new Error('buildDelete: refusing DELETE without WHERE (no primary key)');
-  }
-  const whereClauses = keys.map((k, i) => `${escapeIdentifier(driverType, k)} = ${ph(i + 1)}`);
-  return {
-    sql: `DELETE FROM ${qualifyTable(driverType, table, database)} WHERE ${whereClauses.join(' AND ')}`,
-    params: keys.map((k) => primaryKeys[k]),
   };
 }
 

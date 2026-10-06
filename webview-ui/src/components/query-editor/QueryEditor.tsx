@@ -207,7 +207,7 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
     setShowHistory((prev) => !prev);
   }, []);
 
-  // 仅当 openTableView 场景且表有 PK 时可编辑
+  // 仅当浏览单表 (db-browser 点表) 且表有 PK 时可编辑
   const hasPK = fullColumns.some((c) => c.isPrimaryKey);
   const editable = !!table && hasPK;
 
@@ -350,7 +350,7 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
           <div className="query-loading-spinner" />
         </div>
       )}
-      {batchStatements && batchStatements.length > 0 && (
+      {batchStatements && batchStatements.length > 1 && (
         <StatementSummaryList statements={batchStatements} />
       )}
       {result && (

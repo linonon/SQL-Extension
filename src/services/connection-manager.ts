@@ -206,11 +206,6 @@ export class ConnectionManager implements vscode.Disposable {
     return driver as IDatabaseDriver;
   }
 
-  isRedisConnection(id: string): boolean {
-    const config = this.getConnections().find((c) => c.id === id);
-    return config?.driverType === 'redis';
-  }
-
   getRedisDriver(id: string): IRedisDriver {
     const driver = this.drivers.get(id);
     if (!driver) {
@@ -222,11 +217,6 @@ export class ConnectionManager implements vscode.Disposable {
     return driver as IRedisDriver;
   }
 
-  isKafkaConnection(id: string): boolean {
-    const config = this.getConnections().find((c) => c.id === id);
-    return config?.driverType === 'kafka';
-  }
-
   getKafkaDriver(id: string): IKafkaDriver {
     const driver = this.drivers.get(id);
     if (!driver) {
@@ -236,11 +226,6 @@ export class ConnectionManager implements vscode.Disposable {
       throw new Error(`Connection ${id} is not a Kafka connection`);
     }
     return driver as IKafkaDriver;
-  }
-
-  isRabbitMQConnection(id: string): boolean {
-    const config = this.getConnections().find((c) => c.id === id);
-    return config?.driverType === 'rabbitmq';
   }
 
   getRabbitMQDriver(id: string): IRabbitMQDriver {

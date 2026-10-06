@@ -23,7 +23,7 @@ interface DatabaseObjectListProps {
   readonly loading?: boolean;
   readonly onSelectTable: (database: string, table: string) => void;
   readonly onNewQuery: (database: string) => void;
-  readonly onImportSql: (database: string, table?: string) => void;
+  readonly onImportSql: (database: string) => void;
   readonly onEditTable: (database: string, table: string) => void;
   readonly onShowDDL: (database: string, table: string) => void;
   readonly onDumpStruct: (database: string, table: string) => void;
@@ -120,16 +120,14 @@ export function DatabaseObjectList({
     e.preventDefault();
     setContextMenu({
       items: [
-        { label: 'Open Table', action: () => onSelectTable(database, table) },
         { label: 'Edit Table', action: () => onEditTable(database, table) },
         { label: 'Show DDL', action: () => onShowDDL(database, table) },
         { label: 'Dump Struct', action: () => onDumpStruct(database, table) },
         { label: 'Dump Struct and Data', action: () => onDumpStructAndData(database, table) },
-        { label: 'Import SQL', action: () => onImportSql(database, table) },
       ],
       position: { x: e.clientX, y: e.clientY },
     });
-  }, [onSelectTable, onEditTable, onShowDDL, onDumpStruct, onDumpStructAndData, onImportSql]);
+  }, [onEditTable, onShowDDL, onDumpStruct, onDumpStructAndData]);
 
   const closeContextMenu = useCallback(() => setContextMenu(null), []);
 

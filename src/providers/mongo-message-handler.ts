@@ -9,39 +9,8 @@ export async function handleMongoMessage(
   post: (msg: unknown) => void
 ): Promise<boolean> {
   switch (message.type) {
-    case 'mongoListDatabases': {
-      const databases = await driver.listDatabases();
-      post({ type: 'mongoDatabaseList', databases });
-      return true;
-    }
-
     case 'mongoListAllCollections': {
-      const databases = await driver.listDatabases();
-
-      // 并行获取所有 database 的 collections, 总耗时从 N×T 降至 max(T)
-      const results = await Promise.allSettled(
-        databases.map((db) => driver.listTables(db))
-      );
-
-      const all: { database: string; name: string; count: number }[] = [];
-      for (let i = 0; i < databases.length; i++) {
-        const r = results[i];
-        if (r.status === 'fulfilled') {
-          for (const t of r.value) {
-            all.push({ database: databases[i], name: t.name, count: t.rowCount ?? 0 });
-          }
-        }
-        // rejected: 跳过无权限或报错的 database, 与原行为一致
-      }
-
-      post({ type: 'mongoAllCollectionList', collections: all });
-      return true;
-    }
-
-    case 'mongoListCollections': {
-      const tables = await driver.listTables(message.database);
-      const collections = tables.map((t) => ({ name: t.name, count: t.rowCount ?? 0 }));
-      post({ type: 'mongoCollectionList', collections });
+      await postRefreshedCollections(driver, post);
       return true;
     }
 
@@ -148,23 +117,6 @@ export async function handleMongoMessage(
       return true;
     }
 
-    case 'mongoCountDocuments': {
-      const { database, collection, filter } = message;
-      try {
-        const countFilter = filter.trim() ? convertShellToJson(filter.trim()) : '{}';
-        const countQuery = `db.${collection}.countDocuments(${countFilter})`;
-        const result = await driver.executeCancellable(countQuery, undefined, database).promise;
-        const total = result.rows.length > 0
-          ? Number((result.rows[0] as Record<string, unknown>).count ?? 0)
-          : 0;
-        post({ type: 'mongoDocumentList', columns: [], rows: [], total });
-      } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : String(err);
-        post({ type: 'mongoDocumentList', columns: [], rows: [], total: 0, error: errorMsg });
-      }
-      return true;
-    }
-
     case 'mongoExplainQuery': {
       const { database, collection, filter, sort } = message;
       try {
@@ -218,12 +170,14 @@ async function postRefreshedCollections(
   post: (msg: unknown) => void
 ): Promise<void> {
   const databases = await driver.listDatabases();
+  // 并行获取所有 database 的 collections, 总耗时 max(T) 而非 N*T
   const results = await Promise.allSettled(
     databases.map((db) => driver.listTables(db))
   );
   const all: { database: string; name: string; count: number }[] = [];
   for (let i = 0; i < databases.length; i++) {
     const r = results[i];
+    // rejected: 跳过无权限或报错的 database
     if (r.status === 'fulfilled') {
       for (const t of r.value) {
         all.push({ database: databases[i], name: t.name, count: t.rowCount ?? 0 });
