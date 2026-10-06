@@ -98,6 +98,22 @@ describe('routeByDriver SQL guards', () => {
     expect(driver.execute).not.toHaveBeenCalled();
   });
 
+  it('结果列式输出: 同名列都在, Buffer 给 hex 前缀与长度; 追加的 LIMIT 拿满 500 行时标 truncated', async () => {
+    const { driver, src } = source();
+    const columns = [{ name: 'id' }, { name: 'o.id' }, { name: 'avatar' }];
+    const row = { id: 1, 'o.id': 99, avatar: Buffer.alloc(100, 0xab) };
+    driver.executeReadOnly.mockResolvedValueOnce({ ...ok, columns, rows: Array.from({ length: 500 }, () => row) });
+    const capped = JSON.parse((await routeByDriver('read', 'mysql', 'c', 'SELECT * FROM t', 'db1', src)).content[0].text);
+    expect(capped.columns).toEqual(['id', 'o.id', 'avatar']);
+    expect(capped.rows[0]).toEqual([1, 99, { binary: 'ab'.repeat(64), length: 100 }]);
+    expect(capped).toMatchObject({ rowCount: 500, truncated: true, rowCap: 500 });
+
+    // 用户自己写的 LIMIT 不超上限, 没被改写: 拿满也不算截断
+    driver.executeReadOnly.mockResolvedValueOnce({ ...ok, columns, rows: Array.from({ length: 500 }, () => row) });
+    const own = JSON.parse((await routeByDriver('read', 'mysql', 'c', 'SELECT * FROM t LIMIT 500;', 'db1', src)).content[0].text);
+    expect(own.truncated).toBeUndefined();
+  });
+
   it('execute 出错原样抛出', async () => {
     const { driver, src } = source();
     driver.executeBatch.mockReturnValueOnce({ promise: Promise.resolve({ results: [], error: { index: 0, cause: new Error('boom') } }), cancel: () => {} });

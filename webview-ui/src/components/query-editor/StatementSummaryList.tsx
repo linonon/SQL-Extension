@@ -20,7 +20,7 @@ export function StatementSummaryList({ statements }: StatementSummaryListProps) 
             </span>
             {s.status === 'ok' && (
               <span className="statement-summary-stats">
-                {s.executionTime ?? 0}ms · affected {s.affectedRows ?? 0}
+                {s.executionTime ?? 0}ms · {s.rowCount !== undefined ? `${s.rowCount} rows` : `affected ${s.affectedRows ?? 0}`}
               </span>
             )}
           </div>

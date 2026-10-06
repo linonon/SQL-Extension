@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { IpcClient } from '../ipc-client.js';
-import { forwardQuery } from './query.js';
+import { forwardQuery, RESULT_SHAPE } from './query.js';
 
 const DB_EXECUTE_DESCRIPTION = [
   'Execute write operations and DDL. SQL: one statement per call, each on its own autocommitted session; USE / SET / BEGIN do not carry over to the next call (multi-statement transactions are not supported). Query format by database type:',
@@ -12,6 +12,7 @@ const DB_EXECUTE_DESCRIPTION = [
   '- RabbitMQ: not supported yet',
   'Connections marked readOnly: true in db_list_connections reject every db_execute call with code READONLY_VIOLATION before connecting; use db_read there.',
   'Destructive requests (SQL DROP / TRUNCATE / DELETE or UPDATE without WHERE, Redis FLUSHDB / FLUSHALL, MongoDB dropIndex or deleteMany / updateMany with {"_all": true}) wait for the user to approve them in VS Code; denied or unanswered within 60s, they fail with code NOT_CONFIRMED and nothing runs.',
+  RESULT_SHAPE,
 ].join('\n');
 
 export function registerExecuteTools(server: McpServer, ipc: IpcClient): void {

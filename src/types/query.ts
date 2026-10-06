@@ -10,12 +10,22 @@ export interface ColumnInfo {
   readonly source?: { readonly schema: string; readonly table: string };
 }
 
+// 一个库的一列 (自动补全与 Ask AI 用). type: MySQL 是带长度的 COLUMN_TYPE, PG 是 data_type
+export interface SchemaColumn {
+  readonly table: string;
+  readonly name: string;
+  readonly type: string;
+  readonly comment: string;
+}
+
 export interface TableInfo {
   readonly name: string;
   readonly schema: string;
   readonly rowCount: number;
 }
 
+// 行按列名建对象. 同名列 (JOIN 的 u.id / o.id) 已去重: 再次出现的改成 `<表别名>.<列名>`
+// (PG 没有别名信息, 用 `<列名> (2)`), columns[i].name 就是行对象的 key
 export interface QueryResult {
   readonly columns: readonly ColumnInfo[];
   readonly rows: readonly Record<string, unknown>[];

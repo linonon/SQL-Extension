@@ -45,6 +45,8 @@ interface QueryResultsGridProps {
   readonly onPendingCountChange?: (count: number) => void;
   // 工具栏附加说明 (如只对已加载的行做了排序)
   readonly note?: string;
+  // 宿主截掉了结果集尾部: rows 不是语句返回的全部行
+  readonly truncated?: boolean;
 }
 
 interface EditingCell {
@@ -74,6 +76,7 @@ export function QueryResultsGrid({
   tableColumns,
   onPendingCountChange,
   note,
+  truncated,
 }: QueryResultsGridProps) {
   const [editingCell, setEditingCell] = useState<EditingCell | null>(null);
   const [rowSelection, setRowSelection] = useState<Record<string, boolean>>({});
@@ -251,14 +254,15 @@ export function QueryResultsGrid({
         label: 'Export',
         children: [
           {
-            label: selectedIndices.length > 0 ? `CSV (${selectedIndices.length} selected)` : `CSV (all ${rows.length} rows)`,
+            label: selectedIndices.length > 0 ? `CSV (${selectedIndices.length} selected)`
+              : truncated ? `CSV (first ${rows.length} loaded rows)` : `CSV (all ${rows.length} rows)`,
             disabled: !onExportCsv,
             action: handleExportCsv,
           },
         ],
       },
     ];
-  }, [contextMenu?.rowIndex, contextMenu?.columnId, columns, editable, getCellValue, addChange, onInsertRow, rejectIfPending, emptyRow, rows, selectedIndices.length, onExportCsv, handleExportCsv]);
+  }, [contextMenu?.rowIndex, contextMenu?.columnId, columns, editable, getCellValue, addChange, onInsertRow, rejectIfPending, emptyRow, rows, selectedIndices.length, onExportCsv, handleExportCsv, truncated]);
 
   if (error) {
     return <div className="query-results-error">{error}</div>;

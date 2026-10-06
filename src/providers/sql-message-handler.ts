@@ -7,6 +7,7 @@ import { buildBatchDelete } from '../utils/sql-builder.js';
 import { buildAlterTableStatements } from '../utils/alter-table-builder.js';
 import { isWholeTableWrite, splitSqlStatements } from '../utils/destructive-sql.js';
 import type { StatementResult } from '../types/messages.js';
+import type { SchemaColumn } from '../types/query.js';
 import { sanitizeErrorMessage } from '../utils/sanitize-error.js';
 import { cancelAiAsk, listAiModels, runAiAsk, setAiModel } from '../services/ai-assist.js';
 
@@ -22,7 +23,7 @@ export interface SqlMessageContext {
   // executeQuery 优先用 panel context 绑定的 database (raw SQL 不自动加前缀)
   readonly database?: string;
   // schema 缓存读取 (缓存归 provider 所有, 跟随其生命周期); forceRefresh 对应 refreshSchema
-  readonly getSchema: (database: string, forceRefresh: boolean) => Promise<Record<string, string[]>>;
+  readonly getSchema: (database: string, forceRefresh: boolean) => Promise<Record<string, SchemaColumn[]>>;
   // 只读连接: executeQuery 在只读会话里执行 (写消息已由 provider 在进入这里之前拒绝)
   readonly readOnly: boolean;
 }
@@ -188,6 +189,7 @@ export async function handleSqlMessage(
             question: message.question,
             sql: message.sql,
             selection: message.selection,
+            lastError: message.lastError,
           }), (text) => send({ type: 'aiChunk', id, text }));
           send({ type: 'aiDone', id, model });
         } catch (err) {
@@ -215,15 +217,11 @@ export async function handleSqlMessage(
         return true;
       }
 
-      case 'requestSchema': {
-        const schema = await ctx.getSchema(message.database, false);
-        ctx.post({ type: 'schemaInfo', schema });
-        return true;
-      }
-
+      case 'requestSchema':
       case 'refreshSchema': {
-        const schema = await ctx.getSchema(message.database, true);
-        ctx.post({ type: 'schemaInfo', schema });
+        // 自动补全只用列名
+        const schema = await ctx.getSchema(message.database, message.type === 'refreshSchema');
+        ctx.post({ type: 'schemaInfo', schema: Object.fromEntries(Object.entries(schema).map(([t, cols]) => [t, cols.map((c) => c.name)])) });
         return true;
       }
 
@@ -340,6 +338,9 @@ function statementsFor(driver: IDatabaseDriver, sql: string): string[] {
   return driver.driverType === 'mysql' ? splitSqlStatements(sql) : [sql];
 }
 
+// 网格展示的结果集最多发这么多行: 不带 LIMIT 的大查询整包 postMessage 会卡住所有扩展共用的 extension host
+export const RESULT_ROW_CAP = 10_000;
+
 // executeQuery 的执行体, 返回待发的 queryBatchResult (不含 requestId).
 // 整次执行在一条专用连接上跑完 (executeBatch), 编辑器里的 USE / BEGIN 对同一次执行的后续语句生效.
 // cancel 槽位每个 panel 一个: 执行结束只清自己放进去的 cancel, 晚结束的旧执行不能清掉新执行的
@@ -362,6 +363,10 @@ async function runQuery(sql: string, db: string, ctx: SqlMessageContext): Promis
   ctx.pendingCancels.set(ctx.panel, cancel);
   try {
     const { results, error, warning } = await promise;
+    // 网格只展示最后一个结果集 (与 webview 的 lastResultSetFromBatch 同一判定): 只有它带行 (截到 RESULT_ROW_CAP),
+    // 其余结果集只留行数给摘要
+    let shown = -1;
+    results.forEach((r, i) => { if (r.columns.length > 0) { shown = i; } });
     const statements: StatementResult[] = results.map((r, i) => ({
       index: i + 1,
       sql: r.sql,
@@ -369,7 +374,8 @@ async function runQuery(sql: string, db: string, ctx: SqlMessageContext): Promis
       executionTime: r.executionTime,
       affectedRows: r.affectedRows,
       columns: r.columns,
-      rows: r.rows,
+      ...(r.columns.length > 0 ? { rowCount: r.rows.length } : {}),
+      ...(i === shown ? { rows: r.rows.slice(0, RESULT_ROW_CAP), truncated: r.rows.length > RESULT_ROW_CAP } : {}),
     }));
     if (error) {
       statements.push({ index: statements.length + 1, sql: stmts[error.index], status: 'error', error: sanitizeErrorMessage(error.cause) });

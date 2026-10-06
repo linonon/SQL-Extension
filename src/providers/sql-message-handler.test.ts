@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { handleSqlMessage, type SqlMessageContext } from './sql-message-handler';
+import { handleSqlMessage, RESULT_ROW_CAP, type SqlMessageContext } from './sql-message-handler';
 import type { IDatabaseDriver } from '../types/driver';
 import type { WebviewMessage } from '../types/messages';
 import type { StatementOutcome } from '../types/query';
@@ -135,6 +135,28 @@ describe('handleSqlMessage executeQuery mysql batch', () => {
         expect.objectContaining({ index: 2, sql: 'DO', status: 'ok' }),
       ],
     })]);
+  });
+
+  it('只有网格展示的最后一个结果集带行且截到上限, 其余结果集只留行数', async () => {
+    const posts: unknown[] = [];
+    const cols = [{ name: 'id' }];
+    const many = Array.from({ length: RESULT_ROW_CAP + 5 }, (_, i) => ({ id: i }));
+    const driver = createMysqlDriver([
+      { columns: cols, rows: [{ id: 1 }, { id: 2 }], affectedRows: 0, executionTime: 1 },
+      { columns: cols, rows: many, affectedRows: 0, executionTime: 1 },
+      { columns: [], rows: [], affectedRows: 3, executionTime: 1 },
+    ]);
+    await handleSqlMessage(
+      { type: 'executeQuery', requestId: 1, database: 'db', sql: 'SELECT 1; SELECT 2; UPDATE t SET a = 1 WHERE id > 0' },
+      createCtx(driver, posts),
+    );
+    const [first, shown, write] = (posts[0] as { statements: Array<Record<string, unknown>> }).statements;
+    expect(first).not.toHaveProperty('rows');
+    expect(first.rowCount).toBe(2);
+    expect(shown).toMatchObject({ rowCount: RESULT_ROW_CAP + 5, truncated: true });
+    expect((shown.rows as unknown[]).length).toBe(RESULT_ROW_CAP);
+    expect(write).not.toHaveProperty('rows');
+    expect(write).not.toHaveProperty('rowCount');
   });
 
   it('executor 的未提交事务提示带进回执', async () => {

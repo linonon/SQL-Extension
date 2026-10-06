@@ -5,7 +5,8 @@ import { CredentialStore } from '../services/credential-store.js';
 import type { WebviewMessage, ViewType, SaveConnectionConfig, UpdateConnectionConfig } from '../types/messages.js';
 import type { ConnectionFormSSH } from '../types/messages.js';
 import type { ConnectionConfig, DriverType, SSHTunnelConfig } from '../types/connection.js';
-import type { AlterTableChanges } from '../types/query.js';
+import type { AlterTableChanges, SchemaColumn } from '../types/query.js';
+import type { IDatabaseDriver } from '../types/driver.js';
 import { handleRedisMessage, exportRedisKeys, importRedisKeys, validateTtlInput, parseCommandArgs } from './redis-message-handler.js';
 import { handleKafkaMessage } from './kafka-message-handler.js';
 import { handleMongoMessage, buildExportPipeline } from './mongo-message-handler.js';
@@ -17,7 +18,7 @@ import { sanitizeErrorMessage } from '../utils/sanitize-error.js';
 
 // 不碰数据库的消息: 连接掉线时不为它们重连
 const OFFLINE_MESSAGES: ReadonlySet<WebviewMessage['type']> = new Set([
-  'ready', 'cancelQuery', 'aiCancel', 'aiListModels', 'aiSetModel', 'exportCsv',
+  'cancelQuery', 'aiCancel', 'aiListModels', 'aiSetModel', 'exportCsv',
 ]);
 
 function buildSSHConfig(msg: ConnectionFormSSH): SSHTunnelConfig | undefined {
@@ -34,11 +35,13 @@ function buildSSHConfig(msg: ConnectionFormSSH): SSHTunnelConfig | undefined {
 
 export class TableViewProvider implements vscode.Disposable {
   private readonly panels = new Map<string, vscode.WebviewPanel>();
+  // Query panel 可同库多开, key 用递增序号区分
+  private queryPanelSeq = 0;
   private readonly pendingCancels = new Map<vscode.WebviewPanel, () => void>();
   private readonly queryService = new QueryService();
-  private readonly disposables: vscode.Disposable[] = [];
-  // schema 缓存: key = "connectionId:database"
-  private readonly schemaCache = new Map<string, { schema: Record<string, string[]>; ts: number }>();
+  // schema 缓存挂在 driver 实例上, 按库存进行中的 promise: 同时打开的多个 panel 共用一次查询.
+  // 每次连接都新建 driver, 断开 / 重连 / 改连接配置后旧缓存随之作废
+  private readonly schemaCache = new WeakMap<IDatabaseDriver, Map<string, { schema: Promise<Record<string, SchemaColumn[]>>; ts: number }>>();
   private readonly SCHEMA_CACHE_TTL = 5 * 60 * 1000; // 5 分钟
 
   constructor(
@@ -57,7 +60,7 @@ export class TableViewProvider implements vscode.Disposable {
   }
 
   openQueryEditor(connectionId: string, database: string): void {
-    const panelKey = `query:${connectionId}:${database}:${Date.now()}`;
+    const panelKey = `query:${connectionId}:${database}:${++this.queryPanelSeq}`;
     const driver = this.connectionManager.getDriver(connectionId);
     const connectionName = this.connectionName(connectionId);
     this.createPanel(panelKey, `Query - ${connectionName}/${database}`, 'query', {
@@ -232,13 +235,16 @@ export class TableViewProvider implements vscode.Disposable {
 
     panel.webview.html = getWebviewContent(panel.webview, this.extensionUri);
 
-    panel.webview.onDidReceiveMessage(
-      (message: WebviewMessage) => this.handleMessage(panel, message, context),
-      undefined,
-      this.disposables
-    );
+    // 每次 ready 都回 viewInit: Developer: Reload Webviews 后页面重新加载, 会再发一次 ready
+    const listener = panel.webview.onDidReceiveMessage((message: WebviewMessage) => {
+      if (message.type === 'ready') {
+        return panel.webview.postMessage({ type: 'viewInit', view: viewType, context: viewContext });
+      }
+      return this.handleMessage(panel, message, context);
+    });
 
     panel.onDidDispose(() => {
+      listener.dispose();
       // 关 panel 时 webview 直接销毁, 卸载 effect 不跑, 由这里取消仍在执行的查询 (已结束时 cancel 为 no-op)
       this.pendingCancels.get(panel)?.();
       this.pendingCancels.delete(panel);
@@ -247,14 +253,6 @@ export class TableViewProvider implements vscode.Disposable {
     });
 
     this.panels.set(panelKey, panel);
-
-    // webview ready 后发送初始化消息
-    const readyHandler = panel.webview.onDidReceiveMessage((msg: WebviewMessage) => {
-      if (msg.type === 'ready') {
-        panel.webview.postMessage({ type: 'viewInit', view: viewType, context: viewContext });
-        readyHandler.dispose();
-      }
-    });
   }
 
   private async handleMessage(
@@ -618,41 +616,23 @@ export class TableViewProvider implements vscode.Disposable {
     }
   }
 
-  // schema 读取 + 缓存 (供 sql-message-handler 的 requestSchema/refreshSchema 调用)
-  private async getCachedSchema(
+  // 库结构 (表名 -> 列) 读取 + 缓存, 供自动补全与 Ask AI; forceRefresh 对应 Refresh Schema. 查询失败不缓存
+  private getCachedSchema(
     connectionId: string,
     database: string,
     forceRefresh: boolean
-  ): Promise<Record<string, string[]>> {
-    const key = `${connectionId}:${database}`;
-    if (forceRefresh) {
-      this.schemaCache.delete(key);
-    }
-    const cached = this.schemaCache.get(key);
-    if (cached && Date.now() - cached.ts < this.SCHEMA_CACHE_TTL) {
+  ): Promise<Record<string, SchemaColumn[]>> {
+    const driver = this.connectionManager.getDriver(connectionId);
+    const byDatabase = this.schemaCache.get(driver) ?? new Map();
+    this.schemaCache.set(driver, byDatabase);
+    const cached = byDatabase.get(database);
+    if (cached && !forceRefresh && Date.now() - cached.ts < this.SCHEMA_CACHE_TTL) {
       return cached.schema;
     }
-    const schema = await this.fetchSchema(connectionId, database);
-    this.schemaCache.set(key, { schema, ts: Date.now() });
-    return schema;
-  }
-
-  private async fetchSchema(connectionId: string, database: string): Promise<Record<string, string[]>> {
-    const driver = this.connectionManager.getDriver(connectionId);
-    const tables = await driver.listTables(database);
-    const schema: Record<string, string[]> = {};
-    // 并行获取列信息, 每批 10 个避免连接池压力
-    const CHUNK_SIZE = 10;
-    for (let i = 0; i < tables.length; i += CHUNK_SIZE) {
-      const chunk = tables.slice(i, i + CHUNK_SIZE);
-      const results = await Promise.all(
-        chunk.map((t) => driver.listColumns(database, t.name))
-      );
-      for (let j = 0; j < chunk.length; j++) {
-        schema[chunk[j].name] = results[j].map((c) => c.name);
-      }
-    }
-    return schema;
+    const entry = { schema: fetchSchema(driver, database), ts: Date.now() };
+    byDatabase.set(database, entry);
+    entry.schema.catch(() => { if (byDatabase.get(database) === entry) { byDatabase.delete(database); } });
+    return entry.schema;
   }
 
   private async testConnection(
@@ -754,9 +734,14 @@ export class TableViewProvider implements vscode.Disposable {
       panel.dispose();
     }
     this.panels.clear();
-    this.schemaCache.clear();
-    for (const d of this.disposables) {
-      d.dispose();
-    }
   }
+}
+
+// 一条 information_schema 查询取完整个库的列, 按表分组 (保持表内顺序)
+async function fetchSchema(driver: IDatabaseDriver, database: string): Promise<Record<string, SchemaColumn[]>> {
+  const schema: Record<string, SchemaColumn[]> = {};
+  for (const col of await driver.listSchemaColumns(database)) {
+    (schema[col.table] ??= []).push(col);
+  }
+  return schema;
 }

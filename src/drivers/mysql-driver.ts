@@ -2,11 +2,15 @@ import mysql from 'mysql2/promise';
 import { Types } from 'mysql2';
 import type { ConnectionConfig } from '../types/connection.js';
 import type { IDatabaseDriver } from '../types/driver.js';
-import type { BatchOutcome, ColumnInfo, DetailedColumnInfo, QueryResult, StatementOutcome, TableInfo } from '../types/query.js';
+import type { BatchOutcome, ColumnInfo, DetailedColumnInfo, QueryResult, SchemaColumn, StatementOutcome, TableInfo } from '../types/query.js';
 import { openTransactionWarning } from '../utils/destructive-sql.js';
+import { rowObjects, uniqueColumnKeys } from '../utils/result-columns.js';
 
 // mysql2 的 Types 同时是 数字码 -> 类型名 的反查表 (3 -> 'LONG', 253 -> 'VAR_STRING')
 const TYPE_NAMES = Types as unknown as Record<number, string | undefined>;
+
+// 返回结果集的查询按值数组取行 (rowsAsArray), 再由 toQueryResult 按去重后的列名组装: 同名列不互相覆盖
+const asArrays = (sql: string): mysql.QueryOptions => ({ sql, rowsAsArray: true });
 
 export class MySQLDriver implements IDatabaseDriver {
   readonly driverType = 'mysql';
@@ -104,6 +108,22 @@ export class MySQLDriver implements IDatabaseDriver {
     }));
   }
 
+  async listSchemaColumns(database: string): Promise<SchemaColumn[]> {
+    const rows = await this.query(
+      `SELECT TABLE_NAME as tableName, COLUMN_NAME as name, COLUMN_TYPE as type, COLUMN_COMMENT as comment
+       FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = ?
+       ORDER BY TABLE_NAME, ORDINAL_POSITION`,
+      [database]
+    );
+    return rows.map((row: Record<string, unknown>) => ({
+      table: String(row.tableName),
+      name: String(row.name),
+      type: String(row.type),
+      comment: String(row.comment ?? ''),
+    }));
+  }
+
   async getDetailedColumns(database: string, table: string): Promise<DetailedColumnInfo[]> {
     const rows = await this.query(
       `SELECT COLUMN_NAME as name, COLUMN_TYPE as dataType, IS_NULLABLE as nullable,
@@ -132,36 +152,38 @@ export class MySQLDriver implements IDatabaseDriver {
     return String(rows[0]?.['Create Table'] ?? '');
   }
 
-  // SELECT 类查询返回行数组, INSERT/UPDATE/DELETE 返回 ResultSetHeader;
-  // CALL 存储过程返回 [结果集1, 结果集2, ..., ResultSetHeader] 且 fields 同形, 只展示第一个结果集
+  // SELECT 类查询返回行 (每行是值数组), INSERT/UPDATE/DELETE 返回 ResultSetHeader;
+  // CALL 存储过程返回 [结果集1, 结果集2, ..., ResultSetHeader] 且 fields 按结果集分组, 只展示第一个结果集
   private toQueryResult(
     result: unknown,
     fields: mysql.FieldPacket[] | undefined,
     executionTime: number
   ): QueryResult {
-    if (Array.isArray(result) && Array.isArray(result[0])) {
-      return this.toQueryResult(result[0], (fields as unknown as (mysql.FieldPacket[] | undefined)[] | undefined)?.[0], executionTime);
+    const grouped = fields as unknown as (mysql.FieldPacket[] | undefined)[] | undefined;
+    if (Array.isArray(result) && Array.isArray(grouped?.[0])) {
+      return this.toQueryResult(result[0], grouped[0], executionTime);
     }
     if (Array.isArray(result)) {
+      const keys = uniqueColumnKeys(fields ?? []);
       // 自连接时同一张表以多个别名 (f.table) 出现, 各列分属不同行实例, 按主键写回会写错行, 这张表的列都不挂 source
       const aliasesByTable = new Map<string, Set<string>>();
       for (const f of fields ?? []) {
         const key = `${f.db}.${f.orgTable}`;
         aliasesByTable.set(key, (aliasesByTable.get(key) ?? new Set()).add(f.table));
       }
-      const columns: ColumnInfo[] = (fields ?? []).map((f: mysql.FieldPacket) => ({
-        name: f.name,
+      const columns: ColumnInfo[] = (fields ?? []).map((f: mysql.FieldPacket, i) => ({
+        name: keys[i],
         dataType: (f.type !== undefined ? TYPE_NAMES[f.type] : undefined) ?? String(f.type),
         nullable: true,
         isPrimaryKey: false,
         defaultValue: null,
         extra: '',
-        // 表达式列 orgTable 为空; 别名列 orgName != name, 写回会落到别的列, 都不算来源列
-        source: f.orgTable && f.db && f.orgName === f.name && aliasesByTable.get(`${f.db}.${f.orgTable}`)!.size === 1
+        // 表达式列 orgTable 为空; 别名列与去重改名的同名列 orgName != name, 写回会落到别的列, 都不算来源列
+        source: f.orgTable && f.db && f.orgName === keys[i] && aliasesByTable.get(`${f.db}.${f.orgTable}`)!.size === 1
           ? { schema: f.db, table: f.orgTable }
           : undefined,
       }));
-      return { columns, rows: result as Record<string, unknown>[], affectedRows: 0, executionTime };
+      return { columns, rows: rowObjects(keys, result as unknown[][]), affectedRows: 0, executionTime };
     }
     const header = result as mysql.ResultSetHeader;
     return { columns: [], rows: [], affectedRows: header.affectedRows, executionTime };
@@ -170,7 +192,7 @@ export class MySQLDriver implements IDatabaseDriver {
   async execute(sql: string, params?: unknown[]): Promise<QueryResult> {
     this.assertConnected();
     const start = Date.now();
-    const [result, fields] = await this.pool!.query(sql, params);
+    const [result, fields] = await this.pool!.query(asArrays(sql), params);
     return this.toQueryResult(result, fields, Date.now() - start);
   }
 
@@ -183,7 +205,7 @@ export class MySQLDriver implements IDatabaseDriver {
       await conn.beginTransaction();
       const exec = async (sql: string, params?: unknown[]): Promise<QueryResult> => {
         const start = Date.now();
-        const [result, fields] = await conn.query(sql, params);
+        const [result, fields] = await conn.query(asArrays(sql), params);
         return this.toQueryResult(result, fields, Date.now() - start);
       };
       const out = await work(exec);
@@ -210,7 +232,7 @@ export class MySQLDriver implements IDatabaseDriver {
       try { await conn.query('SET SESSION max_execution_time = 30000'); } catch { /* 变量不存在 */ }
       await conn.query('START TRANSACTION READ ONLY');
       const start = Date.now();
-      const [result, fields] = await conn.query(sql);
+      const [result, fields] = await conn.query(asArrays(sql));
       return this.toQueryResult(result, fields, Date.now() - start);
     } finally {
       // 销毁而非归还: 会话级副作用 (GET_LOCK, 用户变量, USE) 能活过 ROLLBACK, 不能留给 UI 共用的池
@@ -262,7 +284,7 @@ export class MySQLDriver implements IDatabaseDriver {
           // 语句之间被取消: KILL QUERY 打在空闲连接上不生效, 由这里停下
           if (cancelled) { throw new Error('Query cancelled'); }
           const start = Date.now();
-          const [result, fields] = await conn.query(sql);
+          const [result, fields] = await conn.query(asArrays(sql));
           results.push({ sql, ...this.toQueryResult(result, fields, Date.now() - start) });
         }
         return { results, warning: openTransactionWarning(statements) };

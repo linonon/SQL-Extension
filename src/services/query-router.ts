@@ -129,6 +129,8 @@ async function routeSQL(
     );
   }
 
+  // db_read 的 LIMIT 被追加或压到 MAX_LIMIT 时, 拿满 MAX_LIMIT 行就说明结果被截断了
+  let limitCapped = false;
   if (mode === 'read') {
     if (!isReadonlySQL(query)) {
       return makeError(
@@ -136,7 +138,10 @@ async function routeSQL(
         ErrorCode.READONLY_VIOLATION,
       );
     }
-    query = enforceLimit(query, undefined, driverType === 'mysql');
+    const limited = enforceLimit(query, undefined, driverType === 'mysql');
+    // enforceLimit 不改写时原样返回去掉首尾空白与末尾分号的语句
+    limitCapped = limited !== query.trim().replace(/;$/, '');
+    query = limited;
   }
 
   // MySQL 连接可以不配默认库, 不带库时未限定的表名落不到任何 schema; PG 缺省走连接配置的库
@@ -160,14 +165,22 @@ async function routeSQL(
     warning = outcome.warning;
   }
 
+  // 列式输出: 比逐行对象省 token; 列名已由 driver 去重, 按列名取值不会丢同名列
+  const names = result.columns.map(c => c.name);
   return makeResult({
-    columns: result.columns?.map(c => ({ name: c.name, dataType: c.dataType })) ?? [],
-    rows: result.rows,
+    columns: names,
+    rows: result.rows.map(r => names.map(n => mcpValue(r[n]))),
     rowCount: result.rows.length,
+    ...(limitCapped && result.rows.length >= MAX_LIMIT ? { truncated: true, rowCap: MAX_LIMIT } : {}),
     affectedRows: result.affectedRows,
     executionTime: result.executionTime,
     ...(warning ? { warning } : {}),
   });
+}
+
+// 二进制列 (BLOB / bytea 是 Buffer) 默认会序列化成逐字节的数字数组, 只给前 64 字节的 hex 与总长
+function mcpValue(v: unknown): unknown {
+  return Buffer.isBuffer(v) ? { binary: v.subarray(0, 64).toString('hex'), length: v.length } : v;
 }
 
 async function routeRedis(

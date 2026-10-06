@@ -15,6 +15,7 @@ export function createMockDriver(overrides: Partial<Mocked<IDatabaseDriver>> = {
     listDatabases: vi.fn<IDatabaseDriver['listDatabases']>().mockResolvedValue([]),
     listTables: vi.fn<IDatabaseDriver['listTables']>().mockResolvedValue([]),
     listColumns: vi.fn<IDatabaseDriver['listColumns']>().mockResolvedValue([]),
+    listSchemaColumns: vi.fn<IDatabaseDriver['listSchemaColumns']>().mockResolvedValue([]),
     getTableDDL: vi.fn<IDatabaseDriver['getTableDDL']>().mockResolvedValue(''),
     getDetailedColumns: vi.fn<IDatabaseDriver['getDetailedColumns']>().mockResolvedValue([]),
     execute: vi.fn<IDatabaseDriver['execute']>().mockImplementation(async () => emptyResult()),

@@ -35,25 +35,90 @@ describe('TableViewProvider panel 标题', () => {
   });
 });
 
-// 记下 panel 的消息处理器与发往 webview 的消息; send 等处理器跑完
+// 记下 panel 的消息处理器与发往 webview 的消息; send 等处理器跑完, close 模拟用户关掉 panel
 function fakePanel() {
   const handlers: Array<(m: unknown) => unknown> = [];
   const posted: Array<Record<string, unknown>> = [];
+  const onClose: Array<() => void> = [];
   const panel = {
     webview: {
       html: '',
-      onDidReceiveMessage: (h: (m: unknown) => unknown) => { handlers.push(h); return { dispose: () => {} }; },
+      onDidReceiveMessage: (h: (m: unknown) => unknown) => {
+        handlers.push(h);
+        return { dispose: () => { const i = handlers.indexOf(h); if (i >= 0) { handlers.splice(i, 1); } } };
+      },
       postMessage: async (m: Record<string, unknown>) => { posted.push(m); return true; },
       asWebviewUri: (u: unknown) => u,
       cspSource: '',
     },
-    onDidDispose: () => ({ dispose: () => {} }),
+    onDidDispose: (cb: () => void) => { onClose.push(cb); return { dispose: () => {} }; },
     reveal: () => {},
     dispose: vi.fn(),
   };
   const send = async (m: object) => { for (const h of [...handlers]) { await h(m); } };
-  return { panel, posted, send };
+  const close = () => { for (const cb of onClose) { cb(); } };
+  return { panel, posted, send, close, handlers };
 }
+
+describe('TableViewProvider panel 生命周期', () => {
+  it('每次 ready 都回 viewInit (Reload Webviews 后重新握手); panel 关闭时注销消息监听', async () => {
+    const fake = fakePanel();
+    vi.spyOn(vscode.window, 'createWebviewPanel').mockReturnValue(fake.panel as never);
+    const cm = { getConnections: () => [{ id: 'c1', name: 'release' }], getDriver: () => ({ driverType: 'mysql' }) } as unknown as ConnectionManager;
+    new TableViewProvider(vscode.Uri.file('/ext'), cm, {} as CredentialStore).openQueryEditor('c1', 'game');
+
+    await fake.send({ type: 'ready' });
+    await fake.send({ type: 'ready' });
+    expect(fake.posted.filter((m) => m.type === 'viewInit')).toHaveLength(2);
+
+    fake.close();
+    expect(fake.handlers).toHaveLength(0);
+  });
+});
+
+describe('TableViewProvider schema 缓存', () => {
+  const columns = [
+    { table: 't', name: 'id', type: 'int', comment: '' },
+    { table: 't', name: 'v', type: 'varchar(8)', comment: 'value' },
+  ];
+  const listSchemaColumns = vi.fn(async () => columns);
+  let driver: object;
+  const cm = {
+    getConnections: () => [{ id: 'c1', name: 'release' }],
+    getState: () => 'connected',
+    getDriver: () => driver,
+  } as unknown as ConnectionManager;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    driver = { driverType: 'mysql', listSchemaColumns };
+  });
+
+  it('多个 panel 同时冷启动共用一次查询; Refresh Schema 与重连 (新 driver) 后重新查; 失败不缓存', async () => {
+    const a = fakePanel();
+    const b = fakePanel();
+    vi.spyOn(vscode.window, 'createWebviewPanel').mockReturnValueOnce(a.panel as never).mockReturnValueOnce(b.panel as never);
+    const provider = new TableViewProvider(vscode.Uri.file('/ext'), cm, {} as CredentialStore);
+    provider.openQueryEditor('c1', 'game');
+    provider.openQueryEditor('c1', 'game');
+
+    await Promise.all([a.send({ type: 'requestSchema', database: 'game' }), b.send({ type: 'requestSchema', database: 'game' })]);
+    expect(listSchemaColumns).toHaveBeenCalledTimes(1);
+    expect(listSchemaColumns).toHaveBeenCalledWith('game');
+    expect(a.posted).toContainEqual({ type: 'schemaInfo', schema: { t: ['id', 'v'] } });
+    expect(b.posted).toContainEqual({ type: 'schemaInfo', schema: { t: ['id', 'v'] } });
+
+    await a.send({ type: 'refreshSchema', database: 'game' });
+    expect(listSchemaColumns).toHaveBeenCalledTimes(2);
+
+    driver = { driverType: 'mysql', listSchemaColumns };
+    listSchemaColumns.mockRejectedValueOnce(new Error('gone'));
+    await b.send({ type: 'requestSchema', database: 'game' });
+    expect(b.posted).toContainEqual({ type: 'error', message: 'gone' });
+    await b.send({ type: 'requestSchema', database: 'game' });
+    expect(listSchemaColumns).toHaveBeenCalledTimes(4);
+  });
+});
 
 describe('TableViewProvider 只读连接', () => {
   const executeBatch = vi.fn(() => ({ promise: Promise.resolve({ results: [] }), cancel: () => {} }));

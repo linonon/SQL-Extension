@@ -1,4 +1,5 @@
 const esbuild = require('esbuild');
+const { version } = require('./package.json');
 
 const isWatch = process.argv.includes('--watch');
 
@@ -22,6 +23,7 @@ const mcpServerOptions = {
   bundle: true,
   outfile: './dist/mcp-server.js',
   external: ['*.node'],
+  define: { __EXTENSION_VERSION__: JSON.stringify(version) },
   format: 'cjs',
   platform: 'node',
   target: 'node18',

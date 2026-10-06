@@ -158,4 +158,11 @@ describe('QueryResultsGrid 空结果 / Insert / CSV', () => {
     fireEvent.click(screen.getByText('CSV (1 selected)'));
     expect(onExportCsv.mock.lastCall![0]).toBe('\uFEFFid,ts\r\n2,');
   });
+
+  it('宿主截断过的结果, 菜单写明只导出已加载的行', () => {
+    render(<QueryResultsGrid {...baseProps} columns={columns} rows={rows} truncated onExportCsv={() => {}} />);
+    fireEvent.contextMenu(screen.getByRole('table').parentElement!);
+    fireEvent.mouseEnter(screen.getByText('Export'));
+    expect(screen.getByText('CSV (first 1 loaded rows)')).toBeInTheDocument();
+  });
 });

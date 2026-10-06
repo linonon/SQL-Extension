@@ -14,17 +14,19 @@ const HOME = vi.hoisted(() => {
 });
 
 import { IpcClient } from './ipc-client.js';
+import { PROTOCOL_MISMATCH_ERROR, PROTOCOL_VERSION } from './ipc-protocol.js';
 
 const DIR = path.join(HOME, '.sql-extension');
 const sock = (pid: string) => path.join(DIR, `ipc-${pid}.sock`);
 
-// 模拟一个窗口: 对任何请求回 { result: pid }
-function fakeWindow(pid: string): Promise<net.Server> {
+// 模拟一个窗口: 对任何请求回 { result: pid }; protocolVersion 缺省为当前版本, null 表示不带 (升级前的旧窗口)
+function fakeWindow(pid: string, protocolVersion: number | null = PROTOCOL_VERSION): Promise<net.Server> {
   const server = net.createServer((s) => {
     s.setEncoding('utf8');
     s.on('data', (d: string) => {
       for (const line of d.split('\n').filter(Boolean)) {
-        s.write(JSON.stringify({ id: JSON.parse(line).id, result: pid }) + '\n');
+        const version = protocolVersion === null ? {} : { protocolVersion };
+        s.write(JSON.stringify({ id: JSON.parse(line).id, result: pid, ...version }) + '\n');
       }
     });
   });
@@ -74,6 +76,16 @@ describe('IpcClient window discovery', () => {
     const results = await Promise.all([1, 2, 3].map(() => client.request('listConnections')));
     expect(results).toEqual(['444', '444', '444']);
     expect(accepted).toBe(1);
+    client.disconnect();
+  });
+
+  it('窗口回包的协议版本不符 (升级后没重载的旧窗口) 时报错, 不当作结果', async () => {
+    fs.mkdirSync(DIR, { recursive: true });
+    servers.push(await fakeWindow('555', null));
+    touch(sock('555'), 120_000);
+
+    const client = new IpcClient();
+    await expect(client.request('listConnections')).rejects.toThrow(PROTOCOL_MISMATCH_ERROR);
     client.disconnect();
   });
 });

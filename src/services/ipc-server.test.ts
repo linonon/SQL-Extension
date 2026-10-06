@@ -12,6 +12,7 @@ vi.hoisted(() => {
 
 import * as vscode from 'vscode';
 import { IpcServer, SOCKET_PATH, SOCKET_DIR, confirmAgentRequest } from './ipc-server.js';
+import { PROTOCOL_MISMATCH_ERROR, PROTOCOL_VERSION } from '../mcp/ipc-protocol.js';
 
 const result = {
   columns: [{ name: 'id', dataType: 'int' }],
@@ -49,12 +50,13 @@ function makeConnectionManager() {
   } as any;
 }
 
-function sendRequest(socketPath: string, req: object): Promise<any> {
+// 默认带上当前协议版本; raw 原样发送 (模拟旧版 MCP 进程)
+function sendRequest(socketPath: string, req: object, raw = false): Promise<any> {
   return new Promise((resolve, reject) => {
     const client = net.createConnection(socketPath);
     let buffer = '';
     client.on('connect', () => {
-      client.write(JSON.stringify(req) + '\n');
+      client.write(JSON.stringify(raw ? req : { protocolVersion: PROTOCOL_VERSION, ...req }) + '\n');
     });
     client.on('data', (data) => {
       buffer += data.toString();
@@ -113,7 +115,7 @@ describe('IpcServer', () => {
       params: { connectionId: 'test-id', query: 'SELECT 1' },
     });
     expect(cm.connect).toHaveBeenCalledWith('test-id');
-    expect(JSON.parse(resp.result.content[0].text).rows).toEqual([{ id: 1 }]);
+    expect(JSON.parse(resp.result.content[0].text)).toMatchObject({ columns: ['id'], rows: [[1]] });
     expect(cm.getDriver().executeReadOnly).toHaveBeenCalledWith('SELECT 1\nLIMIT 500', 'mydb');
   });
 
@@ -175,6 +177,16 @@ describe('IpcServer', () => {
 
   it('should keep socket dir private', () => {
     expect(fs.statSync(SOCKET_DIR).mode & 0o777).toBe(0o700);
+  });
+
+  it('协议版本不符 (旧扩展留下的 MCP 进程) 回明确错误, 不执行', async () => {
+    await new Promise(r => setTimeout(r, 100));
+    const read = { id: '13', method: 'read', params: { connectionId: 'test-id', query: 'SELECT 1' } };
+    const legacy = await sendRequest(SOCKET_PATH, read, true);
+    expect(legacy).toEqual({ id: '13', error: PROTOCOL_MISMATCH_ERROR, protocolVersion: PROTOCOL_VERSION });
+    const newer = await sendRequest(SOCKET_PATH, { ...read, protocolVersion: PROTOCOL_VERSION + 1 }, true);
+    expect(newer.error).toBe(PROTOCOL_MISMATCH_ERROR);
+    expect(cm.connect).not.toHaveBeenCalled();
   });
 
   it('should return error for unknown method', async () => {

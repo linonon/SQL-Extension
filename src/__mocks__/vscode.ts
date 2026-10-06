@@ -92,3 +92,7 @@ export const workspace = {
     readFile: async () => new Uint8Array(),
   },
 };
+
+export const lm = {
+  selectChatModels: async () => [],
+};

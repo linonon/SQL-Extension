@@ -40,6 +40,9 @@ interface ResultState {
   readonly error?: string;
   // 产出这个结果集的那一条语句 (批里的写语句不在内), 保存 / 插入后只重跑它刷新
   readonly sql?: string;
+  // 宿主只发前 RESULT_ROW_CAP 行: truncated 时 rowCount 是语句返回的总行数
+  readonly rowCount?: number;
+  readonly truncated?: boolean;
 }
 
 function lastResultSetFromBatch(statements: readonly StatementResult[]): ResultState | null {
@@ -52,6 +55,8 @@ function lastResultSetFromBatch(statements: readonly StatementResult[]): ResultS
         affectedRows: s.affectedRows ?? 0,
         executionTime: s.executionTime ?? 0,
         sql: s.sql,
+        rowCount: s.rowCount,
+        truncated: s.truncated,
       };
     }
   }
@@ -393,6 +398,14 @@ export function QueryEditor({ connectionName, database, driverType, initialSql, 
     [isBrowseSql, table, driverType, sortState, sqlText, sendQuery]
   );
 
+  const gridNote = [
+    result?.truncated ? `Showing first ${result.rows.length} of ${result.rowCount} rows` : '',
+    clientSort && sortState ? 'Sorted loaded rows only' : '',
+  ].filter(Boolean).join('; ') || undefined;
+
+  // 上一次执行失败时的报错 (批里出错的那条, 或整次执行的错误), 交给 Ask AI
+  const lastError = batchStatements?.find((s) => s.status === 'error')?.error ?? result?.error;
+
   const gridRows = useMemo(
     () => (result && clientSort && sortState ? sortLoadedRows(result.rows, sortState) : result?.rows ?? []),
     [result, clientSort, sortState]
@@ -438,7 +451,7 @@ export function QueryEditor({ connectionName, database, driverType, initialSql, 
           <button onClick={refreshSchema} title="Refresh schema for autocomplete">
             Refresh Schema
           </button>
-          <button onClick={() => setShowAsk(true)} title="Ask Copilot about this query">
+          <button onClick={() => setShowAsk(true)} title="Ask AI about this query">
             Ask AI
           </button>
           <span className="db-badge" title={`Current database: ${dbLabel}`}>{dbLabel}</span>
@@ -451,6 +464,7 @@ export function QueryEditor({ connectionName, database, driverType, initialSql, 
           sql={sqlText}
           selection={selectedText}
           selectionStart={selectionStart}
+          lastError={lastError}
           onApply={setSqlText}
           onClose={() => setShowAsk(false)}
         />
@@ -493,7 +507,8 @@ export function QueryEditor({ connectionName, database, driverType, initialSql, 
           onSave={handleBatchSave}
           sortState={sortState}
           onSort={handleSort}
-          note={clientSort && sortState ? 'Sorted loaded rows only' : undefined}
+          note={gridNote}
+          truncated={result.truncated}
           onExportCsv={handleExportCsv}
           onInsertRow={canInsert ? handleInsertRow : undefined}
           tableColumns={fullColumns}

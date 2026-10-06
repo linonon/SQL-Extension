@@ -541,6 +541,38 @@ describe('QueryEditor', () => {
     expect(grid).toHaveAttribute('data-note', 'Sorted loaded rows only');
   });
 
+  it('宿主截断的结果集在网格上标出总行数', () => {
+    render(<QueryEditor connectionId="c" database="db" initialSql="SELECT * FROM big" autoExecute />);
+    send({
+      type: 'queryBatchResult', requestId: lastId('executeQuery'),
+      statements: [{ index: 1, sql: 'SELECT * FROM big', status: 'ok', columns: [col('v')], rows: [{ v: 1 }, { v: 2 }], rowCount: 12345, truncated: true, executionTime: 1 }],
+    });
+    expect(screen.getByTestId('query-results')).toHaveAttribute('data-note', 'Showing first 2 of 12345 rows');
+  });
+
+  it('上次执行失败: Ask AI 的提问带上报错; 成功后不再带', () => {
+    render(<QueryEditor connectionId="c" database="db" initialSql="SELECT * FROM t WHERE stat = 1" autoExecute />);
+    send({
+      type: 'queryBatchResult', requestId: lastId('executeQuery'),
+      statements: [{ index: 1, sql: 'SELECT * FROM t WHERE stat = 1', status: 'error', error: "Unknown column 'stat'" }],
+    });
+    fireEvent.click(screen.getByText('Ask AI'));
+    const input = screen.getByTestId('ai-ask-input');
+    const ask = () => {
+      fireEvent.change(input, { target: { value: 'fix it' } });
+      fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+      send({ type: 'aiDone', id: [...mockPostMessage.mock.calls].reverse().find(([m]) => m.type === 'aiAsk')![0].id });
+    };
+    const asked = () => mockPostMessage.mock.calls.map(([m]) => m).filter((m) => m.type === 'aiAsk');
+    ask();
+    expect(asked()[0].lastError).toBe("Unknown column 'stat'");
+
+    fireEvent.click(screen.getByText('Execute'));
+    send({ type: 'queryResult', requestId: lastId('executeQuery'), columns: [col('v')], rows: [], affectedRows: 0, executionTime: 1 });
+    ask();
+    expect(asked()[1]).not.toHaveProperty('lastError');
+  });
+
   it('网格有未保存编辑时重新执行先确认, 确认后才发', () => {
     render(<QueryEditor connectionId="c" database="db" initialSql="SELECT 1" autoExecute />);
     send({ type: 'queryResult', requestId: lastId('executeQuery'), columns: [col('v')], rows: [{ v: 1 }], affectedRows: 0, executionTime: 1 });

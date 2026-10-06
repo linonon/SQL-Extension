@@ -1,5 +1,5 @@
 import type { ConnectionConfig } from './connection.js';
-import type { BatchOutcome, ColumnInfo, DetailedColumnInfo, QueryResult, TableInfo } from './query.js';
+import type { BatchOutcome, ColumnInfo, DetailedColumnInfo, QueryResult, SchemaColumn, TableInfo } from './query.js';
 
 // SQL driver (MySQL / PostgreSQL) 的公共接口; MongoDB / Redis / Kafka / RabbitMQ 各有自己的 driver 类型
 export interface IDatabaseDriver {
@@ -13,6 +13,8 @@ export interface IDatabaseDriver {
   listDatabases(): Promise<string[]>;
   listTables(database: string): Promise<TableInfo[]>;
   listColumns(database: string, table: string): Promise<ColumnInfo[]>;
+  // 整个库 (PG: public schema) 的列, 一条查询取完, 按表名与表内顺序排
+  listSchemaColumns(database: string): Promise<SchemaColumn[]>;
 
   getTableDDL(database: string, table: string): Promise<string>;
   getDetailedColumns(database: string, table: string): Promise<DetailedColumnInfo[]>;

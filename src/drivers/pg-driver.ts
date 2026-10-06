@@ -1,9 +1,10 @@
 import pg from 'pg';
 import type { ConnectionConfig } from '../types/connection.js';
 import type { IDatabaseDriver } from '../types/driver.js';
-import type { BatchOutcome, ColumnInfo, DetailedColumnInfo, QueryResult, StatementOutcome, TableInfo } from '../types/query.js';
+import type { BatchOutcome, ColumnInfo, DetailedColumnInfo, QueryResult, SchemaColumn, StatementOutcome, TableInfo } from '../types/query.js';
 import { OPEN_TRANSACTION_WARNING, splitSqlStatements } from '../utils/destructive-sql.js';
 import { pgSequenceOfDefault } from '../utils/sql-builder.js';
+import { rowObjects, uniqueColumnKeys } from '../utils/result-columns.js';
 
 // node-postgres 默认把 DATE/TIMESTAMP/TIMESTAMPTZ 解析成 JS Date, JSON 序列化后
 // 变成 ISO ("2018-12-11T15:00:00.000Z"), 写回 PG 会因格式不符被拒, 且 Date 时区
@@ -139,6 +140,23 @@ export class PgDriver implements IDatabaseDriver {
     }));
   }
 
+  async listSchemaColumns(database: string): Promise<SchemaColumn[]> {
+    const rows = await this.query(
+      database,
+      `SELECT c.table_name, c.column_name, c.data_type,
+              COALESCE(col_description(format('%I.%I', c.table_schema, c.table_name)::regclass, c.ordinal_position), '') as comment
+       FROM information_schema.columns c
+       WHERE c.table_schema = 'public'
+       ORDER BY c.table_name, c.ordinal_position`
+    );
+    return rows.map((row) => ({
+      table: String(row.table_name),
+      name: String(row.column_name),
+      type: String(row.data_type),
+      comment: String(row.comment ?? ''),
+    }));
+  }
+
   async getDetailedColumns(database: string, table: string): Promise<DetailedColumnInfo[]> {
     const rows = await this.query(
       database,
@@ -242,9 +260,11 @@ export class PgDriver implements IDatabaseDriver {
     return ddl;
   }
 
-  private toQueryResult(result: pg.QueryResult, executionTime: number): QueryResult {
-    const columns: ColumnInfo[] = (result.fields ?? []).map((f) => ({
-      name: f.name,
+  // 返回结果集的查询按值数组取行 (rowMode 'array'), 再按去重后的列名组装: 同名列不互相覆盖
+  private toQueryResult(result: pg.QueryArrayResult, executionTime: number): QueryResult {
+    const keys = uniqueColumnKeys(result.fields ?? []);
+    const columns: ColumnInfo[] = (result.fields ?? []).map((f, i) => ({
+      name: keys[i],
       dataType: PG_TYPE_NAMES.get(f.dataTypeID) ?? String(f.dataTypeID),
       nullable: true,
       isPrimaryKey: false,
@@ -253,7 +273,7 @@ export class PgDriver implements IDatabaseDriver {
     }));
     return {
       columns,
-      rows: result.rows ?? [],
+      rows: rowObjects(keys, result.rows ?? []),
       affectedRows: result.rowCount ?? 0,
       executionTime,
     };
@@ -261,7 +281,7 @@ export class PgDriver implements IDatabaseDriver {
 
   async execute(sql: string, params?: unknown[], database?: string): Promise<QueryResult> {
     const start = Date.now();
-    const result = await this.poolFor(database).query(sql, params);
+    const result = await this.poolFor(database).query({ text: sql, values: params, rowMode: 'array' });
     return this.toQueryResult(result, Date.now() - start);
   }
 
@@ -274,7 +294,7 @@ export class PgDriver implements IDatabaseDriver {
       await client.query('BEGIN');
       const exec = async (sql: string, params?: unknown[]): Promise<QueryResult> => {
         const start = Date.now();
-        const result = await client.query(sql, params);
+        const result = await client.query({ text: sql, values: params, rowMode: 'array' });
         return this.toQueryResult(result, Date.now() - start);
       };
       const out = await work(exec);
@@ -296,7 +316,7 @@ export class PgDriver implements IDatabaseDriver {
       await client.query('BEGIN READ ONLY');
       await client.query('SET LOCAL statement_timeout = 30000');
       const start = Date.now();
-      const result = await client.query({ text: sql, queryMode: 'extended' } as pg.QueryConfig);
+      const result = await client.query({ text: sql, queryMode: 'extended', rowMode: 'array' } as pg.QueryArrayConfig);
       return this.toQueryResult(result, Date.now() - start);
     } finally {
       // 销毁而非归还: advisory lock 等会话级副作用能活过 ROLLBACK, 不能留给 UI 共用的池
@@ -348,7 +368,7 @@ export class PgDriver implements IDatabaseDriver {
           if (cancelled) { throw new Error('Query cancelled'); }
           const start = Date.now();
           // 无参数走 simple protocol: 多语句文本返回结果数组, 出错时整段在隐式事务里回滚, 拿不到前面的结果
-          const raw = await client.query(text) as pg.QueryResult | pg.QueryResult[];
+          const raw = await client.query({ text, rowMode: 'array' }) as pg.QueryArrayResult | pg.QueryArrayResult[];
           // 一次往返返回全部结果, 各条只能记整段耗时
           const elapsed = Date.now() - start;
           const parts = Array.isArray(raw) ? raw : [raw];
@@ -387,7 +407,7 @@ export class PgDriver implements IDatabaseDriver {
   }
 
   // RowDescription 只带 tableID / columnID (表 OID + attnum), 查 catalog 还原 schema.table 与原列名.
-  // 只给未改名的原始列挂 source; 查询失败时不挂 (结果网格只读)
+  // 只给未改名的原始列挂 source (别名列与去重改名的同名列不挂); 查询失败时不挂 (结果网格只读)
   private async withSources(client: pg.PoolClient, fields: pg.FieldDef[], columns: readonly ColumnInfo[]): Promise<readonly ColumnInfo[]> {
     const oids = [...new Set(fields.map((f) => f.tableID).filter((id) => id > 0))];
     if (oids.length === 0) { return columns; }
@@ -404,7 +424,7 @@ export class PgDriver implements IDatabaseDriver {
       return columns.map((col, i) => {
         const f = fields[i];
         const r = byKey.get(`${f.tableID}.${f.columnID}`);
-        return r && r.attname === f.name ? { ...col, source: { schema: String(r.nspname), table: String(r.relname) } } : col;
+        return r && r.attname === col.name ? { ...col, source: { schema: String(r.nspname), table: String(r.relname) } } : col;
       });
     } catch {
       return columns;

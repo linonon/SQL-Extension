@@ -269,16 +269,12 @@ describe('MySQLDriver', () => {
       const mockConn = { release: vi.fn() };
       mockPool.getConnection.mockResolvedValue(mockConn);
 
-      const mockRows = [
-        { id: 1, name: 'Alice' },
-        { id: 2, name: 'Bob' },
-      ];
       const mockFields = [
         { name: 'id', type: 3 },
         { name: 'name', type: 253 },
       ] as mysql.FieldPacket[];
 
-      mockPool.query.mockResolvedValue([mockRows, mockFields]);
+      mockPool.query.mockResolvedValue([[[1, 'Alice'], [2, 'Bob']], mockFields]);
 
       await driver.connect({
         id: 'test-id',
@@ -293,7 +289,7 @@ describe('MySQLDriver', () => {
 
       const result = await driver.execute('SELECT * FROM users', []);
 
-      expect(result.rows).toEqual(mockRows);
+      expect(result.rows).toEqual([{ id: 1, name: 'Alice' }, { id: 2, name: 'Bob' }]);
       expect(result.columns).toHaveLength(2);
       expect(result.columns[0].name).toBe('id');
       expect(result.affectedRows).toBe(0);
@@ -357,7 +353,7 @@ describe('MySQLDriver', () => {
       await driver.execute('SELECT * FROM users WHERE id = ?', [42]);
 
       expect(mockPool.query).toHaveBeenCalledWith(
-        'SELECT * FROM users WHERE id = ?',
+        { sql: 'SELECT * FROM users WHERE id = ?', rowsAsArray: true },
         [42]
       );
     });
@@ -367,7 +363,7 @@ describe('MySQLDriver', () => {
     it('只给未改名的真实表列挂 schema.table; 表达式列和别名列不挂', async () => {
       mockPool.getConnection.mockResolvedValue({ release: vi.fn() });
       mockPool.query.mockResolvedValue([
-        [{ id: 1, nick: 'a', cnt: 2 }],
+        [[1, 'a', 2]],
         [
           { name: 'id', orgName: 'id', table: 'u', orgTable: 'users', db: 'app', type: 3 },
           { name: 'nick', orgName: 'name', table: 'u', orgTable: 'users', db: 'app', type: 253 },
@@ -387,7 +383,7 @@ describe('MySQLDriver', () => {
     it('CALL 多结果集取第一个; 列类型显示类型名而非数字码', async () => {
       mockPool.getConnection.mockResolvedValue({ release: vi.fn() });
       mockPool.query.mockResolvedValue([
-        [[{ id: 1, name: 'a' }], [{ total: 9 }], { affectedRows: 0 }],
+        [[[1, 'a']], [[9]], { affectedRows: 0 }],
         [
           [{ name: 'id', orgName: 'id', table: 'u', orgTable: 'users', db: 'app', type: 3 },
             { name: 'name', orgName: 'name', table: 'u', orgTable: 'users', db: 'app', type: 253 }],
@@ -409,7 +405,7 @@ describe('MySQLDriver', () => {
     it('自连接 (同表多个别名): 该表的列都不挂 source', async () => {
       mockPool.getConnection.mockResolvedValue({ release: vi.fn() });
       mockPool.query.mockResolvedValue([
-        [{ id: 1, name: 'p' }],
+        [[1, 'p']],
         [
           { name: 'id', orgName: 'id', table: 'a', orgTable: 't', db: 'app', type: 3 },
           { name: 'name', orgName: 'name', table: 'b', orgTable: 't', db: 'app', type: 253 },
@@ -424,6 +420,30 @@ describe('MySQLDriver', () => {
 
       expect(result.columns.map((c) => c.source)).toEqual([undefined, undefined]);
     });
+
+    it('JOIN 同名列: 两列都保留, 后者以表别名限定且不挂 source (只读)', async () => {
+      mockPool.getConnection.mockResolvedValue({ release: vi.fn() });
+      mockPool.query.mockResolvedValue([
+        [[1, 99, '5.00']],
+        [
+          { name: 'id', orgName: 'id', table: 'u', orgTable: 't_user', db: 'app', type: 8 },
+          { name: 'id', orgName: 'id', table: 'o', orgTable: 't_order', db: 'app', type: 8 },
+          { name: 'amount', orgName: 'amount', table: 'o', orgTable: 't_order', db: 'app', type: 246 },
+        ],
+      ]);
+      await driver.connect({
+        id: 'test-id', name: 'test', driverType: 'mysql', host: 'localhost', port: 3306,
+        username: 'root', password: 'secret', database: 'testdb',
+      });
+
+      const result = await driver.execute('SELECT u.id, o.id, o.amount FROM t_user u JOIN t_order o ON o.uid = u.id');
+
+      expect(result.columns.map((c) => c.name)).toEqual(['id', 'o.id', 'amount']);
+      expect(result.rows).toEqual([{ id: 1, 'o.id': 99, amount: '5.00' }]);
+      expect(result.columns.map((c) => c.source)).toEqual([
+        { schema: 'app', table: 't_user' }, undefined, { schema: 'app', table: 't_order' },
+      ]);
+    });
   });
 
   describe('executeBatch (单连接执行器)', () => {
@@ -432,6 +452,8 @@ describe('MySQLDriver', () => {
       username: 'root', password: 'secret', database: 'testdb',
     };
     const header = (affectedRows: number) => [{ affectedRows }, undefined];
+    // driver 自己发的会话语句 (USE `db` / SET SESSION) 是裸字符串, 用户语句一律以 { sql, rowsAsArray } 下发
+    const sqlOf = (call: unknown[]) => (call[0] as { sql?: string }).sql ?? call[0];
 
     it('一条专用连接: USE 一次, 按序执行, 遇错即停, 结束后销毁不归还', async () => {
       const conn = {
@@ -449,7 +471,7 @@ describe('MySQLDriver', () => {
       const out = await driver.executeBatch(['USE other', 'UPDATE t SET a=1', 'BAD', 'SELECT 1'], 'app').promise;
 
       expect(mockPool.getConnection).toHaveBeenCalledTimes(2);
-      expect(conn.query.mock.calls.map((c) => c[0])).toEqual(['USE `app`', 'USE other', 'UPDATE t SET a=1', 'BAD']);
+      expect(conn.query.mock.calls.map(sqlOf)).toEqual(['USE `app`', 'USE other', 'UPDATE t SET a=1', 'BAD']);
       expect(out.results.map((r) => [r.sql, r.affectedRows])).toEqual([['USE other', 0], ['UPDATE t SET a=1', 3]]);
       expect(out.error).toEqual({ index: 2, cause: new Error('boom') });
       expect(conn.destroy).toHaveBeenCalledTimes(1);
@@ -463,11 +485,11 @@ describe('MySQLDriver', () => {
       mockPool.getConnection.mockResolvedValue(conn);
 
       await driver.executeBatch(['DROP TABLE t'], 'app', { readOnly: true }).promise;
-      expect(conn.query.mock.calls.map((c) => c[0])).toEqual(['USE `app`', 'SET SESSION TRANSACTION READ ONLY', 'DROP TABLE t']);
+      expect(conn.query.mock.calls.map(sqlOf)).toEqual(['USE `app`', 'SET SESSION TRANSACTION READ ONLY', 'DROP TABLE t']);
 
       conn.query.mockClear();
       await driver.executeBatch(['SELECT 1'], 'app').promise;
-      expect(conn.query.mock.calls.map((c) => c[0])).toEqual(['USE `app`', 'SELECT 1']);
+      expect(conn.query.mock.calls.map(sqlOf)).toEqual(['USE `app`', 'SELECT 1']);
     });
 
     it('BEGIN 之后没有 COMMIT: 回带事务已回滚的提示', async () => {
@@ -519,7 +541,7 @@ describe('MySQLDriver', () => {
         query: vi.fn()
           .mockResolvedValueOnce([{ affectedRows: 0 }, undefined]) // USE
           .mockRejectedValueOnce(new Error("Unknown system variable 'max_execution_time'"))
-          .mockResolvedValue([[{ n: 1 }], []]),
+          .mockResolvedValue([[[1]], [{ name: 'n' }]]),
       };
       mockPool.getConnection.mockResolvedValue({ release: vi.fn() });
       await driver.connect({
@@ -531,7 +553,7 @@ describe('MySQLDriver', () => {
       const result = await driver.executeReadOnly('SELECT 1', 'app');
 
       expect(conn.query.mock.calls.map((c) => c[0])).toEqual([
-        'USE `app`', 'SET SESSION max_execution_time = 30000', 'START TRANSACTION READ ONLY', 'SELECT 1',
+        'USE `app`', 'SET SESSION max_execution_time = 30000', 'START TRANSACTION READ ONLY', { sql: 'SELECT 1', rowsAsArray: true },
       ]);
       expect(result.rows).toEqual([{ n: 1 }]);
       expect(conn.destroy).toHaveBeenCalled();

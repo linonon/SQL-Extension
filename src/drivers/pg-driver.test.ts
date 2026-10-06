@@ -99,13 +99,14 @@ describe('PgDriver', () => {
         release: vi.fn(),
         query: vi.fn().mockResolvedValueOnce([
           { command: 'INSERT', rows: [], fields: [], rowCount: 2 },
-          { command: 'SELECT', rows: [{ n: 1 }], fields: [{ name: 'n', tableID: 0, columnID: 0, dataTypeID: 23 }], rowCount: 1 },
+          { command: 'SELECT', rows: [[1]], fields: [{ name: 'n', tableID: 0, columnID: 0, dataTypeID: 23 }], rowCount: 1 },
         ]),
       };
       mockPool.connect.mockResolvedValue(client);
 
       const out = await driver.executeBatch(['INSERT INTO t VALUES (1), (2); SELECT 1 AS n'], 'app_staging').promise;
 
+      expect(client.query).toHaveBeenCalledWith({ text: 'INSERT INTO t VALUES (1), (2); SELECT 1 AS n', rowMode: 'array' });
       expect(out.results.map((r) => [r.sql, r.affectedRows, r.rows])).toEqual([
         ['INSERT INTO t VALUES (1), (2)', 2, []],
         ['SELECT 1 AS n', 1, [{ n: 1 }]],
@@ -122,7 +123,7 @@ describe('PgDriver', () => {
       mockPool.connect.mockResolvedValue(client);
 
       await driver.executeBatch(['DELETE FROM t'], undefined, { readOnly: true }).promise;
-      expect(client.query.mock.calls.map((c) => c[0])).toEqual(['SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY', 'DELETE FROM t']);
+      expect(client.query.mock.calls.map((c) => c[0])).toEqual(['SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY', { text: 'DELETE FROM t', rowMode: 'array' }]);
     });
 
     it('BEGIN 未提交给出提示; 出错回带输入下标, 没有部分结果', async () => {
@@ -203,7 +204,7 @@ describe('PgDriver', () => {
     it('目标库的只读事务里设 statement_timeout, 连接用完销毁', async () => {
       mockPool.connect.mockResolvedValue({ release: vi.fn() });
       await driver.connect(cfg);
-      const client = { release: vi.fn(), query: vi.fn().mockResolvedValue({ rows: [{ n: 1 }], fields: [], rowCount: 1 }) };
+      const client = { release: vi.fn(), query: vi.fn().mockResolvedValue({ rows: [[1]], fields: [{ name: 'n', tableID: 0, columnID: 0, dataTypeID: 23 }], rowCount: 1 }) };
       mockPool.connect.mockResolvedValue(client);
 
       const result = await driver.executeReadOnly('SELECT 1', 'app_staging');
@@ -211,7 +212,7 @@ describe('PgDriver', () => {
       expect(client.query.mock.calls.map((c) => c[0])).toEqual([
         'BEGIN READ ONLY',
         'SET LOCAL statement_timeout = 30000',
-        { text: 'SELECT 1', queryMode: 'extended' },
+        { text: 'SELECT 1', queryMode: 'extended', rowMode: 'array' },
       ]);
       expect(result.rows).toEqual([{ n: 1 }]);
       expect(dbOf(mockPool.connect).at(-1)).toBe('app_staging');
@@ -516,8 +517,8 @@ describe('PgDriver', () => {
 
       const mockResult = {
         rows: [
-          { id: 1, name: 'Alice' },
-          { id: 2, name: 'Bob' },
+          [1, 'Alice', '2000-01-01'],
+          [2, 'Bob', null],
         ],
         fields: [
           { name: 'id', dataTypeID: 23 },
@@ -542,7 +543,7 @@ describe('PgDriver', () => {
 
       const result = await driver.execute('SELECT * FROM users', []);
 
-      expect(result.rows).toEqual(mockResult.rows);
+      expect(result.rows).toEqual([{ id: 1, name: 'Alice', born: '2000-01-01' }, { id: 2, name: 'Bob', born: null }]);
       expect(result.columns).toHaveLength(3);
       expect(result.columns[0].name).toBe('id');
       // 内置类型按 OID 反查类型名 (mock 的 builtins 只含 DATE 等), 查不到的保留 OID
@@ -612,10 +613,7 @@ describe('PgDriver', () => {
 
       await driver.execute('SELECT * FROM users WHERE id = $1', [42]);
 
-      expect(mockPool.query).toHaveBeenCalledWith(
-        'SELECT * FROM users WHERE id = $1',
-        [42]
-      );
+      expect(mockPool.query).toHaveBeenCalledWith({ text: 'SELECT * FROM users WHERE id = $1', values: [42], rowMode: 'array' });
     });
 
     it('应该处理 null 的 fields 和 rows', async () => {
@@ -652,7 +650,7 @@ describe('PgDriver', () => {
         release: vi.fn(),
         query: vi.fn()
           .mockResolvedValueOnce({
-            rows: [{ id: 1, nick: 'a', n: 2 }],
+            rows: [[1, 'a', 2]],
             rowCount: 1,
             fields: [
               { name: 'id', tableID: 16384, columnID: 1, dataTypeID: 23 },
@@ -684,7 +682,7 @@ describe('PgDriver', () => {
       const client = {
         release: vi.fn(),
         query: vi.fn()
-          .mockResolvedValueOnce({ rows: [{ id: 1 }], rowCount: 1, fields: [{ name: 'id', tableID: 16384, columnID: 1, dataTypeID: 23 }] })
+          .mockResolvedValueOnce({ rows: [[1]], rowCount: 1, fields: [{ name: 'id', tableID: 16384, columnID: 1, dataTypeID: 23 }] })
           .mockRejectedValueOnce(new Error('permission denied')),
       };
       mockPool.connect.mockResolvedValue(client);
@@ -697,6 +695,37 @@ describe('PgDriver', () => {
 
       expect(result.rows).toEqual([{ id: 1 }]);
       expect(result.columns[0].source).toBeUndefined();
+    });
+
+    it('同名列: 第二个改名为 "id (2)", 两列都保留, 改名列不挂 source', async () => {
+      const client = {
+        release: vi.fn(),
+        query: vi.fn()
+          .mockResolvedValueOnce({
+            rows: [[1, 99]],
+            rowCount: 1,
+            fields: [
+              { name: 'id', tableID: 16384, columnID: 1, dataTypeID: 23 },
+              { name: 'id', tableID: 16390, columnID: 1, dataTypeID: 23 },
+            ],
+          })
+          .mockResolvedValueOnce({
+            rows: [
+              { oid: 16384, attnum: 1, attname: 'id', relname: 't_user', nspname: 'public' },
+              { oid: 16390, attnum: 1, attname: 'id', relname: 't_order', nspname: 'public' },
+            ],
+          }),
+      };
+      mockPool.connect.mockResolvedValue(client);
+      await driver.connect({
+        id: 'test-id', name: 'test', driverType: 'postgresql', host: 'localhost', port: 5432,
+        username: 'postgres', password: 'secret', database: 'testdb',
+      });
+
+      const result = await driver.executeCancellable('SELECT u.id, o.id FROM t_user u JOIN t_order o ON o.uid = u.id').promise;
+
+      expect(result.rows).toEqual([{ id: 1, 'id (2)': 99 }]);
+      expect(result.columns.map((c) => [c.name, c.source])).toEqual([['id', { schema: 'public', table: 't_user' }], ['id (2)', undefined]]);
     });
   });
 

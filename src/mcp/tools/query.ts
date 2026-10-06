@@ -1,7 +1,15 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { IpcClient } from '../ipc-client.js';
-import { makeError, toErrorMessage, type ToolResult } from './mcp-result.js';
+import { makeError, toErrorMessage, RESULT_SIZE_CAP, type ToolResult } from './mcp-result.js';
+
+// db_read / db_execute 共用的结果形状说明
+export const RESULT_SHAPE = [
+  'SQL results are columnar: {"columns":["id","name"],"rows":[[1,"a"],[2,"b"]],"rowCount":2,...}; each row lists values in column order.',
+  'Repeated column names (e.g. u.id, o.id in a JOIN) stay separate: later ones are renamed "<table alias>.<name>" (PostgreSQL: "<name> (2)").',
+  'Binary values come back as {"binary":"<hex of the first 64 bytes>","length":<bytes>}.',
+  `Every result is capped at ${RESULT_SIZE_CAP} characters of JSON: past that, trailing rows are dropped and the result has truncated: true, sizeCapChars, rowsReturned (a top-level list becomes {truncated, total, items}; other shapes become {truncated, partialJson}).`,
+].join('\n');
 
 const DB_READ_DESCRIPTION = [
   'Execute read-only queries (SQL runs in a read-only transaction; results capped at 500 rows; SQL and MongoDB reads time out after 30s on the server). Use db_schema to discover databases/tables/columns. Query format by database type:',
@@ -11,6 +19,8 @@ const DB_READ_DESCRIPTION = [
   '- Kafka: JSON, e.g. {"action":"listTopics"}, {"action":"fetch","topic":"t1","partition":0,"offset":"0","limit":10}',
   '- RabbitMQ: JSON, e.g. {"action":"listQueues"}, {"action":"peek","queue":"q1","count":10}',
   'The read-only check on the query text is best-effort; the real boundary is the read-only transaction and the database account\'s permissions.',
+  RESULT_SHAPE,
+  'When the 500-row cap cut a SQL result (the LIMIT was added or lowered and 500 rows came back), it also has truncated: true, rowCap: 500.',
 ].join('\n');
 
 // 只读 / 上限校验与执行都在 VS Code 扩展里 (routeByDriver), 本进程只转发

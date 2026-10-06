@@ -2,6 +2,7 @@ import * as net from 'net';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { PROTOCOL_MISMATCH_ERROR, PROTOCOL_VERSION } from './ipc-protocol.js';
 
 const SOCKET_DIR = path.join(os.homedir(), '.sql-extension');
 const SOCKET_RE = /^ipc-\d+\.sock$/;
@@ -14,6 +15,7 @@ interface IpcResponse {
   readonly id: string;
   readonly result?: unknown;
   readonly error?: string;
+  readonly protocolVersion?: number;
 }
 
 // SQLEXT_IPC_SOCK 指定窗口 (Copilot 由所在窗口注入); 否则按 mtime 降序, 最近启动的窗口优先
@@ -95,7 +97,10 @@ export class IpcClient {
           const p = this.pending.get(resp.id);
           if (p) {
             this.pending.delete(resp.id);
-            if (resp.error) {
+            // 双向校验: 升级后没重载的 VS Code 窗口不带 (或带别的) 版本号, 回包形状可能已不同
+            if (resp.protocolVersion !== PROTOCOL_VERSION) {
+              p.reject(new Error(PROTOCOL_MISMATCH_ERROR));
+            } else if (resp.error) {
               p.reject(new Error(resp.error));
             } else {
               p.resolve(resp.result);
@@ -143,7 +148,7 @@ export class IpcClient {
         resolve: (v) => { clearTimeout(timer); resolve(v); },
         reject: (e) => { clearTimeout(timer); reject(e); },
       });
-      socket.write(JSON.stringify({ id, method, params }) + '\n');
+      socket.write(JSON.stringify({ id, protocolVersion: PROTOCOL_VERSION, method, params }) + '\n');
     });
   }
 

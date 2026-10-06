@@ -52,6 +52,9 @@ export interface StatementResult {
   readonly columns?: readonly ColumnInfo[];
   readonly rows?: readonly Record<string, unknown>[];
   readonly error?: string;
+  // 结果集语句才有: 语句返回的总行数. rows 只在网格展示的那个结果集上带, 至多 RESULT_ROW_CAP 行, truncated 表示截掉了尾部
+  readonly rowCount?: number;
+  readonly truncated?: boolean;
 }
 
 // Extension -> Webview
@@ -107,7 +110,8 @@ export type WebviewMessage =
   | { type: 'deleteRows'; database: string; table: string; primaryKeys: Record<string, unknown>[] }
   | { type: 'executeQuery'; requestId: number; database: string; sql: string }
   | { type: 'cancelQuery' }
-  | { type: 'aiAsk'; id: string; database: string; question: string; sql: string; selection: string }
+  // lastError: 编辑器上一次执行失败时的报错
+  | { type: 'aiAsk'; id: string; database: string; question: string; sql: string; selection: string; lastError?: string }
   | { type: 'aiCancel' }
   | { type: 'aiListModels' }
   | { type: 'aiSetModel'; id: string }

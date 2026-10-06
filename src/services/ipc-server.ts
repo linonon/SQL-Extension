@@ -7,6 +7,7 @@ import { writeBlockedReason, type ConnectionManager } from './connection-manager
 import { isDestructiveRequest, routeByDriver, type DriverSource, type RouteMode } from './query-router.js';
 import { ErrorCode } from './utils.js';
 import { makeError } from '../mcp/tools/mcp-result.js';
+import { PROTOCOL_MISMATCH_ERROR, PROTOCOL_VERSION } from '../mcp/ipc-protocol.js';
 import { sanitizeErrorMessage } from '../utils/sanitize-error.js';
 
 export const SOCKET_DIR = path.join(os.homedir(), '.sql-extension');
@@ -41,6 +42,7 @@ export async function confirmAgentRequest(target: string, query: string): Promis
 
 interface IpcRequest {
   readonly id: string;
+  readonly protocolVersion?: number;
   readonly method: string;
   readonly params?: Record<string, unknown>;
 }
@@ -49,6 +51,7 @@ interface IpcResponse {
   readonly id: string;
   readonly result?: unknown;
   readonly error?: string;
+  readonly protocolVersion?: number;
 }
 
 export class IpcServer {
@@ -100,6 +103,10 @@ export class IpcServer {
     try {
       req = JSON.parse(raw);
     } catch {
+      return;
+    }
+    if (req.protocolVersion !== PROTOCOL_VERSION) {
+      this.send(socket, { id: req.id, error: PROTOCOL_MISMATCH_ERROR });
       return;
     }
     try {
@@ -221,11 +228,11 @@ export class IpcServer {
 
   private send(socket: net.Socket, response: IpcResponse): void {
     try {
-      socket.write(JSON.stringify(response) + '\n');
+      socket.write(JSON.stringify({ ...response, protocolVersion: PROTOCOL_VERSION }) + '\n');
     } catch (err) {
       // 序列化失败 (结果过大) 也要回同 id 的错误, 否则 read/execute 无超时会永远挂住
       try {
-        socket.write(JSON.stringify({ id: response.id, error: `Result too large to return: ${(err as Error).message}` }) + '\n');
+        socket.write(JSON.stringify({ id: response.id, protocolVersion: PROTOCOL_VERSION, error: `Result too large to return: ${(err as Error).message}` }) + '\n');
       } catch {}
     }
   }

@@ -6,13 +6,16 @@ import { registerReadTools } from './tools/query.js';
 import { registerExecuteTools } from './tools/execute.js';
 import { registerSchemaTools } from './tools/schema.js';
 
+// 构建时由 esbuild 从 package.json 注入
+declare const __EXTENSION_VERSION__: string;
+
 const ipc = new IpcClient();
 
 // 本进程只把请求转给 VS Code 扩展 (IPC), 连接, 凭据与执行都在扩展里
 const server = new McpServer(
   {
     name: 'sql-extension',
-    version: '0.2.0',
+    version: __EXTENSION_VERSION__,
   },
   {
     instructions: 'Databases are the connections the user saved in VS Code (Database Explorer); a VS Code window with the extension must be running. Call db_list_connections, then db_schema / db_read / db_execute with a connection id; connecting happens automatically. New connections are added by the user in VS Code.',
