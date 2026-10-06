@@ -49,6 +49,7 @@ function createCtx(driver: IDatabaseDriver, posts: unknown[]): SqlMessageContext
     pendingCancels: new Map(),
     database: 'AGENT_NEW',
     getSchema: async () => ({}),
+    readOnly: false,
   };
 }
 
@@ -66,7 +67,16 @@ describe('handleSqlMessage executeQuery mysql batch', () => {
     expect(batchCalls(driver)).toEqual([[[
       'SELECT * FROM `admin_url_key` WHERE id = 15 AND name = "Log List" LIMIT 50 OFFSET 0',
       "UPDATE t SET note = 'a;b', v = 'it\\'s' WHERE id = 1 -- c;d",
-    ], 'AGENT_NEW']]);
+    ], 'AGENT_NEW', { readOnly: false }]]);
+  });
+
+  it('只读连接: 编辑器执行走只读会话', async () => {
+    const driver = createMysqlDriver([]);
+    await handleSqlMessage(
+      { type: 'executeQuery', requestId: 1, database: 'db', sql: 'UPDATE t SET a = 1 WHERE id = 1' } as WebviewMessage,
+      { ...createCtx(driver, []), readOnly: true },
+    );
+    expect(batchCalls(driver)).toEqual([[['UPDATE t SET a = 1 WHERE id = 1'], 'AGENT_NEW', { readOnly: true }]]);
   });
 
   it('两条都成功时回 queryBatchResult', async () => {
@@ -117,7 +127,7 @@ describe('handleSqlMessage executeQuery mysql batch', () => {
       cancel: vi.fn(),
     });
     await handleSqlMessage({ type: 'executeQuery', requestId: 1, database: 'db', sql }, createCtx(driver, posts));
-    expect(batchCalls(driver)).toEqual([[[sql], 'AGENT_NEW']]);
+    expect(batchCalls(driver)).toEqual([[[sql], 'AGENT_NEW', { readOnly: false }]]);
     expect(posts).toEqual([expect.objectContaining({
       type: 'queryBatchResult',
       statements: [

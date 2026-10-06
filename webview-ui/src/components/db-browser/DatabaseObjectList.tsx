@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import { ContextMenu, type ContextMenuItem } from '../common/ContextMenu';
 import { fuzzyScore } from '../../utils/fuzzy-score';
+import { useReadOnly } from '../../hooks/useReadOnly';
 
 export interface DatabaseInfo {
   readonly name: string;
@@ -94,6 +95,8 @@ export function DatabaseObjectList({
   onDumpStruct,
   onDumpStructAndData,
 }: DatabaseObjectListProps) {
+  // 只读连接不给写入口: 导入 SQL 与改表结构
+  const readOnly = useReadOnly();
   const [filter, setFilter] = useState('');
   const [contextMenu, setContextMenu] = useState<{
     items: ContextMenuItem[];
@@ -110,24 +113,24 @@ export function DatabaseObjectList({
     setContextMenu({
       items: [
         { label: 'New Query', action: () => onNewQuery(database) },
-        { label: 'Import SQL', action: () => onImportSql(database) },
+        ...(readOnly ? [] : [{ label: 'Import SQL', action: () => onImportSql(database) }]),
       ],
       position: { x: e.clientX, y: e.clientY },
     });
-  }, [onNewQuery, onImportSql]);
+  }, [onNewQuery, onImportSql, readOnly]);
 
   const handleTableContextMenu = useCallback((e: React.MouseEvent, database: string, table: string) => {
     e.preventDefault();
     setContextMenu({
       items: [
-        { label: 'Edit Table', action: () => onEditTable(database, table) },
+        ...(readOnly ? [] : [{ label: 'Edit Table', action: () => onEditTable(database, table) }]),
         { label: 'Show DDL', action: () => onShowDDL(database, table) },
         { label: 'Dump Struct', action: () => onDumpStruct(database, table) },
         { label: 'Dump Struct and Data', action: () => onDumpStructAndData(database, table) },
       ],
       position: { x: e.clientX, y: e.clientY },
     });
-  }, [onEditTable, onShowDDL, onDumpStruct, onDumpStructAndData]);
+  }, [onEditTable, onShowDDL, onDumpStruct, onDumpStructAndData, readOnly]);
 
   const closeContextMenu = useCallback(() => setContextMenu(null), []);
 

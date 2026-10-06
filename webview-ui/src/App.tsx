@@ -8,6 +8,7 @@ import { RedisBrowser } from './components/redis-browser/RedisBrowser';
 import { KafkaBrowser } from './components/kafka-browser/KafkaBrowser';
 import { MongoBrowser } from './components/mongo-browser/MongoBrowser';
 import { DatabaseBrowser } from './components/db-browser/DatabaseBrowser';
+import { ReadOnlyContext } from './hooks/useReadOnly';
 import type { ExtensionMessage, ViewType } from './types/messages';
 
 export function App() {
@@ -33,6 +34,14 @@ export function App() {
     return <div style={{ padding: 16 }}>Loading...</div>;
   }
 
+  return (
+    <ReadOnlyContext.Provider value={viewContext.readOnly === true}>
+      {renderView(view, viewContext)}
+    </ReadOnlyContext.Provider>
+  );
+}
+
+function renderView(view: ViewType, viewContext: Record<string, unknown>) {
   switch (view) {
     case 'query':
       return (

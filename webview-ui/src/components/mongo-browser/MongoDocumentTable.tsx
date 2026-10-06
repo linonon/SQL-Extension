@@ -12,6 +12,7 @@ import { MongoFilterBuilder } from './MongoFilterBuilder';
 import { MongoExplainPanel } from './MongoExplainPanel';
 import { capRows } from './mongo-render-cap';
 import type { MongoExplainSummary } from '../../types/messages';
+import { useReadOnly } from '../../hooks/useReadOnly';
 
 interface MongoDocumentTableProps {
   readonly collection: string;
@@ -90,6 +91,8 @@ export function MongoDocumentTable({
   onSwitchConfirmed,
   onSwitchCancelled,
 }: MongoDocumentTableProps) {
+  // 只读连接: 不给新建 / 导入 / 打开编辑入口 (卡片上的 Edit / Clone / Delete 由卡片自己禁用)
+  const connectionReadOnly = useReadOnly();
   // in-card 编辑态: editing (正在编辑的现存文档) 与 composing (顶部新建/克隆卡片) 互斥
   const [editing, setEditing] = useState<Record<string, unknown> | null>(null);
   const editingId = editing ? idToShell(editing._id) : null;
@@ -292,12 +295,14 @@ export function MongoDocumentTable({
         <div className="mongo-header-row">
           <h3>{collection}</h3>
           <ViewToggle value={view} onChange={handleViewChange} />
-          <button
-            className="btn-small btn-primary"
-            onClick={handleNewDocument}
-          >
-            + New Document
-          </button>
+          {!connectionReadOnly && (
+            <button
+              className="btn-small btn-primary"
+              onClick={handleNewDocument}
+            >
+              + New Document
+            </button>
+          )}
         </div>
         <div className="mongo-filter-controls">
           <div className="mongo-filter-row">
@@ -408,7 +413,7 @@ export function MongoDocumentTable({
                   Export
                 </button>
               )}
-              {onImport && (
+              {onImport && !connectionReadOnly && (
                 <button className="btn-small" onClick={onImport}>
                   Import
                 </button>
@@ -453,8 +458,8 @@ export function MongoDocumentTable({
             ? <MongoTableView
                 columns={columns}
                 rows={capped.rows}
-                onOpen={readOnly ? undefined : handleOpen}
-                onCellEdit={readOnly ? undefined : handleCellEdit}
+                onOpen={readOnly || connectionReadOnly ? undefined : handleOpen}
+                onCellEdit={readOnly || connectionReadOnly ? undefined : handleCellEdit}
               />
             : <MongoDocumentList
                 rows={capped.rows}

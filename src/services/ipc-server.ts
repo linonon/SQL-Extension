@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as vscode from 'vscode';
-import type { ConnectionManager } from './connection-manager.js';
+import { writeBlockedReason, type ConnectionManager } from './connection-manager.js';
 import { isDestructiveRequest, routeByDriver, type DriverSource, type RouteMode } from './query-router.js';
 import { ErrorCode } from './utils.js';
 import { makeError } from '../mcp/tools/mcp-result.js';
@@ -138,6 +138,7 @@ export class IpcServer {
           port: info.config.port,
           database: info.config.database,
           state: info.state,
+          ...(info.config.readOnly ? { readOnly: true } : {}),
         }));
 
       case 'read':
@@ -146,6 +147,9 @@ export class IpcServer {
         const query = params.query as string;
         const config = this.findConfig(id);
         const database = (params.database as string | undefined) || config.database || undefined;
+        // 只读连接在连接与破坏性确认之前就拒绝 execute; read 照常走只读路径
+        const blocked = method === 'execute' ? writeBlockedReason(config) : undefined;
+        if (blocked) { return makeError(blocked, ErrorCode.READONLY_VIOLATION); }
         if (method === 'execute' && isDestructiveRequest(config.driverType, query)) {
           const denied = await confirmAgentRequest(database ? `${config.name}/${database}` : config.name, query);
           if (denied) { return makeError(denied, ErrorCode.NOT_CONFIRMED); }

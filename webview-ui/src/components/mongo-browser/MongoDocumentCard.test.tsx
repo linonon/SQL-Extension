@@ -2,6 +2,7 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import type { ChangeEvent, KeyboardEvent, RefObject } from 'react';
 import { MongoDocumentCard } from './MongoDocumentCard';
+import { ReadOnlyContext } from '../../hooks/useReadOnly';
 
 // 内联编辑器复用 MongoDocumentDetail, 需 mock autocomplete hook 避免 DOM 测量
 vi.mock('../../hooks/useMongoAutocomplete', () => ({
@@ -27,6 +28,14 @@ describe('MongoDocumentCard', () => {
   it('json 视图渲染 shell 文本', () => {
     render(<MongoDocumentCard doc={doc} view="json" onEdit={vi.fn()} onClone={vi.fn()} onDelete={vi.fn()} />);
     expect(screen.getByText(/ObjectId\("a+"\)/)).toBeInTheDocument();
+  });
+
+  it('只读连接: Edit / Clone / Delete 禁用, Copy 可用', () => {
+    render(<ReadOnlyContext.Provider value={true}><MongoDocumentCard doc={doc} view="list" onEdit={vi.fn()} onClone={vi.fn()} onDelete={vi.fn()} /></ReadOnlyContext.Provider>);
+    for (const name of ['Edit', 'Clone', 'Delete']) {
+      expect(screen.getByText(name)).toBeDisabled();
+    }
+    expect(screen.getByText('Copy')).not.toBeDisabled();
   });
 
   it('点 Edit 回调带文档', () => {

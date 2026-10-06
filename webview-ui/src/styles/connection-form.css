@@ -42,7 +42,8 @@
   border-top: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.35));
 }
 
-.connection-form .ssh-toggle {
+.connection-form .ssh-toggle,
+.connection-form .read-only-toggle {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -53,7 +54,8 @@
   cursor: pointer;
 }
 
-.connection-form .ssh-toggle input[type="checkbox"] {
+.connection-form .ssh-toggle input[type="checkbox"],
+.connection-form .read-only-toggle input[type="checkbox"] {
   width: auto;
 }
 

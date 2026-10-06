@@ -115,6 +115,16 @@ describe('PgDriver', () => {
       expect(client.release).toHaveBeenCalledWith(true);
     });
 
+    it('readOnly: 语句之前把会话默认事务设为只读', async () => {
+      mockPool.connect.mockResolvedValue({ release: vi.fn() });
+      await driver.connect(cfg);
+      const client = { processID: 9, release: vi.fn(), query: vi.fn().mockResolvedValue({ command: 'DELETE', rows: [], fields: [], rowCount: 0 }) };
+      mockPool.connect.mockResolvedValue(client);
+
+      await driver.executeBatch(['DELETE FROM t'], undefined, { readOnly: true }).promise;
+      expect(client.query.mock.calls.map((c) => c[0])).toEqual(['SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY', 'DELETE FROM t']);
+    });
+
     it('BEGIN 未提交给出提示; 出错回带输入下标, 没有部分结果', async () => {
       mockPool.connect.mockResolvedValue({ release: vi.fn() });
       await driver.connect(cfg);

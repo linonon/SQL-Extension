@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { KafkaMessage, KafkaPartitionInfo } from '../../types/kafka';
 import { KafkaMessageDetail } from './KafkaMessageDetail';
 import { KafkaProduceForm } from './KafkaProduceForm';
+import { useReadOnly } from '../../hooks/useReadOnly';
 
 interface KafkaMessageTableProps {
   readonly topic: string;
@@ -41,6 +42,7 @@ export function KafkaMessageTable({
   onProduce,
   produceResult,
 }: KafkaMessageTableProps) {
+  const readOnly = useReadOnly();
   const [subView, setSubView] = useState<SubView>('list');
   const [detailMsg, setDetailMsg] = useState<KafkaMessage | null>(null);
   const [offsetInput, setOffsetInput] = useState('');
@@ -127,9 +129,11 @@ export function KafkaMessageTable({
               By Time
             </button>
           </div>
-          <button className="btn-small" onClick={() => setSubView('produce')}>
-            Produce
-          </button>
+          {!readOnly && (
+            <button className="btn-small" onClick={() => setSubView('produce')}>
+              Produce
+            </button>
+          )}
         </div>
       </div>
       <div className="kafka-message-body">

@@ -15,7 +15,8 @@ export class ConnectionTreeItem extends vscode.TreeItem {
     public readonly host: string,
     public readonly port: number,
     public readonly driverType: DriverType,
-    public readonly state: ConnectionState
+    public readonly state: ConnectionState,
+    readOnly = false
   ) {
     super(connectionName, vscode.TreeItemCollapsibleState.None);
     this.id = state === 'connected' ? connectionId : `${connectionId}-${state}`;
@@ -43,6 +44,10 @@ export class ConnectionTreeItem extends vscode.TreeItem {
         title: 'Connect',
         arguments: [this],
       };
+    }
+    // 只读连接只在描述上标出 (每个 driver 的图标固定 4 个 SVG, 不另加只读图标)
+    if (readOnly) {
+      this.description += ' (read-only)';
     }
   }
 }

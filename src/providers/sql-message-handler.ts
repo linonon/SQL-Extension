@@ -23,6 +23,8 @@ export interface SqlMessageContext {
   readonly database?: string;
   // schema 缓存读取 (缓存归 provider 所有, 跟随其生命周期); forceRefresh 对应 refreshSchema
   readonly getSchema: (database: string, forceRefresh: boolean) => Promise<Record<string, string[]>>;
+  // 只读连接: executeQuery 在只读会话里执行 (写消息已由 provider 在进入这里之前拒绝)
+  readonly readOnly: boolean;
 }
 
 export async function handleSqlMessage(
@@ -356,7 +358,7 @@ async function runQuery(sql: string, db: string, ctx: SqlMessageContext): Promis
   }
 
   const stmts = statementsFor(driver, sql);
-  const { promise, cancel } = driver.executeBatch(stmts, db);
+  const { promise, cancel } = driver.executeBatch(stmts, db, { readOnly: ctx.readOnly });
   ctx.pendingCancels.set(ctx.panel, cancel);
   try {
     const { results, error, warning } = await promise;

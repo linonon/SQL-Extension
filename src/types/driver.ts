@@ -34,7 +34,8 @@ export interface IDatabaseDriver {
   // 按序执行, 遇错即停, 结束后一律销毁连接, 会话状态 (USE / 事务 / SET) 不回共享池.
   // cancel 只取消这条连接上的语句, 执行结束后为 no-op.
   // MySQL 每项一条语句 (mysql2 未开 multipleStatements); PG 每项可以是多语句文本, 走 simple protocol 由服务端切分.
-  executeBatch(statements: readonly string[], database?: string): {
+  // readOnly: 语句之前把这条连接设为只读会话, 写语句与 DDL 由数据库拒绝 (只读连接的编辑器执行).
+  executeBatch(statements: readonly string[], database?: string, options?: { readonly readOnly?: boolean }): {
     promise: Promise<BatchOutcome>;
     cancel: () => void;
   };

@@ -456,6 +456,20 @@ describe('MySQLDriver', () => {
       expect(conn.release).not.toHaveBeenCalled();
     });
 
+    it('readOnly: USE 之后, 语句之前把会话设为只读; 不带时不发', async () => {
+      const conn = { threadId: 5, destroy: vi.fn(), query: vi.fn().mockResolvedValue(header(0)) };
+      mockPool.getConnection.mockResolvedValue({ release: vi.fn() });
+      await driver.connect(cfg);
+      mockPool.getConnection.mockResolvedValue(conn);
+
+      await driver.executeBatch(['DROP TABLE t'], 'app', { readOnly: true }).promise;
+      expect(conn.query.mock.calls.map((c) => c[0])).toEqual(['USE `app`', 'SET SESSION TRANSACTION READ ONLY', 'DROP TABLE t']);
+
+      conn.query.mockClear();
+      await driver.executeBatch(['SELECT 1'], 'app').promise;
+      expect(conn.query.mock.calls.map((c) => c[0])).toEqual(['USE `app`', 'SELECT 1']);
+    });
+
     it('BEGIN 之后没有 COMMIT: 回带事务已回滚的提示', async () => {
       const conn = { threadId: 1, destroy: vi.fn(), query: vi.fn().mockResolvedValue(header(1)) };
       mockPool.getConnection.mockResolvedValue({ release: vi.fn() });

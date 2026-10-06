@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { RedisStringEditor } from './RedisStringEditor';
+import { ReadOnlyContext } from '../../hooks/useReadOnly';
 
 describe('RedisStringEditor', () => {
   it('加载时原样显示, Format JSON 无损格式化 (int64 / 1.50 不变)', () => {
@@ -18,5 +19,11 @@ describe('RedisStringEditor', () => {
     expect(screen.getByText('Format JSON')).toBeInTheDocument();
     rerender(<RedisStringEditor value="plain text" onSave={vi.fn()} />);
     expect(screen.queryByText('Format JSON')).toBeNull();
+  });
+
+  it('只读连接: 文本框只读, 没有 Save', () => {
+    render(<ReadOnlyContext.Provider value={true}><RedisStringEditor value="v" onSave={vi.fn()} /></ReadOnlyContext.Provider>);
+    expect(screen.getByRole('textbox')).toHaveAttribute('readonly');
+    expect(screen.queryByText('Save')).toBeNull();
   });
 });

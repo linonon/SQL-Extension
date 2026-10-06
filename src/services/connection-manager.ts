@@ -23,6 +23,11 @@ export function newConnectionId(config: Pick<ConnectionConfig, 'driverType' | 'h
   return `${config.driverType}-${config.host}-${config.port}-${Date.now()}`;
 }
 
+// 只读连接拒绝写入的原因, 可写时为 undefined. UI 的写消息, 编辑器执行与 agent 的 execute 都由它判定
+export function writeBlockedReason(config: Pick<ConnectionConfig, 'name' | 'readOnly'> | undefined): string | undefined {
+  return config?.readOnly ? `Connection ${config.name} is read-only` : undefined;
+}
+
 export class ConnectionManager implements vscode.Disposable {
   private readonly drivers = new Map<string, AnyDriver>();
   private readonly tunnels = new Map<string, TunnelHandle>();
@@ -83,12 +88,17 @@ export class ConnectionManager implements vscode.Disposable {
     this._onDidChange.fire();
   }
 
-  async updateConnection(id: string, config: ConnectionConfig, password: string, sshPassword?: string): Promise<void> {
+  // password / sshPassword 为 undefined 表示保留已存的值; 配置里关掉了 SSH 则删除已存的 SSH 密码
+  async updateConnection(id: string, config: ConnectionConfig, password?: string, sshPassword?: string): Promise<void> {
     await this.disconnect(id);
     const connections = this.getConnections().map((c) => (c.id === id ? config : c));
     await this.globalState.update(CONNECTIONS_KEY, connections);
-    await this.credentialStore.setPassword(id, password);
-    if (sshPassword !== undefined) {
+    if (password !== undefined) {
+      await this.credentialStore.setPassword(id, password);
+    }
+    if (!config.ssh?.enabled) {
+      await this.credentialStore.deleteSSHPassword(id);
+    } else if (sshPassword !== undefined) {
       await this.credentialStore.setSSHPassword(id, sshPassword);
     }
     this._onDidChange.fire();

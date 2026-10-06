@@ -15,14 +15,15 @@ import { parseKafkaQuery, READ_ACTIONS } from './parsers/kafka-parser.js';
 import { parseRabbitMQQuery } from './parsers/rabbitmq-parser.js';
 import { makeResult, makeError, type ToolResult } from '../mcp/tools/mcp-result.js';
 
-const REDIS_READ_COMMANDS = new Set([
+// 只读命令白名单: MCP db_read 与只读连接的 Redis 命令栏共用
+export const REDIS_READ_COMMANDS: ReadonlySet<string> = new Set([
   'GET', 'MGET', 'TTL', 'PTTL', 'TYPE', 'EXISTS', 'DBSIZE', 'INFO',
   'SCAN', 'HSCAN', 'SSCAN', 'ZSCAN',
   'HGET', 'HGETALL', 'HMGET', 'HLEN',
   'LRANGE', 'LLEN',
   'SCARD', 'SMEMBERS', 'SISMEMBER',
   'ZCARD', 'ZRANGE', 'ZRANGEBYSCORE', 'ZCOUNT',
-  'STRLEN',
+  'STRLEN', 'XRANGE',
 ]);
 
 const SCAN_COMMANDS = new Set(['SCAN', 'HSCAN', 'SSCAN', 'ZSCAN']);

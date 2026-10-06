@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { RedisLoadMore } from './RedisLoadMore';
+import { useReadOnly } from '../../hooks/useReadOnly';
 
 interface RedisHashEditorProps {
   readonly value: Record<string, string>;
@@ -10,6 +11,7 @@ interface RedisHashEditorProps {
 }
 
 export function RedisHashEditor({ value, onBatchEdit, onDeleteField, hashDone, onHashLoadMore }: RedisHashEditorProps) {
+  const readOnly = useReadOnly();
   const [newField, setNewField] = useState('');
   const [newValue, setNewValue] = useState('');
   // editMap: key = 原始 field name, value = { field: 当前 field, value: 当前 value }
@@ -115,19 +117,23 @@ export function RedisHashEditor({ value, onBatchEdit, onDeleteField, hashDone, o
               className={`field${isDirty ? ' editing-dirty' : ''}`}
               value={currentField}
               onChange={(e) => handleFieldChange(origField, e.target.value)}
+              readOnly={readOnly}
             />
             <input
               className={`value${isDirty ? ' editing-dirty' : ''}`}
               value={currentValue}
               onChange={(e) => handleValueChange(origField, e.target.value)}
+              readOnly={readOnly}
             />
-            <button
-              className="btn-icon"
-              onClick={() => onDeleteField(origField)}
-              title="Delete field"
-            >
-              x
-            </button>
+            {!readOnly && (
+              <button
+                className="btn-icon"
+                onClick={() => onDeleteField(origField)}
+                title="Delete field"
+              >
+                x
+              </button>
+            )}
           </div>
         );
       })}
@@ -138,7 +144,7 @@ export function RedisHashEditor({ value, onBatchEdit, onDeleteField, hashDone, o
           <button className="secondary" onClick={handleDiscard}>Discard</button>
         </div>
       )}
-      <div className="add-form">
+      {!readOnly && <div className="add-form">
         <input
           placeholder="Field"
           value={newField}
@@ -152,7 +158,7 @@ export function RedisHashEditor({ value, onBatchEdit, onDeleteField, hashDone, o
         <button onClick={handleAdd} disabled={!newField.trim()}>
           Add Field
         </button>
-      </div>
+      </div>}
     </div>
   );
 }

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { RedisKeyInfo } from '../../types/redis';
 import { ContextMenu, type ContextMenuItem } from '../common/ContextMenu';
 import { buildKeyTree, filterKeysFuzzy, type KeyTreeNode } from '../../utils/redis-keys';
+import { useReadOnly } from '../../hooks/useReadOnly';
 
 interface RedisKeyListProps {
   readonly keys: readonly RedisKeyInfo[];
@@ -133,6 +134,7 @@ export function RedisKeyList({
   onSetTTL,
   onExportKey,
 }: RedisKeyListProps) {
+  const readOnly = useReadOnly();
   const [contextMenu, setContextMenu] = useState<{
     readonly x: number;
     readonly y: number;
@@ -178,14 +180,16 @@ export function RedisKeyList({
           label: 'Export',
           action: () => onExportKey(contextMenu.key),
         },
-        {
-          label: 'Set TTL',
-          action: () => onSetTTL(contextMenu.key),
-        },
-        {
-          label: 'Delete',
-          action: () => onDeleteKey(contextMenu.key),
-        },
+        ...(readOnly ? [] : [
+          {
+            label: 'Set TTL',
+            action: () => onSetTTL(contextMenu.key),
+          },
+          {
+            label: 'Delete',
+            action: () => onDeleteKey(contextMenu.key),
+          },
+        ]),
       ]
     : [];
 

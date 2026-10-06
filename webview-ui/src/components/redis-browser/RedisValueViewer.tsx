@@ -4,6 +4,7 @@ import { RedisHashEditor } from './RedisHashEditor';
 import { RedisListEditor } from './RedisListEditor';
 import { RedisSetEditor } from './RedisSetEditor';
 import { RedisSortedSetEditor } from './RedisSortedSetEditor';
+import { useReadOnly } from '../../hooks/useReadOnly';
 
 interface RedisValueViewerProps {
   readonly keyName: string;
@@ -72,6 +73,7 @@ export function RedisValueViewer({
   onDeleteKey,
   onSetTTL,
 }: RedisValueViewerProps) {
+  const readOnly = useReadOnly();
   // command raw output 优先显示
   if (commandOutput !== null) {
     return (
@@ -102,12 +104,16 @@ export function RedisValueViewer({
             <span>TTL: {formatTTL(ttl)}</span>
           </div>
         </div>
-        <button className="secondary" onClick={onSetTTL}>
-          Set TTL
-        </button>
-        <button className="secondary" onClick={onDeleteKey}>
-          Delete
-        </button>
+        {!readOnly && (
+          <>
+            <button className="secondary" onClick={onSetTTL}>
+              Set TTL
+            </button>
+            <button className="secondary" onClick={onDeleteKey}>
+              Delete
+            </button>
+          </>
+        )}
       </div>
       <div className="redis-value-body">
         {value.type === 'string' && (

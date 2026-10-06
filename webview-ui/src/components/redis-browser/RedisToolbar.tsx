@@ -1,4 +1,5 @@
 import { useCallback, useRef } from 'react';
+import { useReadOnly } from '../../hooks/useReadOnly';
 
 interface RedisDbOption {
   readonly index: number;
@@ -41,6 +42,7 @@ export function RedisToolbar({
   onExport,
   onImport,
 }: RedisToolbarProps) {
+  const readOnly = useReadOnly();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const handleExecute = useCallback(() => {
@@ -93,13 +95,15 @@ export function RedisToolbar({
             <path d="M13.451 5.609l-.579-.939-1.068.812-.076.094c.335.57.527 1.225.527 1.924a4.008 4.008 0 0 1-4.006 4.006 4.007 4.007 0 0 1-3.742-2.555l1.244-.009-.067-1.5-3.456.024.025 3.456 1.5-.01-.01-1.252A5.508 5.508 0 0 0 8.249 13.006 5.509 5.509 0 0 0 13.755 7.5c0-0.675-.122-1.32-.304-1.891zM8.249 2.494a5.508 5.508 0 0 0-5.175 3.61l.579.939 1.068-.812.076-.094A3.98 3.98 0 0 1 5.27 4.913 4.007 4.007 0 0 1 8.249 2.994a4.008 4.008 0 0 1 3.742 2.555l-1.244.009.067 1.5 3.456-.024-.025-3.456-1.5.01.01 1.252A5.508 5.508 0 0 0 8.249 2.494z"/>
           </svg>
         </button>
-        <button className="icon-btn" title="Add Key" onClick={onAddKey}>
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-            <path d="M8 1.5a.5.5 0 0 1 .5.5v5.5H14a.5.5 0 0 1 0 1H8.5V14a.5.5 0 0 1-1 0V8.5H2a.5.5 0 0 1 0-1h5.5V2a.5.5 0 0 1 .5-.5z"/>
-          </svg>
-        </button>
+        {!readOnly && (
+          <button className="icon-btn" title="Add Key" onClick={onAddKey}>
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M8 1.5a.5.5 0 0 1 .5.5v5.5H14a.5.5 0 0 1 0 1H8.5V14a.5.5 0 0 1-1 0V8.5H2a.5.5 0 0 1 0-1h5.5V2a.5.5 0 0 1 .5-.5z"/>
+            </svg>
+          </button>
+        )}
         <button className="text-btn" title="Export all keys matching the current pattern" onClick={onExport}>Export</button>
-        <button className="text-btn" title="Import Keys" onClick={onImport}>Import</button>
+        {!readOnly && <button className="text-btn" title="Import Keys" onClick={onImport}>Import</button>}
       </div>
     </div>
   );

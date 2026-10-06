@@ -234,7 +234,7 @@ export class MySQLDriver implements IDatabaseDriver {
     };
   }
 
-  executeBatch(statements: readonly string[], database?: string): {
+  executeBatch(statements: readonly string[], database?: string, options?: { readonly readOnly?: boolean }): {
     promise: Promise<BatchOutcome>;
     cancel: () => void;
   } {
@@ -252,6 +252,11 @@ export class MySQLDriver implements IDatabaseDriver {
         threadId = conn.threadId;
         if (database) {
           await conn.query(`USE \`${database.replace(/`/g, '``')}\``);
+        }
+        // 会话级只读: DDL 隐式提交后开始的下一个事务仍是只读, 所以 DDL 也被拒 (ER_CANT_EXECUTE_IN_READ_ONLY_TRANSACTION).
+        // 语句里显式 SET ... READ WRITE 能解除它: 这里防误写, 权限边界在 DB 账号
+        if (options?.readOnly) {
+          await conn.query('SET SESSION TRANSACTION READ ONLY');
         }
         for (const sql of statements) {
           // 语句之间被取消: KILL QUERY 打在空闲连接上不生效, 由这里停下

@@ -21,6 +21,7 @@ interface FormState {
   readonly sshAuthType: SSHAuthType;
   readonly sshPassword: string;
   readonly sshPrivateKeyPath: string;
+  readonly readOnly: boolean;
 }
 
 const DEFAULT_PORTS: Record<DriverType, string> = {
@@ -49,8 +50,10 @@ const initialState: FormState = {
   sshAuthType: 'password',
   sshPassword: '',
   sshPrivateKeyPath: '',
+  readOnly: false,
 };
 
+// 已存的密码不发到 webview, 只给有没有: 编辑时密码框留空表示沿用已存的值
 interface EditConnection {
   readonly id: string;
   readonly name: string;
@@ -58,7 +61,7 @@ interface EditConnection {
   readonly host: string;
   readonly port: number;
   readonly username: string;
-  readonly password: string;
+  readonly hasPassword: boolean;
   readonly database: string;
   readonly authSource?: string;
   readonly separator?: string;
@@ -67,9 +70,12 @@ interface EditConnection {
   readonly sshPort: number;
   readonly sshUsername: string;
   readonly sshAuthType: SSHAuthType;
-  readonly sshPassword: string;
+  readonly hasSshPassword: boolean;
   readonly sshPrivateKeyPath: string;
+  readonly readOnly: boolean;
 }
+
+const UNCHANGED_PLACEHOLDER = '(unchanged)';
 
 function sshFields(form: FormState): ConnectionFormSSH {
   return {
@@ -98,7 +104,7 @@ export function ConnectionForm({ editConnection }: ConnectionFormProps) {
       host: editConnection.host,
       port: String(editConnection.port),
       username: editConnection.username,
-      password: editConnection.password,
+      password: '',
       database: editConnection.database,
       authSource: editConnection.authSource ?? '',
       separator: editConnection.separator ?? ':',
@@ -107,8 +113,9 @@ export function ConnectionForm({ editConnection }: ConnectionFormProps) {
       sshPort: String(editConnection.sshPort),
       sshUsername: editConnection.sshUsername,
       sshAuthType: editConnection.sshAuthType,
-      sshPassword: editConnection.sshPassword,
+      sshPassword: '',
       sshPrivateKeyPath: editConnection.sshPrivateKeyPath,
+      readOnly: editConnection.readOnly,
     };
   });
   const [testResult, setTestResult] = useState<{ success: boolean; error?: string } | null>(null);
@@ -192,6 +199,7 @@ export function ConnectionForm({ editConnection }: ConnectionFormProps) {
           ...separatorField,
           ...authSourceField,
           ...sshFields(form),
+          readOnly: form.readOnly,
         },
       });
     } else {
@@ -208,6 +216,7 @@ export function ConnectionForm({ editConnection }: ConnectionFormProps) {
           ...separatorField,
           ...authSourceField,
           ...sshFields(form),
+          readOnly: form.readOnly,
         },
       });
     }
@@ -287,7 +296,9 @@ export function ConnectionForm({ editConnection }: ConnectionFormProps) {
             type="password"
             value={form.password}
             onChange={(e) => updateField('password', e.target.value)}
-            placeholder={form.driverType === 'redis' || form.driverType === 'mongodb' || form.driverType === 'kafka' ? 'Password (optional)' : undefined}
+            placeholder={editConnection?.hasPassword
+              ? UNCHANGED_PLACEHOLDER
+              : form.driverType === 'redis' || form.driverType === 'mongodb' || form.driverType === 'kafka' ? 'Password (optional)' : undefined}
           />
         </div>
       </div>
@@ -346,6 +357,17 @@ export function ConnectionForm({ editConnection }: ConnectionFormProps) {
         </div>
       )}
 
+      <div className="form-group">
+        <label className="read-only-toggle">
+          <input
+            type="checkbox"
+            checked={form.readOnly}
+            onChange={(e) => updateField('readOnly', e.target.checked)}
+          />
+          Read-only (block writes from the UI and from agents)
+        </label>
+      </div>
+
       <div className="ssh-section">
           <label className="ssh-toggle">
             <input
@@ -403,6 +425,7 @@ export function ConnectionForm({ editConnection }: ConnectionFormProps) {
                     type="password"
                     value={form.sshPassword}
                     onChange={(e) => updateField('sshPassword', e.target.value)}
+                    placeholder={editConnection?.hasSshPassword ? UNCHANGED_PLACEHOLDER : undefined}
                   />
                 </div>
               ) : (

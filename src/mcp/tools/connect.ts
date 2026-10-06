@@ -7,7 +7,7 @@ export function registerConnectTools(server: McpServer, ipc: IpcClient): void {
     'db_list_connections',
     {
       title: 'List Database Connections',
-      description: 'List the connections saved in VS Code (Database Explorer), in any state. Pass a connection id to db_schema / db_read / db_execute; they connect automatically. New connections are added by the user in VS Code.',
+      description: 'List the connections saved in VS Code (Database Explorer), in any state. Pass a connection id to db_schema / db_read / db_execute; they connect automatically. Connections listed with readOnly: true reject db_execute (code READONLY_VIOLATION); db_schema and db_read still work. New connections are added by the user in VS Code.',
       inputSchema: {},
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },

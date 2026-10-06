@@ -102,6 +102,7 @@ describe('IpcServer', () => {
     expect(resp.result[0].name).toBe('test-db');
     expect(resp.result[0].driverType).toBe('mysql');
     expect(resp.result[0]).not.toHaveProperty('password');
+    expect(resp.result[0]).not.toHaveProperty('readOnly');
   });
 
   it('should auto-connect and run read through the read-only path with default database', async () => {
@@ -149,6 +150,27 @@ describe('IpcServer', () => {
     await sendRequest(SOCKET_PATH, { id: '9', method: 'execute', params: { connectionId: 'test-id', query: 'DELETE FROM users WHERE id = 1' } });
     expect(warn).not.toHaveBeenCalled();
     expect(cm.getDriver().executeBatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('只读连接: listConnections 标出 readOnly; execute 不弹确认, 不连接, 回 READONLY_VIOLATION; read 照常', async () => {
+    await new Promise(r => setTimeout(r, 100));
+    const ro = { ...cm.getConnections()[0], readOnly: true };
+    cm.getConnections.mockReturnValue([ro]);
+    cm.getConnectionInfo.mockReturnValue([{ config: ro, state: 'disconnected' }]);
+    const warn = vi.spyOn(vscode.window, 'showWarningMessage').mockClear();
+
+    const list = await sendRequest(SOCKET_PATH, { id: '10', method: 'listConnections' });
+    expect(list.result[0].readOnly).toBe(true);
+
+    const exec = await sendRequest(SOCKET_PATH, { id: '11', method: 'execute', params: { connectionId: 'test-id', query: 'DROP TABLE users' } });
+    expect(JSON.parse(exec.result.content[0].text)).toEqual({ error: 'Connection test-db is read-only', code: 'READONLY_VIOLATION' });
+    expect(warn).not.toHaveBeenCalled();
+    expect(cm.connect).not.toHaveBeenCalled();
+    expect(cm.getDriver().executeBatch).not.toHaveBeenCalled();
+
+    const read = await sendRequest(SOCKET_PATH, { id: '12', method: 'read', params: { connectionId: 'test-id', query: 'SELECT 1' } });
+    expect(read.result.isError).toBeUndefined();
+    expect(cm.getDriver().executeReadOnly).toHaveBeenCalled();
   });
 
   it('should keep socket dir private', () => {

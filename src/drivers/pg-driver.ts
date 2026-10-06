@@ -320,7 +320,7 @@ export class PgDriver implements IDatabaseDriver {
     };
   }
 
-  executeBatch(statements: readonly string[], database?: string): {
+  executeBatch(statements: readonly string[], database?: string, options?: { readonly readOnly?: boolean }): {
     promise: Promise<BatchOutcome>;
     cancel: () => void;
   } {
@@ -339,6 +339,10 @@ export class PgDriver implements IDatabaseDriver {
         client = await pool.connect();
         // pg.PoolClient 的类型定义未暴露 processID, 运行时存在, 供 pg_cancel_backend(pid) 使用
         pid = (client as unknown as { processID: number }).processID;
+        // 会话默认只读: 之后的隐式 / 显式事务都拒绝写与 DDL. 语句里显式 SET ... READ WRITE 能解除它: 这里防误写, 权限边界在 DB 账号
+        if (options?.readOnly) {
+          await client.query('SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY');
+        }
         for (; index < statements.length; index++) {
           const text = statements[index];
           if (cancelled) { throw new Error('Query cancelled'); }

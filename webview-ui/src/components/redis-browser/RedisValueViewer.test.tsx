@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { RedisValueViewer } from './RedisValueViewer';
 import type { RedisValue } from '../../types/redis';
+import { ReadOnlyContext } from '../../hooks/useReadOnly';
 
 // mock 子编辑器
 vi.mock('./RedisStringEditor', () => ({
@@ -111,6 +112,13 @@ describe('RedisValueViewer', () => {
     expect(screen.getByText('mykey')).toBeInTheDocument();
     expect(screen.getByText('string')).toBeInTheDocument();
     expect(screen.getByText('TTL: 5m 0s')).toBeInTheDocument();
+  });
+
+  it('只读连接不给 Set TTL / Delete', () => {
+    const value: RedisValue = { type: 'string', value: 'v' };
+    render(<ReadOnlyContext.Provider value={true}><RedisValueViewer {...defaultProps} keyName="k" value={value} /></ReadOnlyContext.Provider>);
+    expect(screen.queryByText('Set TTL')).toBeNull();
+    expect(screen.queryByText('Delete')).toBeNull();
   });
 
   it('TTL -1 显示 No expiry', () => {

@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from 'react';
 import type { GlobalCollectionInfo } from './MongoBrowser';
+import { useReadOnly } from '../../hooks/useReadOnly';
 
 interface SelectedCollection {
   readonly database: string;
@@ -22,6 +23,7 @@ function formatCount(n: number): string {
 }
 
 export function MongoCollectionList({ collections, selected, loading, onSelectCollection, onCreateCollection, onDropCollection }: MongoCollectionListProps) {
+  const readOnly = useReadOnly();
   const [filter, setFilter] = useState('');
 
   const filtered = useMemo(() => {
@@ -72,11 +74,13 @@ export function MongoCollectionList({ collections, selected, loading, onSelectCo
               <div key={database} className="mongo-db-group">
                 <div className="mongo-db-header">
                   <span className="mongo-db-name">{database}</span>
-                  <button
-                    className="mongo-db-action-btn"
-                    title={`Create collection in ${database}`}
-                    onClick={(e) => { e.stopPropagation(); onCreateCollection(database); }}
-                  >+</button>
+                  {!readOnly && (
+                    <button
+                      className="mongo-db-action-btn"
+                      title={`Create collection in ${database}`}
+                      onClick={(e) => { e.stopPropagation(); onCreateCollection(database); }}
+                    >+</button>
+                  )}
                 </div>
                 {cols.map((c) => (
                   <div
@@ -86,11 +90,13 @@ export function MongoCollectionList({ collections, selected, loading, onSelectCo
                   >
                     <span className="collection-name">{c.name}</span>
                     <span className="collection-count">{formatCount(c.count)}</span>
-                    <button
-                      className="mongo-collection-drop-btn"
-                      title={`Drop ${c.name}`}
-                      onClick={(e) => { e.stopPropagation(); onDropCollection(database, c.name); }}
-                    >{'\u{1F5D1}'}</button>
+                    {!readOnly && (
+                      <button
+                        className="mongo-collection-drop-btn"
+                        title={`Drop ${c.name}`}
+                        onClick={(e) => { e.stopPropagation(); onDropCollection(database, c.name); }}
+                      >{'\u{1F5D1}'}</button>
+                    )}
                   </div>
                 ))}
               </div>

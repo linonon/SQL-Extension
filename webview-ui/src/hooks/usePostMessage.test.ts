@@ -87,6 +87,7 @@ describe('usePostMessage', () => {
         username: 'postgres',
         password: 'pass',
         database: 'mydb',
+        readOnly: false,
         sshEnabled: false,
         sshHost: '',
         sshPort: 22,

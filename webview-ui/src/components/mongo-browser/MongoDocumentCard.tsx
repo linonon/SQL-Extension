@@ -5,6 +5,7 @@ import type { MongoView } from './ViewToggle';
 import { MongoDocumentDetail } from './MongoDocumentDetail';
 import { MongoFieldEditor } from './MongoFieldEditor';
 import { convertTags } from './mongo-field-editor';
+import { useReadOnly } from '../../hooks/useReadOnly';
 
 interface MongoDocumentCardProps {
   readonly doc: Record<string, unknown>;
@@ -40,6 +41,7 @@ export function MongoDocumentCard({
   onSaveError,
   saveSignal,
 }: MongoDocumentCardProps) {
+  const connectionReadOnly = useReadOnly();
   const [editMode, setEditMode] = useState<'json' | 'fields'>('json');
 
   // in-card 编辑: Fields (结构化逐字段) 与 JSON (textarea) 两种模式, 列表上下文不动 (Compass 文档列表模型)
@@ -87,10 +89,11 @@ export function MongoDocumentCard({
   }
 
   const shellText = jsonToShell(JSON.stringify(doc, null, 2));
-  // 投影排除 _id 时无法定位文档, 增删改禁用 (Copy 仍可用)
+  // 只读连接, 或投影排除 _id 时无法定位文档: 增删改禁用 (Copy 仍可用)
   const hasId = doc._id != null;
-  const noIdTitle = hasId ? undefined : 'projection 排除了 _id, 无法定位该文档进行增删改';
-  const writeBlockedTitle = noIdTitle ?? (readOnly ? 'Only a projection of top-level fields with 0/1 values can be edited' : undefined);
+  const deleteBlockedTitle = connectionReadOnly ? 'Connection is read-only'
+    : hasId ? undefined : 'projection 排除了 _id, 无法定位该文档进行增删改';
+  const writeBlockedTitle = deleteBlockedTitle ?? (readOnly ? 'Only a projection of top-level fields with 0/1 values can be edited' : undefined);
 
   return (
     <div className="mongo-doc-card">
@@ -98,7 +101,7 @@ export function MongoDocumentCard({
         <button className="btn-small" title={writeBlockedTitle ?? 'Edit'} disabled={writeBlockedTitle != null} onClick={() => onEdit(doc)}>Edit</button>
         <button className="btn-small" title="Copy" onClick={() => navigator.clipboard.writeText(shellText)}>Copy</button>
         <button className="btn-small" title={writeBlockedTitle ?? 'Clone (复制为新建, _id 可改)'} disabled={writeBlockedTitle != null} onClick={() => onClone(doc)}>Clone</button>
-        <button className="btn-small btn-danger" title={noIdTitle ?? 'Delete'} disabled={!hasId} onClick={() => onDelete(convertTags(doc._id))}>Delete</button>
+        <button className="btn-small btn-danger" title={deleteBlockedTitle ?? 'Delete'} disabled={deleteBlockedTitle != null} onClick={() => onDelete(convertTags(doc._id))}>Delete</button>
       </div>
       {view === 'list'
         ? <MongoJsonTree value={doc} />

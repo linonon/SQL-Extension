@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { RedisLoadMore } from './RedisLoadMore';
+import { useReadOnly } from '../../hooks/useReadOnly';
 
 interface RedisListEditorProps {
   readonly value: readonly string[];
@@ -23,6 +24,7 @@ export function RedisListEditor({
   onLoadMore,
   hasMore,
 }: RedisListEditorProps) {
+  const readOnly = useReadOnly();
   const [newValue, setNewValue] = useState('');
   // editMap: value 数组下标 -> edited value (只追踪被修改过的 item)
   const [editMap, setEditMap] = useState<Record<number, string>>({});
@@ -81,14 +83,17 @@ export function RedisListEditor({
               className={`value${isDirty ? ' editing-dirty' : ''}`}
               value={currentValue}
               onChange={(e) => handleEditChange(index, item, e.target.value)}
+              readOnly={readOnly}
             />
-            <button
-              className="btn-icon"
-              onClick={() => onRemove(start + index)}
-              title="Remove item"
-            >
-              x
-            </button>
+            {!readOnly && (
+              <button
+                className="btn-icon"
+                onClick={() => onRemove(start + index)}
+                title="Remove item"
+              >
+                x
+              </button>
+            )}
           </div>
         );
       })}
@@ -99,7 +104,7 @@ export function RedisListEditor({
           <button className="secondary" onClick={handleDiscardAll}>Discard</button>
         </div>
       )}
-      <div className="add-form">
+      {!readOnly && <div className="add-form">
         <input
           placeholder="Value"
           value={newValue}
@@ -118,7 +123,7 @@ export function RedisListEditor({
         >
           Push Tail
         </button>
-      </div>
+      </div>}
     </div>
   );
 }

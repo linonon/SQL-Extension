@@ -31,6 +31,12 @@ describe('tree-items', () => {
       expect(item.command?.command).toBe('sqlext.cancelConnect');
     });
 
+    it('只读连接: 描述带 (read-only), 连接中也带', () => {
+      expect(new ConnectionTreeItem('c', 'Release', 'db', 3306, 'mysql', 'disconnected', true).description).toBe('db:3306 (read-only)');
+      expect(new ConnectionTreeItem('c', 'Release', 'db', 3306, 'mysql', 'connecting', true).description).toBe('Connecting... (read-only)');
+      expect(new ConnectionTreeItem('c', 'Test', 'db', 3306, 'mysql', 'connected').description).toBe('db:3306');
+    });
+
     it('should store connection metadata', () => {
       const item = new ConnectionTreeItem('conn-id-123', 'Test', '192.168.1.1', 9999, 'mysql', 'connected');
 

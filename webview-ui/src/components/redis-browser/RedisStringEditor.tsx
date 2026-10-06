@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { formatJsonLossless } from '../../utils/json-format';
+import { useReadOnly } from '../../hooks/useReadOnly';
 
 interface RedisStringEditorProps {
   readonly value: string;
@@ -16,6 +17,7 @@ function isJson(value: string): boolean {
 }
 
 export function RedisStringEditor({ value, onSave }: RedisStringEditorProps) {
+  const readOnly = useReadOnly();
   const [text, setText] = useState('');
   const [canFormat, setCanFormat] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -47,11 +49,14 @@ export function RedisStringEditor({ value, onSave }: RedisStringEditorProps) {
         value={text}
         onChange={handleChange}
         spellCheck={false}
+        readOnly={readOnly}
       />
       <div className="editor-actions">
-        <button onClick={handleSave} disabled={!dirty}>
-          Save
-        </button>
+        {!readOnly && (
+          <button onClick={handleSave} disabled={!dirty}>
+            Save
+          </button>
+        )}
         {canFormat && (
           <button className="secondary" onClick={handleFormat}>
             Format JSON

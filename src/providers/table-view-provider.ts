@@ -1,17 +1,18 @@
 import * as vscode from 'vscode';
-import { newConnectionId, type ConnectionManager } from '../services/connection-manager.js';
+import { newConnectionId, writeBlockedReason, type ConnectionManager } from '../services/connection-manager.js';
 import { QueryService } from '../services/query-service.js';
 import { CredentialStore } from '../services/credential-store.js';
 import { createTunnel } from '../services/ssh-tunnel.js';
 import type { WebviewMessage, ViewType, SaveConnectionConfig, UpdateConnectionConfig } from '../types/messages.js';
 import type { ConnectionFormSSH } from '../types/messages.js';
-import type { DriverType, SSHTunnelConfig } from '../types/connection.js';
+import type { ConnectionConfig, DriverType, SSHTunnelConfig } from '../types/connection.js';
 import type { AlterTableChanges } from '../types/query.js';
 import { handleRedisMessage, exportRedisKeys, importRedisKeys, validateTtlInput, parseCommandArgs } from './redis-message-handler.js';
 import { handleKafkaMessage } from './kafka-message-handler.js';
 import { handleMongoMessage, buildExportPipeline } from './mongo-message-handler.js';
 import { getWebviewContent, getWebviewOptions } from './webview-helper.js';
 import { handleSqlMessage, type SqlMessageContext } from './sql-message-handler.js';
+import { readOnlyRejection } from './read-only-gate.js';
 import { cancelAiAsk } from '../services/ai-assist.js';
 import { sanitizeErrorMessage } from '../utils/sanitize-error.js';
 
@@ -42,9 +43,13 @@ export class TableViewProvider implements vscode.Disposable {
     private readonly credentialStore: CredentialStore
   ) {}
 
+  private connectionConfig(connectionId: string): ConnectionConfig | undefined {
+    return this.connectionManager.getConnections().find((c) => c.id === connectionId);
+  }
+
   // 独立 panel 的标题与 badge 带连接名: 不同环境的同名库 (test / release 的 game) 要能一眼分开
   private connectionName(connectionId: string): string {
-    return this.connectionManager.getConnections().find((c) => c.id === connectionId)?.name ?? connectionId;
+    return this.connectionConfig(connectionId)?.name ?? connectionId;
   }
 
   openQueryEditor(connectionId: string, database: string): void {
@@ -127,7 +132,7 @@ export class TableViewProvider implements vscode.Disposable {
   }
 
   openKafkaBrowser(connectionId: string): void {
-    this.openBrowser(`kafka:${connectionId}`, 'Kafka Browser', 'kafka-browser', {
+    this.openBrowser(`kafka:${connectionId}`, `Kafka - ${this.connectionName(connectionId)}`, 'kafka-browser', {
       connectionId,
     });
   }
@@ -172,8 +177,9 @@ export class TableViewProvider implements vscode.Disposable {
     const config = this.connectionManager.getConnections().find((c) => c.id === connectionId);
     if (!config) { return; }
 
-    const password = (await this.credentialStore.getPassword(connectionId)) ?? '';
-    const sshPassword = (await this.credentialStore.getSSHPassword(connectionId)) ?? '';
+    // 已存的密码不进 webview, 只告诉表单有没有; 表单里留空即沿用已存的值
+    const hasPassword = !!(await this.credentialStore.getPassword(connectionId));
+    const hasSshPassword = !!(await this.credentialStore.getSSHPassword(connectionId));
 
     this.createPanel(panelKey, 'Edit Connection', 'connection-form', {
       editConnection: {
@@ -183,7 +189,7 @@ export class TableViewProvider implements vscode.Disposable {
         host: config.host,
         port: config.port,
         username: config.username,
-        password,
+        hasPassword,
         database: config.database,
         authSource: config.authSource,
         separator: config.separator ?? ':',
@@ -192,8 +198,9 @@ export class TableViewProvider implements vscode.Disposable {
         sshPort: config.ssh?.port ?? 22,
         sshUsername: config.ssh?.username ?? '',
         sshAuthType: config.ssh?.authType ?? 'password',
-        sshPassword,
+        hasSshPassword,
         sshPrivateKeyPath: config.ssh?.privateKeyPath ?? '',
+        readOnly: config.readOnly ?? false,
       },
     });
   }
@@ -205,9 +212,13 @@ export class TableViewProvider implements vscode.Disposable {
     context: Record<string, unknown>,
     iconPath?: { light: vscode.Uri; dark: vscode.Uri }
   ): void {
+    // 只读连接: 标题带标记, webview 据 context.readOnly 隐藏写控件 (拦截在 handleMessage)
+    const connectionId = context.connectionId as string | undefined;
+    const readOnly = connectionId !== undefined && this.connectionConfig(connectionId)?.readOnly === true;
+    const viewContext = readOnly ? { ...context, readOnly: true } : context;
     const panel = vscode.window.createWebviewPanel(
       'sqlext.webview',
-      title,
+      readOnly ? `${title} (read-only)` : title,
       vscode.ViewColumn.One,
       getWebviewOptions(this.extensionUri)
     );
@@ -236,7 +247,7 @@ export class TableViewProvider implements vscode.Disposable {
     // webview ready 后发送初始化消息
     const readyHandler = panel.webview.onDidReceiveMessage((msg: WebviewMessage) => {
       if (msg.type === 'ready') {
-        panel.webview.postMessage({ type: 'viewInit', view: viewType, context });
+        panel.webview.postMessage({ type: 'viewInit', view: viewType, context: viewContext });
         readyHandler.dispose();
       }
     });
@@ -249,6 +260,16 @@ export class TableViewProvider implements vscode.Disposable {
   ): Promise<void> {
     const connectionId = context.connectionId as string | undefined;
 
+    // 只读连接的写消息统一在这里拒绝 (每条消息现读配置): 宿主是边界, webview 只是隐藏写控件
+    const blocked = connectionId ? writeBlockedReason(this.connectionConfig(connectionId)) : undefined;
+    const rejection = blocked ? readOnlyRejection(message, blocked) : undefined;
+    if (rejection !== undefined) {
+      // 命令栏的拒绝写在命令输出里, 其余弹提示
+      if (rejection?.type !== 'redisCommandResult') { void vscode.window.showErrorMessage(blocked!); }
+      if (rejection) { panel.webview.postMessage(rejection); }
+      return;
+    }
+
     // SQL (MySQL/PostgreSQL) CRUD + db-browser 导航 + dump/import 由 sql-message-handler 处理
     const sqlCtx: SqlMessageContext = {
       getDriver: () => this.connectionManager.getDriver(connectionId!),
@@ -258,13 +279,15 @@ export class TableViewProvider implements vscode.Disposable {
       pendingCancels: this.pendingCancels,
       database: context.database as string | undefined,
       getSchema: (database, forceRefresh) => this.getCachedSchema(connectionId!, database, forceRefresh),
+      readOnly: blocked !== undefined,
     };
     if (await handleSqlMessage(message, sqlCtx)) { return; }
 
     try {
       switch (message.type) {
         case 'testConnection': {
-          await this.testConnection(panel, message.config);
+          // 编辑表单的 panel context 带被编辑连接的 id: 表单里留空的密码用它的已存值
+          await this.testConnection(panel, message.config, (context.editConnection as { id: string } | undefined)?.id);
           break;
         }
 
@@ -274,7 +297,9 @@ export class TableViewProvider implements vscode.Disposable {
         }
 
         case 'updateConnection': {
-          await this.updateExistingConnection(panel, message.config);
+          // 被改的连接只认编辑表单 panel 的 context, 不信消息里的 id: 其他 panel 不能把已存密码指向别的 host
+          const editId = (context.editConnection as { id: string } | undefined)?.id;
+          if (editId) { await this.updateExistingConnection(panel, editId, message.config); }
           break;
         }
 
@@ -620,7 +645,8 @@ export class TableViewProvider implements vscode.Disposable {
 
   private async testConnection(
     panel: vscode.WebviewPanel,
-    config: { driverType: DriverType; host: string; port: number; username: string; password: string; database: string; authSource?: string } & ConnectionFormSSH
+    config: { driverType: DriverType; host: string; port: number; username: string; password: string; database: string; authSource?: string } & ConnectionFormSSH,
+    editId?: string
   ): Promise<void> {
     type TestableDriver = { connect(config: import('../types/connection.js').ConnectionConfig & { readonly password: string }): Promise<void>; disconnect(): Promise<void> };
     const DRIVER_FACTORIES: Record<string, () => Promise<TestableDriver>> = {
@@ -635,6 +661,11 @@ export class TableViewProvider implements vscode.Disposable {
     if (!factory) { throw new Error(`Unsupported driver type: ${config.driverType}`); }
     const driver = await factory();
     let tunnelClose: (() => void) | undefined;
+    let { password, sshPassword } = config;
+    if (editId) {
+      if (!password) { password = (await this.credentialStore.getPassword(editId)) ?? ''; }
+      if (!sshPassword) { sshPassword = (await this.credentialStore.getSSHPassword(editId)) ?? ''; }
+    }
 
     try {
       let connectHost = config.host;
@@ -642,7 +673,7 @@ export class TableViewProvider implements vscode.Disposable {
 
       if (config.sshEnabled) {
         const sshConfig = buildSSHConfig(config)!;
-        const tunnel = await createTunnel(sshConfig, config.sshPassword, config.host, config.port);
+        const tunnel = await createTunnel(sshConfig, sshPassword, config.host, config.port);
         tunnelClose = tunnel.close;
         connectHost = '127.0.0.1';
         connectPort = tunnel.localPort;
@@ -655,7 +686,7 @@ export class TableViewProvider implements vscode.Disposable {
         host: connectHost,
         port: connectPort,
         username: config.username,
-        password: config.password,
+        password,
         database: config.database,
         authSource: config.authSource,
         // driver 据此判断是否走 tunnel (如 Mongo 需 directConnection)
@@ -690,6 +721,7 @@ export class TableViewProvider implements vscode.Disposable {
         authSource: config.authSource,
         separator: config.separator,
         ssh: buildSSHConfig(config),
+        readOnly: config.readOnly,
       },
       config.password,
       config.sshEnabled ? config.sshPassword : undefined
@@ -700,12 +732,14 @@ export class TableViewProvider implements vscode.Disposable {
 
   private async updateExistingConnection(
     panel: vscode.WebviewPanel,
+    id: string,
     config: UpdateConnectionConfig
   ): Promise<void> {
+    const readOnlyChanged = (this.connectionConfig(id)?.readOnly ?? false) !== (config.readOnly ?? false);
     await this.connectionManager.updateConnection(
-      config.id,
+      id,
       {
-        id: config.id,
+        id,
         name: config.name,
         driverType: config.driverType,
         host: config.host,
@@ -715,12 +749,24 @@ export class TableViewProvider implements vscode.Disposable {
         authSource: config.authSource,
         separator: config.separator,
         ssh: buildSSHConfig(config),
+        readOnly: config.readOnly,
       },
-      config.password,
-      config.sshEnabled ? config.sshPassword : undefined
+      // 空串 = 表单没改, 保留已存的值; 关掉 SSH 时 updateConnection 删掉已存的 SSH 密码
+      config.password || undefined,
+      config.sshPassword || undefined
     );
     panel.dispose();
+    if (readOnlyChanged) { this.disposeConnectionPanels(id); }
     vscode.window.showInformationMessage(`Connection "${config.name}" updated`);
+  }
+
+  // 只读标题与 webview 的写控件在建 panel 时定下, 切换只读后关掉该连接已开的 panel, 重开时按新配置生成.
+  // panel key 形如 `<kind>:<connectionId>` 或 `<kind>:<connectionId>:...`
+  private disposeConnectionPanels(connectionId: string): void {
+    for (const [key, panel] of [...this.panels]) {
+      const rest = key.slice(key.indexOf(':') + 1);
+      if (rest === connectionId || rest.startsWith(`${connectionId}:`)) { panel.dispose(); }
+    }
   }
 
   dispose(): void {

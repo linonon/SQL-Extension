@@ -26,8 +26,10 @@ interface ConnectionFormBase extends ConnectionFormSSH {
 
 export interface SaveConnectionConfig extends ConnectionFormBase {
   readonly name: string;
+  readonly readOnly: boolean;
 }
 
+// 编辑表单拿不到已存的密码: password / sshPassword 为空串表示保留已存的值
 export interface UpdateConnectionConfig extends SaveConnectionConfig {
   readonly id: string;
 }
@@ -110,6 +112,7 @@ export type WebviewMessage =
   | { type: 'aiSetModel'; id: string }
   | { type: 'requestSchema'; database: string }
   | { type: 'refreshSchema'; database: string }
+  // 从编辑表单发出时, 留空的密码由宿主取 panel 所编辑连接的已存值
   | { type: 'testConnection'; config: ConnectionFormBase }
   | { type: 'saveConnection'; config: SaveConnectionConfig }
   | { type: 'updateConnection'; config: UpdateConnectionConfig }

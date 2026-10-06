@@ -221,6 +221,7 @@ describe('ConnectionManager', () => {
         username: 'root',
         database: 'app',
         ssh: { enabled: true, host: 'jump', port: 22, username: 'ops', authType: 'password' },
+        readOnly: true,
       };
       const snapshot = structuredClone(source);
       const secrets: Record<string, string> = {
@@ -242,6 +243,35 @@ describe('ConnectionManager', () => {
       expect(mockSecrets.store).toHaveBeenCalledTimes(2);
       expect(mockSecrets.delete).not.toHaveBeenCalled();
       expect(source).toEqual(snapshot);
+    });
+  });
+
+  describe('updateConnection', () => {
+    const base: ConnectionConfig = {
+      id: 'c1', name: 'Release', driverType: 'mysql', host: 'db', port: 3306, username: 'root', database: 'app',
+      ssh: { enabled: true, host: 'jump', port: 22, username: 'ops', authType: 'password' },
+    };
+
+    it('密码为 undefined 时保留已存的 DB / SSH 密码', async () => {
+      mockGlobalState.get.mockReturnValue([base]);
+      await manager.updateConnection('c1', { ...base, readOnly: true });
+      expect(mockGlobalState.update).toHaveBeenCalledWith('sqlext.connections', [{ ...base, readOnly: true }]);
+      expect(mockSecrets.store).not.toHaveBeenCalled();
+      expect(mockSecrets.delete).not.toHaveBeenCalled();
+    });
+
+    it('给了新值就替换', async () => {
+      mockGlobalState.get.mockReturnValue([base]);
+      await manager.updateConnection('c1', base, 'new-db', 'new-ssh');
+      expect(mockSecrets.store).toHaveBeenCalledWith('sqlext.password.c1', 'new-db');
+      expect(mockSecrets.store).toHaveBeenCalledWith('sqlext.sshPassword.c1', 'new-ssh');
+    });
+
+    it('关掉 SSH 时删除已存的 SSH 密码, DB 密码不动', async () => {
+      mockGlobalState.get.mockReturnValue([base]);
+      await manager.updateConnection('c1', { ...base, ssh: undefined }, undefined, 'ignored');
+      expect(mockSecrets.delete).toHaveBeenCalledWith('sqlext.sshPassword.c1');
+      expect(mockSecrets.store).not.toHaveBeenCalled();
     });
   });
 

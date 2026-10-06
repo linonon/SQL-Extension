@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryEditor, readOnlyReason } from './QueryEditor';
+import { ReadOnlyContext } from '../../hooks/useReadOnly';
 import { mockPostMessage } from '../../__test__/setup';
 import type { ExtensionMessage } from '../../types/messages';
 import type { ColumnInfo } from '../../types/database';
@@ -440,6 +441,25 @@ describe('QueryEditor', () => {
     expect(grid).toHaveAttribute('data-editable', 'false');
     expect(grid).toHaveAttribute('data-readonly', 'Read-only: result is not a plain selection from users');
     expect(grid).toHaveAttribute('data-can-insert', 'true');
+  });
+
+  it('只读连接: 本表的结果也不可编辑 / 插入, badge 标出 (read-only)', () => {
+    render(
+      <ReadOnlyContext.Provider value={true}>
+        <QueryEditor connectionId="c" connectionName="release" database="db" table="users" initialSql="SELECT * FROM users" autoExecute />
+      </ReadOnlyContext.Provider>
+    );
+    const src = { schema: 'db', table: 'users' };
+    send({ type: 'columnsResult', requestId: lastId('listColumns'), columns: [col('id', { isPrimaryKey: true }), col('name')] });
+    send({
+      type: 'queryResult', requestId: lastId('executeQuery'),
+      columns: [col('id', { source: src }), col('name', { source: src })], rows: [{ id: 1, name: 'a' }], affectedRows: 0, executionTime: 1,
+    });
+    const grid = screen.getByTestId('query-results');
+    expect(grid).toHaveAttribute('data-editable', 'false');
+    expect(grid).toHaveAttribute('data-readonly', 'Read-only: connection is read-only');
+    expect(grid).toHaveAttribute('data-can-insert', 'false');
+    expect(screen.getByText('release / db (read-only)')).toBeInTheDocument();
   });
 
   it('Save 成功回执: 网格未被新查询替换才重跑刷新, 否则不重跑用户新执行的语句', () => {

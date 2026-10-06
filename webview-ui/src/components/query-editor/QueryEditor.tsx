@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useVSCodeMessage } from '../../hooks/useVSCodeMessage';
 import { usePostMessage } from '../../hooks/usePostMessage';
+import { useReadOnly } from '../../hooks/useReadOnly';
 import { formatSql } from '../../utils/format-sql';
 import { diagnoseSql } from '../../utils/sql-linter';
 import { buildSelectSql } from '../../utils/sql-builder';
@@ -96,7 +97,8 @@ export function readOnlyReason(
 let requestSeq = 0;
 
 export function QueryEditor({ connectionName, database, driverType, initialSql, autoExecute, table, onPendingEditsChange }: QueryEditorProps) {
-  const dbLabel = connectionName ? `${connectionName} / ${database}` : database;
+  const readOnly = useReadOnly();
+  const dbLabel = (connectionName ? `${connectionName} / ${database}` : database) + (readOnly ? ' (read-only)' : '');
   const [sqlText, setSqlText] = useState(initialSql ?? '');
   const [executing, setExecuting] = useState(false);
   const [result, setResult] = useState<ResultState | null>(null);
@@ -301,13 +303,15 @@ export function QueryEditor({ connectionName, database, driverType, initialSql, 
     setShowHistory((prev) => !prev);
   }, []);
 
-  // 仅 db-browser 点表 (有 table) 且表结构已到达时判定; PG 的 db-browser 只列 public schema 的表
-  const lockReason = table && fullColumns.length > 0 && result
-    ? readOnlyReason(result.columns, fullColumns, driverType === 'postgresql' ? 'public' : database, table)
-    : undefined;
+  // 仅 db-browser 点表 (有 table) 时判定: 只读连接一律只读, 否则等表结构到达按结果来源判定; PG 的 db-browser 只列 public schema 的表
+  const lockReason = table && result && readOnly
+    ? 'Read-only: connection is read-only'
+    : table && fullColumns.length > 0 && result
+      ? readOnlyReason(result.columns, fullColumns, driverType === 'postgresql' ? 'public' : database, table)
+      : undefined;
   const editable = lockReason === null;
   // Insert / Clone 显式写 panel 表, 不依赖结果来源, 只要求表有主键
-  const canInsert = !!table && fullColumns.some((c) => c.isPrimaryKey);
+  const canInsert = !readOnly && !!table && fullColumns.some((c) => c.isPrimaryKey);
 
   const handleBatchSave = useCallback(
     (updates: { primaryKeys: Record<string, unknown>; changes: Record<string, unknown> }[]) => {
