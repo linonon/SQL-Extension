@@ -20,6 +20,8 @@ import '../../styles/data-grid.css';
 
 interface QueryEditorProps {
   readonly connectionId: string;
+  // 独立 Query panel 传入, badge 显示 "连接 / 库" 区分不同环境的同名库; db-browser 内嵌时标题已带连接名, 不传
+  readonly connectionName?: string;
   readonly database: string;
   readonly driverType?: string;
   readonly initialSql?: string;
@@ -93,7 +95,8 @@ export function readOnlyReason(
 // 请求序号在整个 webview 内递增: db-browser 切表会重挂载编辑器, 旧实例的请求不能与新实例的撞号
 let requestSeq = 0;
 
-export function QueryEditor({ database, driverType, initialSql, autoExecute, table, onPendingEditsChange }: QueryEditorProps) {
+export function QueryEditor({ connectionName, database, driverType, initialSql, autoExecute, table, onPendingEditsChange }: QueryEditorProps) {
+  const dbLabel = connectionName ? `${connectionName} / ${database}` : database;
   const [sqlText, setSqlText] = useState(initialSql ?? '');
   const [executing, setExecuting] = useState(false);
   const [result, setResult] = useState<ResultState | null>(null);
@@ -429,7 +432,7 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
           <button onClick={() => setShowAsk(true)} title="Ask Copilot about this query">
             Ask AI
           </button>
-          <span className="db-badge" title={`Current database: ${database}`}>{database}</span>
+          <span className="db-badge" title={`Current database: ${dbLabel}`}>{dbLabel}</span>
           <span className="hint">Ctrl+Enter to execute the statement at cursor</span>
         </div>
       </div>

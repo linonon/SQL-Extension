@@ -103,6 +103,11 @@ describe('QueryEditor', () => {
     expect(screen.getByText('Ctrl+Enter to execute the statement at cursor')).toBeInTheDocument();
   });
 
+  it('badge 带上连接名, 区分不同环境的同名库', () => {
+    render(<QueryEditor connectionId="conn-1" connectionName="release" database="game" />);
+    expect(screen.getByText('release / game')).toBeInTheDocument();
+  });
+
   it('应该在 SQL 为空时禁用 Execute 按钮', () => {
     render(<QueryEditor connectionId="conn-1" database="test_db" />);
 

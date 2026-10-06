@@ -2,14 +2,42 @@ import * as net from 'net';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import * as vscode from 'vscode';
 import type { ConnectionManager } from './connection-manager.js';
-import { routeByDriver, type DriverSource, type RouteMode } from './query-router.js';
+import { isDestructiveRequest, routeByDriver, type DriverSource, type RouteMode } from './query-router.js';
+import { ErrorCode } from './utils.js';
+import { makeError } from '../mcp/tools/mcp-result.js';
 import { sanitizeErrorMessage } from '../utils/sanitize-error.js';
 
 export const SOCKET_DIR = path.join(os.homedir(), '.sql-extension');
 // 每个窗口 (extension host) 一个 socket: 共用固定路径时, 后启动的窗口抢走路径,
 // 任一窗口关闭 (libuv close 按名字 unlink) 又把别人的路径删掉. MCP 端按 mtime 挑最新的连.
 export const SOCKET_PATH = path.join(SOCKET_DIR, `ipc-${process.pid}.sock`);
+
+const CONFIRM_TIMEOUT_MS = 60_000;
+const CONFIRM_PREVIEW_CHARS = 300;
+
+// agent 的破坏性请求在本窗口 (持有 IPC socket 的窗口) 弹 modal 确认, 返回拒绝原因, 放行返回 undefined.
+// execute 在 MCP 端不设超时, 用户看不到这个窗口时不能让 agent 一直挂着: 60s 无应答按拒绝处理.
+// 超时后 modal 仍留在屏幕上, 之后再点 Run 不会执行
+// 长语句保留首尾各一半: 决定破坏性的部分可能在尾部 (缺 WHERE, 长注释后的 DROP)
+export async function confirmAgentRequest(target: string, query: string): Promise<string | undefined> {
+  const q = query.trim();
+  const half = CONFIRM_PREVIEW_CHARS / 2;
+  const stmt = q.length > CONFIRM_PREVIEW_CHARS ? `${q.slice(0, half)} ... ${q.slice(-half)}` : q;
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<'timeout'>((resolve) => { timer = setTimeout(() => resolve('timeout'), CONFIRM_TIMEOUT_MS); });
+  try {
+    const answer = await Promise.race([
+      vscode.window.showWarningMessage(`An agent wants to run a destructive request on ${target}: ${stmt}`, { modal: true }, 'Run'),
+      timeout,
+    ]);
+    if (answer === 'Run') { return undefined; }
+    return answer === 'timeout' ? `No answer within ${CONFIRM_TIMEOUT_MS / 1000}s, not executed` : 'Denied by user';
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 interface IpcRequest {
   readonly id: string;
@@ -115,7 +143,13 @@ export class IpcServer {
       case 'read':
       case 'execute': {
         const id = params.connectionId as string;
+        const query = params.query as string;
         const config = this.findConfig(id);
+        const database = (params.database as string | undefined) || config.database || undefined;
+        if (method === 'execute' && isDestructiveRequest(config.driverType, query)) {
+          const denied = await confirmAgentRequest(database ? `${config.name}/${database}` : config.name, query);
+          if (denied) { return makeError(denied, ErrorCode.NOT_CONFIRMED); }
+        }
         await this.ensureConnected(id);
         const cm = this.connectionManager;
         const drivers: DriverSource = {
@@ -125,8 +159,7 @@ export class IpcServer {
           getKafkaDriver: (i) => cm.getKafkaDriver(i),
           getRabbitMQDriver: (i) => cm.getRabbitMQDriver(i),
         };
-        const database = (params.database as string | undefined) || config.database || undefined;
-        return routeByDriver(method as RouteMode, config.driverType, id, params.query as string, database, drivers);
+        return routeByDriver(method as RouteMode, config.driverType, id, query, database, drivers);
       }
 
       case 'listDatabases': {

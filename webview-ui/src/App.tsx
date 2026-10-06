@@ -38,6 +38,7 @@ export function App() {
       return (
         <QueryEditor
           connectionId={viewContext.connectionId as string}
+          connectionName={viewContext.connectionName as string | undefined}
           database={viewContext.database as string}
           driverType={viewContext.driverType as string | undefined}
           initialSql={viewContext.initialSql as string | undefined}

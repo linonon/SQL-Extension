@@ -1,4 +1,5 @@
-// readonly SQL 预检 (友好报错用, 真正的只读边界是 driver.executeReadOnly 的只读事务)
+// readonly SQL 预检: best-effort, 只为给出友好报错. 真正的只读边界是 driver.executeReadOnly 的只读事务和 DB 账号权限,
+// 文本检查挡不全 (如带引号的函数名 "pg_terminate_backend"(1), dblink_send_query), 不要靠逐条加黑名单正则来补
 // 只允许 SELECT/SHOW/DESCRIBE/DESC/EXPLAIN/WITH 开头的语句: 挡住 MySQL DDL (DDL 会隐式提交, 只读事务挡不住)
 // 拒绝任何 INTO: 只读事务挡不住 MySQL INTO OUTFILE/DUMPFILE; 在原文上查, 宁可误杀字面量里的 into
 // 拒绝多语句 (去掉字符串常量后检查分号)
@@ -7,7 +8,7 @@ const ALLOWED_PREFIXES = ['SELECT', 'SHOW', 'DESCRIBE', 'DESC', 'EXPLAIN', 'WITH
 
 const MAX_LIMIT = 500;
 
-// 只读事务管不到的会话级 / 跨会话副作用: 命名锁, advisory lock, 杀连接, 远程执行
+// 只读事务管不到的会话级 / 跨会话副作用的常见写法: 命名锁, advisory lock, 杀连接, 远程执行 (best-effort, 不是完整清单)
 const SIDE_EFFECT_FUNCS = /\b(get_lock|pg_(try_)?advisory_(xact_)?lock(_shared)?|pg_terminate_backend|pg_cancel_backend|pg_reload_conf|dblink(_exec)?)\s*\(/i;
 
 export function isMultiStatement(sql: string): boolean {

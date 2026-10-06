@@ -73,6 +73,10 @@ export enum ProgressLocation {
   Notification = 15,
 }
 
+export enum ViewColumn {
+  One = 1,
+}
+
 export const commands = {
   registerCommand: (_id: string, _handler: Function) => ({ dispose: () => {} }),
 };

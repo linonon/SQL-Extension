@@ -103,7 +103,27 @@
     "menus": {
       "commandPalette": [
         {
+          "command": "sqlext.removeConnection",
+          "when": "false"
+        },
+        {
+          "command": "sqlext.connect",
+          "when": "false"
+        },
+        {
+          "command": "sqlext.disconnect",
+          "when": "false"
+        },
+        {
+          "command": "sqlext.editConnection",
+          "when": "false"
+        },
+        {
           "command": "sqlext.duplicateConnection",
+          "when": "false"
+        },
+        {
+          "command": "sqlext.cancelConnect",
           "when": "false"
         }
       ],

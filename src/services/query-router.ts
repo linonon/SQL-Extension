@@ -8,6 +8,7 @@ import { userFilter, type MongoDriver } from '../drivers/mongo-driver.js';
 import { convertEjsonToBson } from '../utils/mongo-shell-to-json.js';
 import { ErrorCode } from './utils.js';
 import { isReadonlySQL, enforceLimit, isMultiStatement } from './sql-validator.js';
+import { isWholeTableWrite } from '../utils/destructive-sql.js';
 import { parseRedisCommand } from './parsers/redis-parser.js';
 import { parseMongoQuery, READ_METHODS } from './parsers/mongo-parser.js';
 import { parseKafkaQuery, READ_ACTIONS } from './parsers/kafka-parser.js';
@@ -58,6 +59,33 @@ export interface DriverSource {
   getMongoDriver(id: string): MongoDriver;
   getKafkaDriver(id: string): IKafkaDriver;
   getRabbitMQDriver(id: string): IRabbitMQDriver;
+}
+
+// db_execute 里执行前要用户确认的破坏性请求: SQL 的 DROP / TRUNCATE / 无 WHERE 的 DELETE / UPDATE,
+// Redis 清库, Mongo 整集合的批量删改 ({_all: true}) 与删索引. 解析失败或会被路由直接拒绝的请求
+// (SQL 多语句, Mongo 空 filter 批量操作, _all 混入其他条件) 不算, 由路由照常回错误
+export function isDestructiveRequest(driverType: string, query: string): boolean {
+  try {
+    switch (driverType) {
+      case 'mysql':
+      case 'postgresql':
+        return !isMultiStatement(query) && isWholeTableWrite(query);
+      case 'redis': {
+        const cmd = parseRedisCommand(query)[0].toUpperCase();
+        return cmd === 'FLUSHDB' || cmd === 'FLUSHALL';
+      }
+      case 'mongodb': {
+        const { method, filter } = parseMongoQuery(query);
+        return method === 'dropIndex'
+          || ((method === 'deleteMany' || method === 'updateMany')
+            && filter?._all === true && Object.keys(filter).length === 1);
+      }
+      default:
+        return false;
+    }
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -221,14 +249,18 @@ async function routeMongo(
   } else {
     if (
       (params.method === 'deleteMany' || params.method === 'updateMany') &&
-      params.filter && Object.keys(params.filter).length === 0
+      (!params.filter || Object.keys(params.filter).length === 0)
     ) {
       return makeError(
         'Empty filter on bulk operation is dangerous. Use {"_all": true} in filter to confirm.',
         ErrorCode.DANGEROUS_OPERATION,
       );
     }
-    if (params.filter && '_all' in params.filter && params.filter._all === true) {
+    // {_all: true} 是整集合操作的显式确认, 只能单独出现, 否则同处的其他条件会被丢弃而作用于整集合
+    if (params.filter?._all === true) {
+      if (Object.keys(params.filter).length > 1) {
+        return makeError('{"_all": true} must be the only key in filter.', ErrorCode.DANGEROUS_OPERATION);
+      }
       params.filter = {};
     }
   }

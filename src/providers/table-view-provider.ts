@@ -42,11 +42,18 @@ export class TableViewProvider implements vscode.Disposable {
     private readonly credentialStore: CredentialStore
   ) {}
 
+  // 独立 panel 的标题与 badge 带连接名: 不同环境的同名库 (test / release 的 game) 要能一眼分开
+  private connectionName(connectionId: string): string {
+    return this.connectionManager.getConnections().find((c) => c.id === connectionId)?.name ?? connectionId;
+  }
+
   openQueryEditor(connectionId: string, database: string): void {
     const panelKey = `query:${connectionId}:${database}:${Date.now()}`;
     const driver = this.connectionManager.getDriver(connectionId);
-    this.createPanel(panelKey, `Query - ${database}`, 'query', {
+    const connectionName = this.connectionName(connectionId);
+    this.createPanel(panelKey, `Query - ${connectionName}/${database}`, 'query', {
       connectionId,
+      connectionName,
       database,
       driverType: driver.driverType,
     });
@@ -61,7 +68,7 @@ export class TableViewProvider implements vscode.Disposable {
     }
 
     const driver = this.connectionManager.getDriver(connectionId);
-    this.createPanel(panelKey, `Edit - ${table}`, 'edit-table', {
+    this.createPanel(panelKey, `Edit - ${this.connectionName(connectionId)}/${database}.${table}`, 'edit-table', {
       connectionId,
       database,
       table,
@@ -79,8 +86,10 @@ export class TableViewProvider implements vscode.Disposable {
 
     const driver = this.connectionManager.getDriver(connectionId);
     driver.getTableDDL(database, table).then((ddl) => {
-      this.createPanel(panelKey, `DDL - ${table}`, 'query', {
+      const connectionName = this.connectionName(connectionId);
+      this.createPanel(panelKey, `DDL - ${connectionName}/${database}.${table}`, 'query', {
         connectionId,
+        connectionName,
         database,
         driverType: driver.driverType,
         initialSql: ddl,
@@ -476,9 +485,13 @@ export class TableViewProvider implements vscode.Disposable {
                 placeHolder: 'e.g. user:1234',
                 validateInput: (v) => v.trim() ? undefined : 'Key name is required',
               });
-              if (!key?.trim()) { return; }
-              await handleRedisMessage({ type: 'redisSetString', key: key.trim(), value: '', database: addMsg.database }, redisDriver, post);
-              post({ type: 'redisAddKeyResult', key: key.trim() });
+              const name = key?.trim();
+              if (!name) { return; }
+              if (!(await redisDriver.createStringKey(addMsg.database, name))) {
+                vscode.window.showErrorMessage(`Key already exists: ${name}`);
+                return;
+              }
+              post({ type: 'redisAddKeyResult', key: name });
               return;
             }
 

@@ -47,7 +47,7 @@ describe('query tool - SQL validation integration', () => {
   });
 });
 
-import { routeByDriver, type DriverSource } from './query-router.js';
+import { isDestructiveRequest, routeByDriver, type DriverSource } from './query-router.js';
 import type { ToolResult } from '../mcp/tools/mcp-result.js';
 
 const isErr = (r: ToolResult) => 'isError' in r && r.isError === true;
@@ -174,5 +174,55 @@ describe('routeByDriver Mongo', () => {
     await routeByDriver('read', 'mongodb', 'c',
       `{"collection":"u","method":"aggregate","pipeline":[{"$match":{"ref":{"$oid":"${oid}"}}}]}`, 'db', src);
     expect(mongo.aggregate.mock.calls[0][2][0].$match.ref).toBeInstanceOf(ObjectId);
+  });
+});
+
+describe('isDestructiveRequest (db_execute 执行前确认)', () => {
+  it.each([
+    ['mysql', 'DROP TABLE t', true],
+    ['postgresql', 'TRUNCATE t', true],
+    ['mysql', 'DELETE FROM t', true],
+    ['mysql', 'UPDATE t SET a = 1', true],
+    ['mysql', 'DELETE FROM t WHERE id = 1', false],
+    ['mysql', 'INSERT INTO t VALUES (1)', false],
+    // 多语句由路由直接拒绝, 不先问
+    ['mysql', 'DROP TABLE a; DROP TABLE b', false],
+    ['redis', 'FLUSHDB', true],
+    ['redis', 'flushall ASYNC', true],
+    ['redis', 'DEL k', false],
+    ['redis', '', false],
+    ['mongodb', '{"collection":"u","method":"deleteMany","filter":{"_all":true}}', true],
+    ['mongodb', '{"collection":"u","method":"updateMany","filter":{"_all":true},"update":{"$set":{"a":1}}}', true],
+    ['mongodb', '{"collection":"u","method":"dropIndex","indexName":"a_1"}', true],
+    ['mongodb', '{"collection":"u","method":"deleteMany","filter":{"a":1}}', false],
+    // _all 混入其他条件由路由拒绝, 不先问
+    ['mongodb', '{"collection":"u","method":"deleteMany","filter":{"_all":true,"uid":5}}', false],
+    ['mongodb', 'not json', false],
+    ['kafka', '{"action":"produce","topic":"t","value":"v"}', false],
+  ])('%s %s -> %s', (driverType, query, expected) => {
+    expect(isDestructiveRequest(driverType, query)).toBe(expected);
+  });
+});
+
+describe('routeByDriver Mongo 批量删改的空 filter', () => {
+  it('filter 缺省等同空 filter, 一律拒绝, 不交给 driver', async () => {
+    const mongo = { deleteMany: vi.fn().mockResolvedValue(9) };
+    const src = { getMongoDriver: () => mongo } as unknown as DriverSource;
+    for (const q of ['{"collection":"u","method":"deleteMany"}', '{"collection":"u","method":"deleteMany","filter":{}}']) {
+      const r = await routeByDriver('execute', 'mongodb', 'c', q, 'db', src);
+      expect(JSON.parse(r.content[0].text).code).toBe('DANGEROUS_OPERATION');
+    }
+    expect(mongo.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('_all 只能单独出现: 混入其他条件拒绝, 单独出现才放行为整集合', async () => {
+    const mongo = { deleteMany: vi.fn().mockResolvedValue(9) };
+    const src = { getMongoDriver: () => mongo } as unknown as DriverSource;
+    const mixed = await routeByDriver('execute', 'mongodb', 'c', '{"collection":"u","method":"deleteMany","filter":{"_all":true,"uid":5}}', 'db', src);
+    expect(JSON.parse(mixed.content[0].text).code).toBe('DANGEROUS_OPERATION');
+    expect(mongo.deleteMany).not.toHaveBeenCalled();
+    await routeByDriver('execute', 'mongodb', 'c', '{"collection":"u","method":"deleteMany","filter":{"_all":true}}', 'db', src);
+    expect(mongo.deleteMany).toHaveBeenCalledTimes(1);
+    expect(mongo.deleteMany.mock.calls[0][2]).toEqual({});
   });
 });

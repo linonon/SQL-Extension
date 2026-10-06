@@ -25,6 +25,8 @@ export interface IRedisDriver {
 
   // 基本写入
   setString(db: number, key: string, value: string, ttl?: number): Promise<void>;
+  // 新建空字符串 key (SET NX), 不覆盖已有 key; 已存在时返回 false
+  createStringKey(db: number, key: string): Promise<boolean>;
   setHashField(db: number, key: string, field: string, value: string): Promise<void>;
   deleteHashField(db: number, key: string, field: string): Promise<void>;
 

@@ -18,6 +18,7 @@ function createMockDriver(): IRedisDriver {
     getSet: vi.fn().mockResolvedValue({ cursor: '0', members: [] }),
     getZSet: vi.fn().mockResolvedValue([]),
     setString: vi.fn(),
+    createStringKey: vi.fn().mockResolvedValue(true),
     setHashField: vi.fn(),
     deleteHashField: vi.fn(),
     listPush: vi.fn(),

@@ -125,6 +125,15 @@ export async function handleSqlMessage(
       }
 
       case 'alterTable': {
+        const dropped = message.changes.droppedColumns;
+        if (dropped.length > 0) {
+          const confirm = await vscode.window.showWarningMessage(
+            `Drop column(s) ${dropped.join(', ')} from ${message.table}? Their data is deleted.`,
+            { modal: true },
+            'Drop'
+          );
+          if (confirm !== 'Drop') { return true; }
+        }
         const driver = ctx.getDriver();
         const stmts = buildAlterTableStatements(driver.driverType, message.table, message.changes);
         try {

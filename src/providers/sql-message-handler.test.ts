@@ -246,12 +246,14 @@ describe('handleSqlMessage importSql', () => {
     expect(posts).toEqual([expect.objectContaining({ type: 'databaseTableList' })]);
   });
 
-  it('含 DROP 的文件在 modal 里取消: 不执行, 不刷新', async () => {
+  it.each(['mysql', 'postgresql'])('%s: 含 DROP 的文件在 modal 里取消: 不执行, 不刷新', async (driverType) => {
     await pick('DROP TABLE IF EXISTS `t`;\nCREATE TABLE `t` (id int);\n');
-    vi.spyOn(vscode.window, 'showWarningMessage').mockResolvedValue(undefined as never);
+    const warn = vi.spyOn(vscode.window, 'showWarningMessage').mockClear().mockResolvedValue(undefined as never);
     const driver = createMysqlDriver([]);
+    (driver as { driverType: string }).driverType = driverType;
     const posts: unknown[] = [];
     await handleSqlMessage({ type: 'importSql', database: 'db1' } as WebviewMessage, createCtx(driver, posts));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('destructive'), { modal: true }, 'Import');
     expect(driver.executeBatch).not.toHaveBeenCalled();
     expect(posts).toEqual([]);
   });
@@ -314,6 +316,31 @@ describe('handleSqlMessage Edit Table / CSV', () => {
       createCtx(createMysqlDriver([]), posts)
     );
     expect(posts).toEqual([{ type: 'alterTablePreview', ddl: '' }]);
+  });
+
+  it('Apply 含 Drop Column 先在宿主确认, 点名列; 取消则不执行', async () => {
+    const warn = vi.spyOn(vscode.window, 'showWarningMessage').mockResolvedValue(undefined as never);
+    const driver = createMysqlDriver([]);
+    const posts: unknown[] = [];
+    const changes = { addedColumns: [], droppedColumns: ['a', 'b'], modifiedColumns: [], renamedColumns: [] };
+    const msg = { type: 'alterTable', database: 'db', table: 't', changes } as WebviewMessage;
+    await handleSqlMessage(msg, createCtx(driver, posts));
+    expect(warn).toHaveBeenCalledWith('Drop column(s) a, b from t? Their data is deleted.', { modal: true }, 'Drop');
+    expect(driver.executeBatch).not.toHaveBeenCalled();
+    expect(posts).toEqual([]);
+
+    warn.mockResolvedValue('Drop' as never);
+    await handleSqlMessage(msg, createCtx(driver, posts));
+    expect(batchCalls(driver)).toEqual([[['ALTER TABLE `t` DROP COLUMN `a`;', 'ALTER TABLE `t` DROP COLUMN `b`;'], 'db']]);
+  });
+
+  it('Apply 不含 Drop Column (如只改列名) 不弹确认', async () => {
+    const warn = vi.spyOn(vscode.window, 'showWarningMessage').mockClear();
+    const driver = createMysqlDriver([]);
+    const changes = { addedColumns: [], droppedColumns: [], modifiedColumns: [], renamedColumns: [{ from: 'a', to: 'b' }] };
+    await handleSqlMessage({ type: 'alterTable', database: 'db', table: 't', changes } as WebviewMessage, createCtx(driver, []));
+    expect(warn).not.toHaveBeenCalled();
+    expect(driver.executeBatch).toHaveBeenCalledTimes(1);
   });
 
   it('CSV 默认存到 workspace 目录下', async () => {

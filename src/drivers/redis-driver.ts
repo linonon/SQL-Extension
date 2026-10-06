@@ -214,6 +214,10 @@ export class RedisDriver implements IRedisDriver {
     }
   }
 
+  async createStringKey(db: number, key: string): Promise<boolean> {
+    return (await (await this.clientFor(db)).set(key, '', 'NX')) === 'OK';
+  }
+
   async setHashField(db: number, key: string, field: string, value: string): Promise<void> {
     await (await this.clientFor(db)).hset(key, field, value);
   }

@@ -10,7 +10,8 @@ vi.hoisted(() => {
   process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'sqlext-ipc-'));
 });
 
-import { IpcServer, SOCKET_PATH, SOCKET_DIR } from './ipc-server.js';
+import * as vscode from 'vscode';
+import { IpcServer, SOCKET_PATH, SOCKET_DIR, confirmAgentRequest } from './ipc-server.js';
 
 const result = {
   columns: [{ name: 'id', dataType: 'int' }],
@@ -43,6 +44,7 @@ function makeConnectionManager() {
       execute: vi.fn(),
       executeReadOnly: vi.fn().mockResolvedValue(result),
       executeCancellable: vi.fn().mockReturnValue({ promise: Promise.resolve(result), cancel: () => {} }),
+      executeBatch: vi.fn().mockReturnValue({ promise: Promise.resolve({ results: [{ ...result, sql: 'x' }] }), cancel: () => {} }),
     }),
   } as any;
 }
@@ -125,6 +127,30 @@ describe('IpcServer', () => {
     expect(cm.getDriver().executeReadOnly).not.toHaveBeenCalled();
   });
 
+  it('execute 的破坏性请求先弹 modal 点名连接 / 库 / 语句; 拒绝则不连接不执行, 放行才执行', async () => {
+    await new Promise(r => setTimeout(r, 100));
+    const warn = vi.spyOn(vscode.window, 'showWarningMessage').mockClear().mockResolvedValue(undefined as never);
+    const req = { id: '7', method: 'execute', params: { connectionId: 'test-id', query: 'DROP TABLE users' } };
+    const denied = await sendRequest(SOCKET_PATH, req);
+    expect(warn).toHaveBeenCalledWith('An agent wants to run a destructive request on test-db/mydb: DROP TABLE users', { modal: true }, 'Run');
+    expect(JSON.parse(denied.result.content[0].text)).toEqual({ error: 'Denied by user', code: 'NOT_CONFIRMED' });
+    expect(cm.connect).not.toHaveBeenCalled();
+    expect(cm.getDriver().executeBatch).not.toHaveBeenCalled();
+
+    warn.mockResolvedValue('Run' as never);
+    const ran = await sendRequest(SOCKET_PATH, { ...req, id: '8' });
+    expect(ran.result.isError).toBeUndefined();
+    expect(cm.getDriver().executeBatch).toHaveBeenCalledWith(['DROP TABLE users'], 'mydb');
+  });
+
+  it('非破坏性 execute 不弹确认', async () => {
+    await new Promise(r => setTimeout(r, 100));
+    const warn = vi.spyOn(vscode.window, 'showWarningMessage').mockClear();
+    await sendRequest(SOCKET_PATH, { id: '9', method: 'execute', params: { connectionId: 'test-id', query: 'DELETE FROM users WHERE id = 1' } });
+    expect(warn).not.toHaveBeenCalled();
+    expect(cm.getDriver().executeBatch).toHaveBeenCalledTimes(1);
+  });
+
   it('should keep socket dir private', () => {
     expect(fs.statSync(SOCKET_DIR).mode & 0o777).toBe(0o700);
   });
@@ -139,5 +165,22 @@ describe('IpcServer', () => {
     server.dispose();
     // socket 文件应被删除
     expect(fs.existsSync(SOCKET_PATH)).toBe(false);
+  });
+});
+
+describe('confirmAgentRequest', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('60s 无应答按拒绝处理, 长语句保留首尾', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(vscode.window, 'showWarningMessage').mockClear().mockReturnValue(new Promise(() => {}) as never);
+    const answer = confirmAgentRequest('c/db', `UPDATE t SET doc = '${'x'.repeat(400)}' -- tail`);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(await answer).toBe('No answer within 60s, not executed');
+    const msg = warn.mock.calls[0][0] as string;
+    expect(msg).toContain(': UPDATE t SET doc');
+    expect(msg).toContain(' ... ');
+    expect(msg.endsWith("' -- tail")).toBe(true);
+    expect(msg.length).toBeLessThan(400);
   });
 });

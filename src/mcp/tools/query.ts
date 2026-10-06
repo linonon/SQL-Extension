@@ -10,6 +10,7 @@ const DB_READ_DESCRIPTION = [
   '- MongoDB: JSON, e.g. {"collection":"users","method":"find","filter":{},"sort":{"_id":-1},"skip":0,"limit":20} (find also takes projection; aggregate takes pipeline, limit; countDocuments takes filter; unknown fields are rejected). filter and pipeline accept EJSON: {"$oid":"..."}, {"$date":"2024-01-01T00:00:00Z"}, {"$numberLong":"..."}. Documents come back as relaxed EJSON (ObjectId as $oid, Date as $date; integers beyond 2^53 as $numberLong)',
   '- Kafka: JSON, e.g. {"action":"listTopics"}, {"action":"fetch","topic":"t1","partition":0,"offset":"0","limit":10}',
   '- RabbitMQ: JSON, e.g. {"action":"listQueues"}, {"action":"peek","queue":"q1","count":10}',
+  'The read-only check on the query text is best-effort; the real boundary is the read-only transaction and the database account\'s permissions.',
 ].join('\n');
 
 // 只读 / 上限校验与执行都在 VS Code 扩展里 (routeByDriver), 本进程只转发

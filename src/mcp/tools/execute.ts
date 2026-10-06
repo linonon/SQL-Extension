@@ -10,6 +10,7 @@ const DB_EXECUTE_DESCRIPTION = [
   '- MongoDB: JSON, e.g. {"collection":"users","method":"insertOne","document":{"name":"foo"}} (filter / update / document accept EJSON such as {"$oid":"..."}, {"$date":"..."}, {"$numberLong":"..."})',
   '- Kafka: JSON, e.g. {"action":"produce","topic":"t1","key":"k","value":"v"}',
   '- RabbitMQ: not supported yet',
+  'Destructive requests (SQL DROP / TRUNCATE / DELETE or UPDATE without WHERE, Redis FLUSHDB / FLUSHALL, MongoDB dropIndex or deleteMany / updateMany with {"_all": true}) wait for the user to approve them in VS Code; denied or unanswered within 60s, they fail with code NOT_CONFIRMED and nothing runs.',
 ].join('\n');
 
 export function registerExecuteTools(server: McpServer, ipc: IpcClient): void {

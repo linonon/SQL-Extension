@@ -371,6 +371,18 @@ describe('RedisDriver', () => {
     });
   });
 
+  describe('createStringKey', () => {
+    it('SET NX: 新建返回 true, key 已存在 (reply null) 返回 false 且不覆盖', async () => {
+      await driver.connect(TEST_CONFIG);
+
+      expect(await driver.createStringKey(0, 'k')).toBe(true);
+      mockClient.set.mockResolvedValueOnce(null);
+      expect(await driver.createStringKey(0, 'k')).toBe(false);
+
+      expect(mockClient.set.mock.calls).toEqual([['k', '', 'NX'], ['k', '', 'NX']]);
+    });
+  });
+
   describe('写操作', () => {
     beforeEach(async () => {
       await driver.connect(TEST_CONFIG);

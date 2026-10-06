@@ -2,7 +2,8 @@
 
 ## SQL Generation
 
-- **不要在生成的 SQL 中 qualify database name**: 查询已经在目标 database context 下执行, `buildSelectSql` 等函数不应传 `database` 参数. 生成 `SELECT * FROM table` 而非 `SELECT * FROM database.table`.
+- **预填进编辑器给用户看的 SQL 不 qualify database name**: 编辑器的查询已经在 panel 的目标 database context 下执行, `buildSelectSql` 不应传 `database` 参数. 生成 `SELECT * FROM table` 而非 `SELECT * FROM database.table`.
+- **在共享连接池上执行的生成写语句必须 qualify database name (MySQL)**: `buildInsert` / `buildUpdate` / `buildBatchDelete` 生成的 INSERT / UPDATE / DELETE 在共享池上执行, 池的默认库不是 panel 的库, 必须传 `database` 生成 `database.table`.
 
 ## Column Metadata
 
@@ -10,7 +11,7 @@
 
 ## Delete Operations
 
-- **所有删除操作必须有确认步骤**: 确认对话框统一在 extension host 中使用 `vscode.window.showWarningMessage({ modal: true })`, 在 `table-view-provider.ts` 的 message handler 中拦截对应消息类型进行确认. **禁止在 webview 中使用 `window.confirm()`** -- `window.confirm()` 在 VS Code webview 中不可靠, 会导致操作静默失败 (消息发不出去).
+- **所有删除操作必须有确认步骤**: 确认对话框统一在 extension host 中使用 `vscode.window.showWarningMessage({ modal: true })`, 放在真正执行删除的那个 handler 里, 确认通过后紧接着执行 (如 `sql-message-handler.ts` 的 `deleteRows` / `alterTable`, `table-view-provider.ts` 里 Redis / Mongo 分支的删除消息). **禁止在 webview 中使用 `window.confirm()`** -- `window.confirm()` 在 VS Code webview 中不可靠, 会导致操作静默失败 (消息发不出去).
 
 ## SSH Tunnel
 
