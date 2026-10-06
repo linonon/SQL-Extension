@@ -11,6 +11,8 @@ export interface IRedisDriver {
 
   // database 操作
   selectDatabase(db: number): Promise<void>;
+  // 在独立连接上执行原始命令, 不改共享 client 的当前库 (MCP 用; db 省略即连接配置的库)
+  executeCommandInDb(db: number | undefined, args: readonly string[]): Promise<unknown>;
   listDatabases(): Promise<readonly RedisDbInfo[]>;
 
   // key 扫描 - 绝对禁止 KEYS 命令

@@ -11,7 +11,6 @@ const DB_EXECUTE_DESCRIPTION = [
   '- MongoDB: JSON, e.g. {"collection":"users","method":"insertOne","document":{"name":"foo"}}',
   '- Kafka: JSON, e.g. {"action":"produce","topic":"t1","key":"k","value":"v"}',
   '- RabbitMQ: not supported yet',
-  'The database parameter is optional for MySQL (schema context), required for MongoDB, and for Redis it selects db index (0-15).',
 ].join('\n');
 
 export function registerExecuteTools(server: McpServer, pool: ConnectionPool, ipc: IpcClient): void {
@@ -21,9 +20,9 @@ export function registerExecuteTools(server: McpServer, pool: ConnectionPool, ip
       title: 'Execute Query',
       description: DB_EXECUTE_DESCRIPTION,
       inputSchema: {
-        connectionId: z.string().describe('Connection ID'),
+        connectionId: z.string().describe('Connection ID from db_list_connections (saved VS Code connections connect on demand)'),
         query: z.string().describe('Query string (format depends on database type)'),
-        database: z.string().optional().describe('Database/schema name (MySQL context, MongoDB required, Redis db index 0-15)'),
+        database: z.string().optional().describe('MySQL: schema to USE (defaults to the connection\'s database; required if the connection has none; use information_schema for server-level statements). PostgreSQL: ignored, bound to the connection\'s database. MongoDB: required unless the connection has a default. Redis: db index 0-15 (default: connection\'s db).'),
       },
       annotations: {
         readOnlyHint: false,

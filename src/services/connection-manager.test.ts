@@ -83,6 +83,20 @@ describe('ConnectionManager', () => {
     manager = new ConnectionManager(mockGlobalState, mockCredentialStore);
   });
 
+  describe('connect concurrency', () => {
+    it('并发 connect 共用一次连接过程, 只建一个 driver, 后到者也拿得到 driver', async () => {
+      mockGlobalState.get.mockReturnValue([{
+        id: 'c1', name: 'x', driverType: 'mysql', host: 'h', port: 3306, username: 'u', database: '',
+      }]);
+      mockSecrets.get.mockImplementation(async () => { await new Promise(r => setTimeout(r, 10)); return 'pw'; });
+      const created = vi.spyOn(manager as any, 'createDriver');
+      await Promise.all([manager.connect('c1'), manager.connect('c1'), manager.connect('c1')]);
+      expect(created).toHaveBeenCalledTimes(1);
+      expect(manager.getState('c1')).toBe('connected');
+      expect(() => manager.getDriver('c1')).not.toThrow();
+    });
+  });
+
   describe('getConnections', () => {
     it('应该返回空数组 (初始状态)', () => {
       const connections = manager.getConnections();

@@ -36,6 +36,7 @@ function createMockDriver(): IRedisDriver {
     getListLength: vi.fn().mockResolvedValue(0),
     getZSetLength: vi.fn().mockResolvedValue(0),
     executeCommand: vi.fn().mockResolvedValue('OK'),
+    executeCommandInDb: vi.fn().mockResolvedValue('OK'),
   };
 }
 

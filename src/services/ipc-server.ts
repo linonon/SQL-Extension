@@ -3,9 +3,14 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import type { ConnectionManager } from './connection-manager.js';
+import type { MongoDriver } from '../drivers/mongo-driver.js';
+import { routeByDriver, type DriverSource, type RouteMode } from '../mcp/query-router.js';
+import { sanitizeErrorMessage } from '../utils/sanitize-error.js';
 
-const SOCKET_DIR = path.join(os.homedir(), '.sql-extension');
-const SOCKET_PATH = path.join(SOCKET_DIR, 'ipc.sock');
+export const SOCKET_DIR = path.join(os.homedir(), '.sql-extension');
+// 每个窗口 (extension host) 一个 socket: 共用固定路径时, 后启动的窗口抢走路径,
+// 任一窗口关闭 (libuv close 按名字 unlink) 又把别人的路径删掉. MCP 端按 mtime 挑最新的连.
+export const SOCKET_PATH = path.join(SOCKET_DIR, `ipc-${process.pid}.sock`);
 
 interface IpcRequest {
   readonly id: string;
@@ -21,18 +26,34 @@ interface IpcResponse {
 
 export class IpcServer {
   private server: net.Server | null = null;
+  // 正在由外部 agent 发起连接的 id: onDidChange 监听方据此不自动弹出 browser
+  private readonly agentConnecting = new Set<string>();
 
   constructor(private readonly connectionManager: ConnectionManager) {}
 
+  isAgentConnect(id: string): boolean {
+    return this.agentConnecting.has(id);
+  }
+
   start(): void {
-    // 清理旧 socket 文件
+    // 目录收紧到 0700 (mode 对已存在目录无效, 故再 chmod); 锁不住就不开 IPC, 不拖垮扩展
+    try {
+      fs.mkdirSync(SOCKET_DIR, { recursive: true, mode: 0o700 });
+      fs.chmodSync(SOCKET_DIR, 0o700);
+    } catch (err) {
+      process.stderr.write(`IPC disabled: cannot secure ${SOCKET_DIR}: ${(err as Error).message}\n`);
+      return;
+    }
+    // 只清本 pid 的残留 (崩溃的同 pid 旧进程)
     try { fs.unlinkSync(SOCKET_PATH); } catch {}
-    fs.mkdirSync(SOCKET_DIR, { recursive: true });
 
     this.server = net.createServer((socket) => {
       let buffer = '';
-      socket.on('data', (data) => {
-        buffer += data.toString();
+      // StringDecoder 跨 chunk 保留半个多字节字符, 中文不会被拆成 U+FFFD
+      socket.setEncoding('utf8');
+      socket.on('data', (data: string) => {
+        buffer += data;
+        if (!data.includes('\n')) { return; }
         const lines = buffer.split('\n');
         buffer = lines.pop() ?? '';
         for (const line of lines) {
@@ -64,11 +85,25 @@ export class IpcServer {
       const result = await this.dispatch(req.method, req.params ?? {});
       this.send(socket, { id: req.id, result });
     } catch (err) {
-      this.send(socket, {
-        id: req.id,
-        error: err instanceof Error ? err.message : String(err),
-      });
+      this.send(socket, { id: req.id, error: sanitizeErrorMessage(err) });
     }
+  }
+
+  // 未连接则按需连接 (连接状态按窗口保存, agent 无从得知要先 db_connect)
+  private async ensureConnected(id: string): Promise<void> {
+    if (this.connectionManager.getState(id) === 'connected') { return; }
+    this.agentConnecting.add(id);
+    try {
+      await this.connectionManager.connect(id);
+    } finally {
+      this.agentConnecting.delete(id);
+    }
+  }
+
+  private findConfig(id: string) {
+    const config = this.connectionManager.getConnections().find(c => c.id === id);
+    if (!config) { throw new Error(`Connection not found: ${id}`); }
+    return config;
   }
 
   private async dispatch(method: string, params: Record<string, unknown>): Promise<unknown> {
@@ -86,7 +121,8 @@ export class IpcServer {
 
       case 'connect': {
         const id = params.connectionId as string;
-        await this.connectionManager.connect(id);
+        this.findConfig(id);
+        await this.ensureConnected(id);
         return { success: true };
       }
 
@@ -99,92 +135,30 @@ export class IpcServer {
       case 'read':
       case 'execute': {
         const id = params.connectionId as string;
-        const query = params.query as string;
-        const database = params.database as string | undefined;
-        const config = this.connectionManager.getConnections().find(c => c.id === id);
-        if (!config) { throw new Error(`Connection not found: ${id}`); }
-        const driverType = config.driverType;
-
-        switch (driverType) {
-          case 'mysql':
-          case 'postgresql': {
-            const driver = this.connectionManager.getDriver(id);
-            if (database) {
-              const { promise } = driver.executeCancellable(query, undefined, database);
-              return await promise;
-            }
-            return await driver.execute(query);
-          }
-          case 'redis': {
-            const { parseRedisCommand } = await import('../mcp/parsers/redis-parser.js');
-            const args = parseRedisCommand(query);
-            const driver = this.connectionManager.getRedisDriver(id);
-            if (database !== undefined) {
-              const dbIndex = parseInt(database, 10);
-              if (!isNaN(dbIndex) && dbIndex >= 0 && dbIndex <= 15) {
-                await driver.selectDatabase(dbIndex);
-              }
-            }
-            return await driver.executeCommand(args);
-          }
-          case 'mongodb': {
-            const { parseMongoQuery } = await import('../mcp/parsers/mongo-parser.js');
-            const parsed = parseMongoQuery(query);
-            const mArgs: unknown[] = [];
-            switch (parsed.method) {
-              case 'find': mArgs.push(parsed.filter ?? {}, { projection: parsed.projection }); break;
-              case 'aggregate': mArgs.push(parsed.pipeline ?? []); break;
-              case 'countDocuments': mArgs.push(parsed.filter ?? {}); break;
-              case 'insertOne': mArgs.push(parsed.document ?? {}); break;
-              case 'insertMany': mArgs.push(parsed.documents ?? []); break;
-              case 'updateOne': case 'updateMany': mArgs.push(parsed.filter ?? {}, parsed.update ?? {}); break;
-              case 'deleteOne': case 'deleteMany': mArgs.push(parsed.filter ?? {}); break;
-              case 'createIndex': mArgs.push(parsed.keys ?? {}, parsed.options ?? {}); break;
-              case 'dropIndex': mArgs.push(parsed.indexName ?? ''); break;
-            }
-            const driver = this.connectionManager.getDriver(id);
-            // MongoDriver has dispatchToCollection as public method
-            const mongoDriver = driver as unknown as { dispatchToCollection: (db: string, coll: string, method: string, args: readonly unknown[], options?: { limit?: number }) => Promise<unknown> };
-            return await mongoDriver.dispatchToCollection(database ?? 'test', parsed.collection, parsed.method, mArgs, parsed.limit ? { limit: parsed.limit } : undefined);
-          }
-          case 'kafka': {
-            const { parseKafkaQuery } = await import('../mcp/parsers/kafka-parser.js');
-            const kParams = parseKafkaQuery(query);
-            const driver = this.connectionManager.getKafkaDriver(id);
-            switch (kParams.action) {
-              case 'listTopics': return await driver.listTopics();
-              case 'describeTopic': return await driver.getTopicPartitions(kParams.topic!);
-              case 'fetch': return await driver.fetchMessages(kParams.topic!, kParams.partition ?? 0, kParams.offset ?? '0', kParams.limit ?? 500);
-              case 'produce': return await driver.produceMessage(kParams.topic!, kParams.key ?? null, kParams.value ?? '', kParams.headers ?? {}, kParams.partition);
-              default: throw new Error(`Unknown Kafka action: ${kParams.action}`);
-            }
-          }
-          case 'rabbitmq': {
-            if (method === 'execute') { throw new Error('RabbitMQ does not support write operations yet.'); }
-            const { parseRabbitMQQuery } = await import('../mcp/parsers/rabbitmq-parser.js');
-            const rParams = parseRabbitMQQuery(query);
-            const driver = this.connectionManager.getRabbitMQDriver(id);
-            switch (rParams.action) {
-              case 'listQueues': return await driver.listQueues();
-              case 'peek': return await driver.peekMessages(rParams.queue!, rParams.count ?? 10);
-              default: throw new Error(`Unknown RabbitMQ action: ${rParams.action}`);
-            }
-          }
-          default:
-            throw new Error(`Unsupported driver type: ${driverType}`);
-        }
+        const config = this.findConfig(id);
+        await this.ensureConnected(id);
+        const cm = this.connectionManager;
+        const drivers: DriverSource = {
+          getDriver: (i) => cm.getDriver(i),
+          getRedisDriver: (i) => cm.getRedisDriver(i),
+          getMongoDriver: (i) => cm.getDriver(i) as unknown as MongoDriver,
+          getKafkaDriver: (i) => cm.getKafkaDriver(i),
+          getRabbitMQDriver: (i) => cm.getRabbitMQDriver(i),
+        };
+        const database = (params.database as string | undefined) || config.database || undefined;
+        return routeByDriver(method as RouteMode, config.driverType, id, params.query as string, database, drivers);
       }
 
       case 'listDatabases': {
         const id = params.connectionId as string;
-        const config = this.connectionManager.getConnections().find(c => c.id === id);
-        if (!config) { throw new Error(`Connection not found: ${id}`); }
+        const config = this.findConfig(id);
         if (config.driverType === 'redis') {
           return Array.from({ length: 16 }, (_, i) => ({ name: String(i) }));
         }
         if (config.driverType === 'kafka' || config.driverType === 'rabbitmq') {
           return { error: 'N/A for this database type' };
         }
+        await this.ensureConnected(id);
         const driver = this.connectionManager.getDriver(id);
         return await driver.listDatabases();
       }
@@ -192,8 +166,8 @@ export class IpcServer {
       case 'listTables': {
         const id = params.connectionId as string;
         const database = params.database as string;
-        const config = this.connectionManager.getConnections().find(c => c.id === id);
-        if (!config) { throw new Error(`Connection not found: ${id}`); }
+        const config = this.findConfig(id);
+        await this.ensureConnected(id);
         if (config.driverType === 'kafka') {
           return await this.connectionManager.getKafkaDriver(id).listTopics();
         }
@@ -211,6 +185,8 @@ export class IpcServer {
         const id = params.connectionId as string;
         const database = params.database as string;
         const table = params.table as string;
+        this.findConfig(id);
+        await this.ensureConnected(id);
         const driver = this.connectionManager.getDriver(id);
         return await driver.listColumns(database, table);
       }
@@ -219,6 +195,8 @@ export class IpcServer {
         const id = params.connectionId as string;
         const database = params.database as string;
         const table = params.table as string;
+        this.findConfig(id);
+        await this.ensureConnected(id);
         const driver = this.connectionManager.getDriver(id);
         return await driver.getTableDDL(database, table);
       }
@@ -255,12 +233,17 @@ export class IpcServer {
   private send(socket: net.Socket, response: IpcResponse): void {
     try {
       socket.write(JSON.stringify(response) + '\n');
-    } catch {}
+    } catch (err) {
+      // 序列化失败 (结果过大) 也要回同 id 的错误, 否则 read/execute 无超时会永远挂住
+      try {
+        socket.write(JSON.stringify({ id: response.id, error: `Result too large to return: ${(err as Error).message}` }) + '\n');
+      } catch {}
+    }
   }
 
   dispose(): void {
     this.server?.close();
     this.server = null;
-    try { fs.unlinkSync(SOCKET_PATH); } catch {}
+    try { fs.unlinkSync(SOCKET_PATH); } catch {}  // 路径带本 pid, 只会删自己的
   }
 }

@@ -304,11 +304,9 @@ export class MongoDriver implements IDatabaseDriver {
         return { affectedRows: result.deletedCount };
       }
       case 'aggregate': {
-        const pipeline = convertEjsonToBson(args[0] ?? []) as unknown[];
-        let docs = await coll.aggregate(pipeline).toArray();
-        if (options?.limit && docs.length > options.limit) {
-          docs = docs.slice(0, options.limit);
-        }
+        const pipeline = convertEjsonToBson(args[0] ?? []) as Record<string, unknown>[];
+        // 行数上限下推到服务端, 避免先把整个结果集拉进内存
+        const docs = await coll.aggregate(options?.limit ? [...pipeline, { $limit: options.limit }] : pipeline).toArray();
         return { docs };
       }
       case 'countDocuments': {

@@ -244,6 +244,22 @@ export class PgDriver implements IDatabaseDriver {
     }
   }
 
+  // 只读事务拒绝写 (含 writable CTE / SELECT INTO / nextval); extended 协议拒绝多语句,
+  // 防 "SELECT 1; COMMIT; DROP ..." 在事务里先提交再写.
+  async executeReadOnly(sql: string): Promise<QueryResult> {
+    this.assertConnected();
+    const client = await this.pool!.connect();
+    try {
+      await client.query('BEGIN READ ONLY');
+      const start = Date.now();
+      const result = await client.query({ text: sql, queryMode: 'extended' } as pg.QueryConfig);
+      return this.toQueryResult(result, Date.now() - start);
+    } finally {
+      // 销毁而非归还: advisory lock 等会话级副作用能活过 ROLLBACK, 不能留给 UI 共用的池
+      client.release(true);
+    }
+  }
+
   executeCancellable(sql: string, params?: unknown[], _database?: string): {
     promise: Promise<QueryResult>;
     cancel: () => void;

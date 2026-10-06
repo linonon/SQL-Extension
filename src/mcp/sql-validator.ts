@@ -1,11 +1,14 @@
-// readonly SQL 服务端校验
-// 只允许 SELECT/SHOW/DESCRIBE/DESC/EXPLAIN/WITH 开头的语句
-// 拒绝 SELECT ... INTO (MySQL 文件写入)
+// readonly SQL 预检 (友好报错用, 真正的只读边界是 driver.executeReadOnly 的只读事务)
+// 只允许 SELECT/SHOW/DESCRIBE/DESC/EXPLAIN/WITH 开头的语句: 挡住 MySQL DDL (DDL 会隐式提交, 只读事务挡不住)
+// 拒绝任何 INTO: 只读事务挡不住 MySQL INTO OUTFILE/DUMPFILE; 在原文上查, 宁可误杀字面量里的 into
 // 拒绝多语句 (去掉字符串常量后检查分号)
 
 const ALLOWED_PREFIXES = ['SELECT', 'SHOW', 'DESCRIBE', 'DESC', 'EXPLAIN', 'WITH'];
 
 const MAX_LIMIT = 500;
+
+// 只读事务管不到的会话级 / 跨会话副作用: 命名锁, advisory lock, 杀连接, 远程执行
+const SIDE_EFFECT_FUNCS = /\b(get_lock|pg_(try_)?advisory_(xact_)?lock(_shared)?|pg_terminate_backend|pg_cancel_backend|pg_reload_conf|dblink(_exec)?)\s*\(/i;
 
 export function isMultiStatement(sql: string): boolean {
   const noStrings = sql.replace(/'[^']*'/g, '').replace(/"[^"]*"/g, '');
@@ -18,8 +21,7 @@ export function isReadonlySQL(sql: string): boolean {
   if (!ALLOWED_PREFIXES.some(p => trimmed.startsWith(p))) {
     return false;
   }
-  // 拒绝 SELECT ... INTO (MySQL 文件写入 / PG INSERT)
-  if (trimmed.startsWith('SELECT') && trimmed.includes(' INTO ')) {
+  if (/\bINTO\b/i.test(sql) || SIDE_EFFECT_FUNCS.test(sql)) {
     return false;
   }
   // 拒绝多语句: 去掉字符串常量后检查分号
@@ -31,22 +33,31 @@ export function isReadonlySQL(sql: string): boolean {
 
 // 强制追加或替换 LIMIT, 不超过 MAX_LIMIT
 // 返回处理后的 SQL
-export function enforceLimit(sql: string, requestedLimit?: number): string {
+export function enforceLimit(sql: string, requestedLimit?: number, isMysql = true): string {
   const limit = Math.min(requestedLimit ?? MAX_LIMIT, MAX_LIMIT);
   const trimmed = sql.trim().replace(/;$/, '');
-  // 匹配已有的 LIMIT 子句 (忽略大小写)
-  const limitMatch = trimmed.match(/\bLIMIT\s+(\d+)\s*$/i);
+  // 屏蔽字符串后切掉末尾行注释, 在正文上找 LIMIT: 注释里的 "LIMIT n" 不算数.
+  // MySQL 行注释是 "-- " 或 "#"; PG 是 "--" ("#" 在 PG 是运算符)
+  const masked = trimmed.replace(/'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"/g, m => ' '.repeat(m.length));
+  const cut = masked.search(isMysql ? /(?:--(?:\s|$)|#)[^\n]*$/ : /--[^\n]*$/);
+  const body = (cut >= 0 ? trimmed.slice(0, cut) : trimmed).trimEnd();
+  // 已有 LIMIT n / LIMIT n OFFSET m / LIMIT m, n: 只把行数 n 压到上限
+  const limitMatch = body.match(/\bLIMIT\s+(\d+)(\s*,\s*(\d+))?(\s+OFFSET\s+\d+)?\s*$/i);
   if (limitMatch) {
-    const existing = parseInt(limitMatch[1], 10);
-    if (existing > limit) {
-      return trimmed.replace(/\bLIMIT\s+\d+\s*$/i, `LIMIT ${limit}`);
+    const countIdx = limitMatch[3] !== undefined ? 3 : 1;
+    if (parseInt(limitMatch[countIdx], 10) <= limit) {
+      return trimmed;
     }
-    return trimmed;
+    const capped = countIdx === 3
+      ? `LIMIT ${limitMatch[1]}, ${limit}`
+      : `LIMIT ${limit}${limitMatch[4] ?? ''}`;
+    return body.slice(0, limitMatch.index) + capped;
   }
   // SHOW/DESCRIBE/DESC/EXPLAIN 不需要 LIMIT
   const upper = trimmed.toUpperCase();
   if (['SHOW', 'DESCRIBE', 'DESC', 'EXPLAIN'].some(p => upper.startsWith(p))) {
     return trimmed;
   }
-  return `${trimmed} LIMIT ${limit}`;
+  // 换行再追加: 原 SQL 以行注释结尾时 LIMIT 不会被注释吞掉
+  return `${trimmed}\nLIMIT ${limit}`;
 }

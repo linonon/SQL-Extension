@@ -1,11 +1,23 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as net from 'net';
 import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
-import { IpcServer } from './ipc-server.js';
 
-const SOCKET_PATH = path.join(os.homedir(), '.sql-extension', 'ipc.sock');
+// 临时 HOME: 不碰真实 ~/.sql-extension 里 VS Code 窗口的 socket
+vi.hoisted(() => {
+  const fs = require('fs') as typeof import('fs');
+  const os = require('os') as typeof import('os');
+  const path = require('path') as typeof import('path');
+  process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'sqlext-ipc-'));
+});
+
+import { IpcServer, SOCKET_PATH, SOCKET_DIR } from './ipc-server.js';
+
+const result = {
+  columns: [{ name: 'id', dataType: 'int' }],
+  rows: [{ id: 1 }],
+  affectedRows: 0,
+  executionTime: 5,
+};
 
 function makeConnectionManager() {
   const config = {
@@ -27,14 +39,11 @@ function makeConnectionManager() {
     ]),
     connect: vi.fn().mockResolvedValue(undefined),
     disconnect: vi.fn().mockResolvedValue(undefined),
+    getState: vi.fn().mockReturnValue('disconnected'),
     getDriver: vi.fn().mockReturnValue({
-      execute: vi.fn().mockResolvedValue({
-        columns: [{ name: 'id', dataType: 'int' }],
-        rows: [{ id: 1 }],
-        affectedRows: 0,
-        executionTime: 5,
-      }),
-      executeCancellable: vi.fn(),
+      execute: vi.fn(),
+      executeReadOnly: vi.fn().mockResolvedValue(result),
+      executeCancellable: vi.fn().mockReturnValue({ promise: Promise.resolve(result), cancel: () => {} }),
     }),
   } as any;
 }
@@ -117,14 +126,31 @@ describe('IpcServer', () => {
     expect(cm.disconnect).toHaveBeenCalledWith('test-id');
   });
 
-  it('should handle query', async () => {
+  it('should auto-connect and run read through the read-only path with default database', async () => {
     await new Promise(r => setTimeout(r, 100));
     const resp = await sendRequest(SOCKET_PATH, {
       id: '4',
-      method: 'execute',
+      method: 'read',
       params: { connectionId: 'test-id', query: 'SELECT 1' },
     });
-    expect(resp.result.rows).toEqual([{ id: 1 }]);
+    expect(cm.connect).toHaveBeenCalledWith('test-id');
+    expect(JSON.parse(resp.result.content[0].text).rows).toEqual([{ id: 1 }]);
+    expect(cm.getDriver().executeReadOnly).toHaveBeenCalledWith('SELECT 1\nLIMIT 500', 'mydb');
+  });
+
+  it('should reject writes sent through read', async () => {
+    await new Promise(r => setTimeout(r, 100));
+    const resp = await sendRequest(SOCKET_PATH, {
+      id: '6',
+      method: 'read',
+      params: { connectionId: 'test-id', query: 'DROP TABLE users' },
+    });
+    expect(resp.result.isError).toBe(true);
+    expect(cm.getDriver().executeReadOnly).not.toHaveBeenCalled();
+  });
+
+  it('should keep socket dir private', () => {
+    expect(fs.statSync(SOCKET_DIR).mode & 0o777).toBe(0o700);
   });
 
   it('should return error for unknown method', async () => {

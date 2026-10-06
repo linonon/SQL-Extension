@@ -3,7 +3,6 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { ConnectionPool } from '../connection-pool.js';
 import type { IpcClient } from '../ipc-client.js';
 import { makeResult, makeError, toErrorMessage } from './mcp-result.js';
-import { isPoolConnection } from '../utils.js';
 
 const DRIVER_TYPES = ['mysql', 'postgresql', 'redis', 'mongodb', 'kafka', 'rabbitmq'] as const;
 
@@ -14,7 +13,7 @@ export function registerConnectTools(server: McpServer, pool: ConnectionPool, ip
       title: 'Connect to Database',
       description: [
         'Connect to a database. Two modes:',
-        '1. IPC mode (VS Code running): provide only connectionId to connect a saved connection.',
+        '1. IPC mode (VS Code running): provide only connectionId to connect a saved connection (optional: db_read/db_execute/db_schema connect saved connections on demand).',
         '2. Standalone mode: provide driverType, host, port, etc. for a new connection.',
       ].join(' '),
       inputSchema: {
@@ -90,13 +89,10 @@ export function registerConnectTools(server: McpServer, pool: ConnectionPool, ip
     },
     async (params) => {
       try {
-        // 尝试 standalone pool 先 (pool 的 id 以 conn_ 开头)
-        if (isPoolConnection(params.connectionId)) {
+        if (pool.has(params.connectionId)) {
           await pool.disconnect(params.connectionId);
-        } else if (ipc.connected) {
-          await ipc.request('disconnect', { connectionId: params.connectionId });
         } else {
-          return makeError('Connection not found and VS Code is not running.', 'NOT_FOUND');
+          await ipc.request('disconnect', { connectionId: params.connectionId });
         }
         return makeResult({ success: true, connectionId: params.connectionId });
       } catch (err) {
@@ -109,19 +105,21 @@ export function registerConnectTools(server: McpServer, pool: ConnectionPool, ip
     'db_list_connections',
     {
       title: 'List Database Connections',
-      description: 'List all available connections. When VS Code is running, shows saved connections with their state. Otherwise shows only active standalone connections.',
+      description: 'List connections: saved VS Code connections (any state; they connect on demand) plus active standalone ones. If VS Code is unreachable, the result carries a "vscode" field explaining why.',
       inputSchema: {},
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async () => {
       const result: unknown[] = [];
+      // VS Code 不可达要说出来, 否则和 "没有保存的连接" 分不清
+      let vscode: string | undefined;
 
       // IPC mode: 返回扩展中保存的连接 (懒连接: 即使启动时 VS Code 没开, 现在也会尝试)
       try {
         const saved = await ipc.request('listConnections') as unknown[];
         result.push(...saved);
-      } catch {
-        // IPC 不可用, 跳过
+      } catch (err) {
+        vscode = toErrorMessage(err);
       }
 
       // Standalone mode: 返回 pool 中的活跃连接
@@ -132,7 +130,7 @@ export function registerConnectTools(server: McpServer, pool: ConnectionPool, ip
       }));
       result.push(...poolConns);
 
-      return makeResult({ connections: result });
+      return makeResult(vscode ? { connections: result, vscode } : { connections: result });
     }
   );
 

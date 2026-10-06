@@ -1,7 +1,3 @@
-export function isPoolConnection(id: string): boolean {
-  return id.startsWith('conn_');
-}
-
 export const ErrorCode = {
   CONNECTION_NOT_FOUND: 'CONNECTION_NOT_FOUND',
   NOT_CONNECTED: 'NOT_CONNECTED',
