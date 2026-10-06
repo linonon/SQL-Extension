@@ -21,6 +21,7 @@ export class ConnectionManager implements vscode.Disposable {
   private readonly drivers = new Map<string, IDatabaseDriver | IRedisDriver | IKafkaDriver | IRabbitMQDriver>();
   private readonly tunnels = new Map<string, TunnelHandle>();
   private readonly states = new Map<string, ConnectionState>();
+  private readonly inflight = new Map<string, Promise<void>>();
   private readonly _onDidChange = new vscode.EventEmitter<void>();
   readonly onDidChange = this._onDidChange.event;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -114,11 +115,21 @@ export class ConnectionManager implements vscode.Disposable {
     this._onDidChange.fire();
   }
 
-  async connect(id: string): Promise<void> {
-    const currentState = this.states.get(id);
-    if (currentState === 'connecting' || currentState === 'connected') {
-      return;
+  // 同一 id 并发 connect 共用一次连接过程 (UI 点击与 agent 请求可能同时到达),
+  // 否则会各建一个 driver / SSH tunnel, 后到者还会在 'connecting' 时提前返回拿不到 driver.
+  connect(id: string): Promise<void> {
+    if (this.states.get(id) === 'connected') {
+      return Promise.resolve();
     }
+    let p = this.inflight.get(id);
+    if (!p) {
+      p = this.doConnect(id).finally(() => this.inflight.delete(id));
+      this.inflight.set(id, p);
+    }
+    return p;
+  }
+
+  private async doConnect(id: string): Promise<void> {
     const config = this.getConnections().find((c) => c.id === id);
     if (!config) {
       throw new Error(`Connection not found: ${id}`);

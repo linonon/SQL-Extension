@@ -263,6 +263,21 @@ export class RedisDriver implements IRedisDriver {
     return this.client!.call(command, ...rest);
   }
 
+  // ponytail: 每次调用新建一条连接, 调用频繁时再按 db 缓存 duplicate
+  async executeCommandInDb(db: number | undefined, args: readonly string[]): Promise<unknown> {
+    this.assertConnected();
+    if (args.length === 0) {
+      throw new Error('No command provided');
+    }
+    const client = this.client!.duplicate(db === undefined ? {} : { db });
+    try {
+      const [command, ...rest] = args;
+      return await client.call(command, ...rest);
+    } finally {
+      client.disconnect();
+    }
+  }
+
   private assertConnected(): void {
     if (!this.client) {
       throw new Error('Redis driver is not connected');

@@ -8,7 +8,7 @@ import { ConnectionTreeProvider } from './providers/connection-tree-provider.js'
 import { TableViewProvider } from './providers/table-view-provider.js';
 import { ConnectionTreeItem, setResourcesPath } from './providers/tree-items.js';
 import { DumpService } from './services/dump-service.js';
-import { IpcServer } from './services/ipc-server.js';
+import { IpcServer, SOCKET_PATH } from './services/ipc-server.js';
 import type { DriverType } from './types/connection.js';
 
 function deployMcpServer(extensionPath: string): void {
@@ -236,12 +236,21 @@ export function activate(context: vscode.ExtensionContext): void {
   connectionManager.onDidChange(() => {
     for (const info of connectionManager.getConnectionInfo()) {
       const prev = previousStates.get(info.config.id);
-      if (prev !== 'connected' && info.state === 'connected') {
+      // 外部 agent 经 IPC 发起的连接不弹 browser
+      if (prev !== 'connected' && info.state === 'connected' && !ipcServer.isAgentConnect(info.config.id)) {
         openBrowserForConnection(info.config.id, info.config.name, info.config.driverType);
       }
       previousStates.set(info.config.id, info.state);
     }
   });
+
+  // 向 Copilot Chat / Agent 注册 MCP server, 用户无需手写 mcp.json; 钉到本窗口的 socket
+  const mcpServerPath = path.join(context.extensionPath, 'dist', 'mcp-server.js');
+  context.subscriptions.push(vscode.lm.registerMcpServerDefinitionProvider('sqlext.mcp', {
+    provideMcpServerDefinitions: () => [
+      new vscode.McpStdioServerDefinition('Database Explorer', process.execPath, [mcpServerPath], { SQLEXT_IPC_SOCK: SOCKET_PATH }, context.extension.packageJSON.version),
+    ],
+  }));
 
   context.subscriptions.push(treeView, connectionManager, viewProvider, { dispose: () => ipcServer.dispose() });
 }

@@ -1,6 +1,11 @@
 import type { ConnectionPool } from './connection-pool.js';
 import type { IpcClient } from './ipc-client.js';
-import { isPoolConnection, ErrorCode } from './utils.js';
+import type { IDatabaseDriver } from '../types/driver.js';
+import type { IRedisDriver } from '../types/redis-driver.js';
+import type { IKafkaDriver } from '../types/kafka-driver.js';
+import type { IRabbitMQDriver } from '../types/rabbitmq-driver.js';
+import type { MongoDriver } from '../drivers/mongo-driver.js';
+import { ErrorCode } from './utils.js';
 import { isReadonlySQL, enforceLimit, isMultiStatement } from './sql-validator.js';
 import { parseRedisCommand } from './parsers/redis-parser.js';
 import { parseMongoQuery, READ_METHODS } from './parsers/mongo-parser.js';
@@ -25,8 +30,24 @@ const MAX_LIMIT = 500;
 
 const FORBIDDEN_STAGES = new Set(['$out', '$merge']);
 
-export type RouteMode = 'read' | 'execute';
+// 0 / 负数 / 非整数都会让驱动取消上限, 一律回落到 MAX_LIMIT
+const capLimit = (n: unknown): number =>
+  Number.isInteger(n) && (n as number) > 0 ? Math.min(n as number, MAX_LIMIT) : MAX_LIMIT;
 
+export type RouteMode = 'read' | 'execute';
+export type ToolResult = ReturnType<typeof makeResult> | ReturnType<typeof makeError>;
+
+// 取 driver 的来源: MCP 进程内的 standalone pool, 或 VS Code 扩展里的 ConnectionManager
+export interface DriverSource {
+  getDriver(id: string): IDatabaseDriver;
+  getRedisDriver(id: string): IRedisDriver;
+  getMongoDriver(id: string): MongoDriver;
+  getKafkaDriver(id: string): IKafkaDriver;
+  getRabbitMQDriver(id: string): IRabbitMQDriver;
+}
+
+// standalone 连接在本进程执行; 其余 id 视为 VS Code 已保存连接, 整条转给扩展,
+// 扩展侧同样经 routeByDriver 执行, 两条路径共用全部只读 / 上限校验.
 export async function routeQuery(
   mode: RouteMode,
   connectionId: string,
@@ -34,44 +55,47 @@ export async function routeQuery(
   database: string | undefined,
   pool: ConnectionPool,
   ipc: IpcClient,
-) {
+): Promise<ToolResult> {
   try {
-    let driverType: string;
-    if (isPoolConnection(connectionId)) {
-      driverType = pool.getEntry(connectionId).driverType;
-    } else if (ipc.connected) {
-      const result = await ipc.request(mode, { connectionId, query, database });
-      return makeResult(result);
-    } else {
-      return makeError(
-        `Connection '${connectionId}' not found. Use db_list_connections to see available connections.`,
-        ErrorCode.CONNECTION_NOT_FOUND,
-      );
+    if (pool.has(connectionId)) {
+      const entry = pool.getEntry(connectionId);
+      return await routeByDriver(mode, entry.driverType, connectionId, query, database || entry.database || undefined, pool);
     }
-
-    switch (driverType) {
-      case 'mysql':
-      case 'postgresql':
-        return await routeSQL(mode, connectionId, query, database, pool);
-      case 'redis':
-        return await routeRedis(mode, connectionId, query, database, pool);
-      case 'mongodb':
-        return await routeMongo(mode, connectionId, query, database, pool);
-      case 'kafka':
-        return await routeKafka(mode, connectionId, query, pool);
-      case 'rabbitmq':
-        return await routeRabbitMQ(mode, connectionId, query, pool);
-      default:
-        return makeError(`Unsupported driver type: ${driverType}`, ErrorCode.UNSUPPORTED_COMMAND);
-    }
+    return await ipc.request(mode, { connectionId, query, database }) as ToolResult;
   } catch (err) {
     return makeError(toErrorMessage(err), ErrorCode.QUERY_FAILED);
   }
 }
 
+/** database 为调用方显式值, 缺省时应已回落到连接配置的默认库. */
+export async function routeByDriver(
+  mode: RouteMode,
+  driverType: string,
+  connectionId: string,
+  query: string,
+  database: string | undefined,
+  drivers: DriverSource,
+): Promise<ToolResult> {
+  switch (driverType) {
+    case 'mysql':
+    case 'postgresql':
+      return routeSQL(mode, driverType, connectionId, query, database, drivers);
+    case 'redis':
+      return routeRedis(mode, connectionId, query, database, drivers);
+    case 'mongodb':
+      return routeMongo(mode, connectionId, query, database, drivers);
+    case 'kafka':
+      return routeKafka(mode, connectionId, query, drivers);
+    case 'rabbitmq':
+      return routeRabbitMQ(mode, connectionId, query, drivers);
+    default:
+      return makeError(`Unsupported driver type: ${driverType}`, ErrorCode.UNSUPPORTED_COMMAND);
+  }
+}
+
 async function routeSQL(
-  mode: RouteMode, connectionId: string, query: string,
-  database: string | undefined, pool: ConnectionPool,
+  mode: RouteMode, driverType: string, connectionId: string, query: string,
+  database: string | undefined, drivers: DriverSource,
 ) {
   if (isMultiStatement(query)) {
     return makeError(
@@ -87,13 +111,26 @@ async function routeSQL(
         ErrorCode.READONLY_VIOLATION,
       );
     }
-    query = enforceLimit(query);
+    query = enforceLimit(query, undefined, driverType === 'mysql');
   }
 
-  const driver = pool.getDriver(connectionId);
-  const entry = pool.getEntry(connectionId);
+  // MySQL 池连接会残留 UI 编辑器的 USE, 不带库执行落在哪个 schema 不确定 (读写同理)
+  const isMysql = driverType === 'mysql';
+  if (isMysql && !database) {
+    return makeError(
+      'database is required for MySQL (the connection has no default). Pass any existing schema, e.g. information_schema, for server-level statements.',
+      ErrorCode.MISSING_DATABASE,
+    );
+  }
+
+  const driver = drivers.getDriver(connectionId);
+  if (mode === 'read' && !driver.executeReadOnly) {
+    return makeError(`Driver '${driverType}' has no read-only execution.`, ErrorCode.UNSUPPORTED_COMMAND);
+  }
   let result: QueryResultData;
-  if (database && entry.driverType === 'mysql') {
+  if (mode === 'read') {
+    result = await driver.executeReadOnly!(query, isMysql ? database : undefined) as QueryResultData;
+  } else if (isMysql) {
     const { promise } = driver.executeCancellable(query, undefined, database);
     result = await promise as QueryResultData;
   } else {
@@ -111,7 +148,7 @@ async function routeSQL(
 
 async function routeRedis(
   mode: RouteMode, connectionId: string, query: string,
-  database: string | undefined, pool: ConnectionPool,
+  database: string | undefined, drivers: DriverSource,
 ) {
   const args = parseRedisCommand(query);
   const cmd = args[0].toUpperCase();
@@ -137,25 +174,25 @@ async function routeRedis(
     }
   }
 
-  const driver = pool.getRedisDriver(connectionId);
+  let dbIndex: number | undefined;
   if (database !== undefined) {
-    const dbIndex = parseInt(database, 10);
-    if (isNaN(dbIndex) || dbIndex < 0 || dbIndex > 15) {
+    dbIndex = Number(database);
+    if (!Number.isInteger(dbIndex) || dbIndex < 0 || dbIndex > 15) {
       return makeError(
         `Redis database must be 0-15, got '${database}'.`,
         ErrorCode.INVALID_DATABASE,
       );
     }
-    await driver.selectDatabase(dbIndex);
   }
 
-  const result = await driver.executeCommand(safeArgs);
+  // 独立连接执行: 不 SELECT 共享 client, 免得和 UI 浏览的库互相串
+  const result = await drivers.getRedisDriver(connectionId).executeCommandInDb(dbIndex, safeArgs);
   return makeResult(result);
 }
 
 async function routeMongo(
   mode: RouteMode, connectionId: string, query: string,
-  database: string | undefined, pool: ConnectionPool,
+  database: string | undefined, drivers: DriverSource,
 ) {
   if (!database) {
     return makeError(
@@ -201,9 +238,8 @@ async function routeMongo(
     }
   }
 
-  const driver = pool.getMongoDriver(connectionId);
-  const limit = mode === 'read' ? (params.limit ?? MAX_LIMIT) : undefined;
-  const safeLimit = limit ? Math.min(limit, MAX_LIMIT) : undefined;
+  const driver = drivers.getMongoDriver(connectionId);
+  const safeLimit = mode === 'read' ? capLimit(params.limit) : undefined;
 
   const args: unknown[] = [];
   switch (params.method) {
@@ -253,7 +289,7 @@ async function routeMongo(
 }
 
 async function routeKafka(
-  mode: RouteMode, connectionId: string, query: string, pool: ConnectionPool,
+  mode: RouteMode, connectionId: string, query: string, drivers: DriverSource,
 ) {
   const params = parseKafkaQuery(query);
   const readSet = new Set(READ_ACTIONS as readonly string[]);
@@ -265,7 +301,7 @@ async function routeKafka(
     );
   }
 
-  const driver = pool.getKafkaDriver(connectionId);
+  const driver = drivers.getKafkaDriver(connectionId);
 
   switch (params.action) {
     case 'listTopics':
@@ -279,7 +315,7 @@ async function routeKafka(
       if (!params.topic) {
         return makeError('Missing required field: topic', ErrorCode.PARSE_FAILED);
       }
-      const limit = Math.min(params.limit ?? MAX_LIMIT, MAX_LIMIT);
+      const limit = capLimit(params.limit);
       const result = await driver.fetchMessages(
         params.topic, params.partition ?? 0, params.offset ?? '0', limit,
       );
@@ -300,7 +336,7 @@ async function routeKafka(
 }
 
 async function routeRabbitMQ(
-  mode: RouteMode, connectionId: string, query: string, pool: ConnectionPool,
+  mode: RouteMode, connectionId: string, query: string, drivers: DriverSource,
 ) {
   if (mode === 'execute') {
     return makeError(
@@ -310,7 +346,7 @@ async function routeRabbitMQ(
   }
 
   const params = parseRabbitMQQuery(query);
-  const driver = pool.getRabbitMQDriver(connectionId);
+  const driver = drivers.getRabbitMQDriver(connectionId);
 
   switch (params.action) {
     case 'listQueues':

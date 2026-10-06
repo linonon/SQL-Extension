@@ -175,6 +175,25 @@ export class MySQLDriver implements IDatabaseDriver {
     }
   }
 
+  // 写语句 (含 WITH ... DELETE / EXPLAIN ANALYZE DML) 被只读事务拒绝; 多语句由 mysql2 默认
+  // multipleStatements=false 拒绝. DDL 会隐式提交绕过只读事务, 由调用方的前缀白名单挡住.
+  async executeReadOnly(sql: string, database?: string): Promise<QueryResult> {
+    this.assertConnected();
+    const conn = await this.pool!.getConnection();
+    try {
+      if (database) {
+        await conn.query(`USE \`${database.replace(/`/g, '``')}\``);
+      }
+      await conn.query('START TRANSACTION READ ONLY');
+      const start = Date.now();
+      const [result, fields] = await conn.query(sql);
+      return this.toQueryResult(result, fields, Date.now() - start);
+    } finally {
+      // 销毁而非归还: 会话级副作用 (GET_LOCK, 用户变量, USE) 能活过 ROLLBACK, 不能留给 UI 共用的池
+      conn.destroy();
+    }
+  }
+
   executeCancellable(sql: string, params?: unknown[], database?: string): {
     promise: Promise<QueryResult>;
     cancel: () => void;

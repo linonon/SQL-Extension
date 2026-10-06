@@ -56,15 +56,17 @@ describe('splitSqlStatements', () => {
     expect(splitSqlStatements('SELECT 1; SELECT 2;')).toEqual(['SELECT 1', 'SELECT 2']);
   });
 
-  it('字符串内分号不切分 (strip 后字符串变空串, 仍为单段)', () => {
-    // stripCommentsAndStrings 把 'a;b' 替换成 '', 分号随之消失, 不会切成两段
+  it('字符串内分号不切分, 且返回原文 (字符串内容保留)', () => {
     expect(splitSqlStatements("UPDATE t SET note = 'a;b';")).toEqual([
-      "UPDATE t SET note = ''",
+      "UPDATE t SET note = 'a;b'",
+    ]);
+    expect(splitSqlStatements(`SELECT "x;y", 'it\\'s;', \`a;b\` FROM t`)).toEqual([
+      `SELECT "x;y", 'it\\'s;', \`a;b\` FROM t`,
     ]);
   });
 
-  it('块注释去掉后再按分号切', () => {
-    expect(splitSqlStatements('SELECT 1 /* ; */ ; SELECT 2')).toEqual(['SELECT 1', 'SELECT 2']);
+  it('注释内分号不切分, 注释原样保留; 只剩注释的段丢掉', () => {
+    expect(splitSqlStatements('SELECT 1 /* ; */ ; SELECT 2 -- a;b\n; -- tail')).toEqual(['SELECT 1 /* ; */', 'SELECT 2 -- a;b']);
   });
 
   it('全空白返回空数组', () => {

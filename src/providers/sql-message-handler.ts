@@ -8,6 +8,7 @@ import { buildAlterTableStatements } from '../utils/alter-table-builder.js';
 import { isWholeTableWrite, splitSqlStatements } from '../utils/destructive-sql.js';
 import type { StatementResult } from '../types/messages.js';
 import { sanitizeErrorMessage } from '../utils/sanitize-error.js';
+import { cancelAiAsk, listAiModels, runAiAsk, setAiModel } from '../services/ai-assist.js';
 
 // SQL (MySQL/PostgreSQL) CRUD 消息处理. 与 handleMongoMessage / handleRedisMessage 等对齐:
 // 由 provider 解析依赖后调用, 返回 true 表示已处理 (provider 即停止路由), false 表示非 SQL 消息.
@@ -279,6 +280,46 @@ export async function handleSqlMessage(
           await vscode.workspace.fs.writeFile(uri, Buffer.from(message.content, 'utf-8'));
           vscode.window.showInformationMessage(`Exported to ${uri.fsPath}`);
         }
+        return true;
+      }
+
+      case 'aiAsk': {
+        const db = ctx.database ?? message.database;
+        const { id } = message;
+        // panel 关闭后 webview.postMessage 会抛, 回执丢掉即可
+        const send = (msg: unknown) => { try { ctx.post(msg); } catch { /* panel 已关闭 */ } };
+        try {
+          const model = await runAiAsk(ctx.panel, async () => ({
+            dialect: ctx.getDriver().driverType === 'postgresql' ? 'PostgreSQL' : 'MySQL',
+            database: db,
+            schema: await ctx.getSchema(db, false),
+            question: message.question,
+            sql: message.sql,
+            selection: message.selection,
+          }), (text) => send({ type: 'aiChunk', id, text }));
+          send({ type: 'aiDone', id, model });
+        } catch (err) {
+          send({ type: 'aiDone', id, error: err instanceof Error ? err.message : String(err) });
+        }
+        return true;
+      }
+
+      case 'aiListModels': {
+        try {
+          ctx.post({ type: 'aiModels', ...(await listAiModels()) });
+        } catch (err) {
+          ctx.post({ type: 'aiModels', models: [], selected: '', error: err instanceof Error ? err.message : String(err) });
+        }
+        return true;
+      }
+
+      case 'aiSetModel': {
+        await setAiModel(message.id);
+        return true;
+      }
+
+      case 'aiCancel': {
+        cancelAiAsk(ctx.panel);
         return true;
       }
 

@@ -117,6 +117,10 @@ export class ConnectionPool {
     }
   }
 
+  has(id: string): boolean {
+    return this.entries.has(id);
+  }
+
   getEntry(id: string): PoolEntry {
     const entry = this.entries.get(id);
     if (!entry) {

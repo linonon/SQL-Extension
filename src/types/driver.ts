@@ -24,6 +24,9 @@ export interface IDatabaseDriver {
     work: (exec: (sql: string, params?: unknown[]) => Promise<QueryResult>) => Promise<T>,
   ): Promise<T>;
 
+  // 只读事务内执行单条语句 (MCP db_read 的只读边界, 由数据库强制). 仅 MySQL / PostgreSQL 实现.
+  executeReadOnly?(sql: string, database?: string): Promise<QueryResult>;
+
   executeCancellable(
     sql: string,
     params?: unknown[],

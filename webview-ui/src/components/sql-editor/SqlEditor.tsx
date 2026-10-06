@@ -20,7 +20,7 @@ interface SqlEditorProps {
   readonly onExecute?: () => void;
   readonly onFormat?: () => void;
   readonly warnings?: readonly SqlWarning[];
-  readonly onSelectionChange?: (selectedText: string) => void;
+  readonly onSelectionChange?: (selectedText: string, start: number) => void;
 }
 
 // 测量 monospace 字符宽度
@@ -68,7 +68,7 @@ export function SqlEditor({
     if (!textarea || !onSelectionChange) return;
     const start = textarea.selectionStart;
     const end = textarea.selectionEnd;
-    onSelectionChange(start === end ? '' : value.slice(start, end));
+    onSelectionChange(start === end ? '' : value.slice(start, end), start);
   }, [onSelectionChange, value]);
 
   // mount 时测量字符宽度

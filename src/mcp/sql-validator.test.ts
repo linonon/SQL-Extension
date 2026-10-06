@@ -55,7 +55,7 @@ describe('isReadonlySQL', () => {
 
 describe('enforceLimit', () => {
   it('should append LIMIT 500 to SELECT without limit', () => {
-    expect(enforceLimit('SELECT * FROM users')).toBe('SELECT * FROM users LIMIT 500');
+    expect(enforceLimit('SELECT * FROM users')).toBe('SELECT * FROM users\nLIMIT 500');
   });
 
   it('should keep existing LIMIT if <= 500', () => {
@@ -67,11 +67,11 @@ describe('enforceLimit', () => {
   });
 
   it('should use requested limit if < 500', () => {
-    expect(enforceLimit('SELECT * FROM users', 50)).toBe('SELECT * FROM users LIMIT 50');
+    expect(enforceLimit('SELECT * FROM users', 50)).toBe('SELECT * FROM users\nLIMIT 50');
   });
 
   it('should cap requested limit at 500', () => {
-    expect(enforceLimit('SELECT * FROM users', 1000)).toBe('SELECT * FROM users LIMIT 500');
+    expect(enforceLimit('SELECT * FROM users', 1000)).toBe('SELECT * FROM users\nLIMIT 500');
   });
 
   it('should not add LIMIT to SHOW', () => {
@@ -87,7 +87,7 @@ describe('enforceLimit', () => {
   });
 
   it('should strip trailing semicolon before appending LIMIT', () => {
-    expect(enforceLimit('SELECT * FROM users;')).toBe('SELECT * FROM users LIMIT 500');
+    expect(enforceLimit('SELECT * FROM users;')).toBe('SELECT * FROM users\nLIMIT 500');
   });
 });
 
@@ -103,5 +103,45 @@ describe('isMultiStatement', () => {
   });
   it('should ignore semicolons in strings', () => {
     expect(isMultiStatement("SELECT * FROM t WHERE name = 'a;b'")).toBe(false);
+  });
+});
+
+describe('read guard hardening', () => {
+  it('rejects any INTO, including outside SELECT prefix', () => {
+    expect(isReadonlySQL("SELECT \"'\" INTO OUTFILE '/tmp/x' -- '\"")).toBe(false);
+    expect(isReadonlySQL('WITH a AS (SELECT 1) SELECT * INTO t FROM a')).toBe(false);
+  });
+
+  it('keeps LIMIT out of a trailing line comment', () => {
+    expect(enforceLimit('SELECT * FROM t -- all')).toBe('SELECT * FROM t -- all\nLIMIT 500');
+  });
+
+  it('caps LIMIT n OFFSET m and LIMIT m, n on the row count only', () => {
+    expect(enforceLimit('SELECT * FROM t LIMIT 50 OFFSET 0')).toBe('SELECT * FROM t LIMIT 50 OFFSET 0');
+    expect(enforceLimit('SELECT * FROM t LIMIT 9999 OFFSET 10')).toBe('SELECT * FROM t LIMIT 500 OFFSET 10');
+    expect(enforceLimit('SELECT * FROM t LIMIT 10, 9999')).toBe('SELECT * FROM t LIMIT 10, 500');
+    expect(enforceLimit('SELECT * FROM t LIMIT 10, 20')).toBe('SELECT * FROM t LIMIT 10, 20');
+  });
+});
+
+describe('LIMIT vs trailing comments and side-effect functions', () => {
+  it('ignores LIMIT inside a trailing comment', () => {
+    expect(enforceLimit('SELECT * FROM big -- LIMIT 1')).toBe('SELECT * FROM big -- LIMIT 1\nLIMIT 500');
+    expect(enforceLimit('SELECT * FROM big # LIMIT 1')).toBe('SELECT * FROM big # LIMIT 1\nLIMIT 500');
+  });
+
+  it('keeps an explicit LIMIT followed by a comment valid', () => {
+    expect(enforceLimit('SELECT * FROM t ORDER BY id DESC LIMIT 10 -- newest')).toBe('SELECT * FROM t ORDER BY id DESC LIMIT 10 -- newest');
+    expect(enforceLimit('SELECT * FROM t LIMIT 9999 -- all')).toBe('SELECT * FROM t LIMIT 500');
+  });
+
+  it('does not treat # as a comment on PostgreSQL', () => {
+    expect(enforceLimit("SELECT data #> '{a}' FROM t LIMIT 10", undefined, false)).toBe("SELECT data #> '{a}' FROM t LIMIT 10");
+  });
+
+  it('rejects session-scoped side-effect functions', () => {
+    expect(isReadonlySQL("SELECT GET_LOCK('m', 0)")).toBe(false);
+    expect(isReadonlySQL('SELECT pg_advisory_lock(1)')).toBe(false);
+    expect(isReadonlySQL('SELECT pg_terminate_backend(pid) FROM pg_stat_activity')).toBe(false);
   });
 });
