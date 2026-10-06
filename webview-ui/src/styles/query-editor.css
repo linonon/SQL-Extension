@@ -228,9 +228,13 @@
   gap: 8px;
 }
 
+/* 随内容长高, 最多 6 行后出滚动条 */
 .ai-ask-input {
   flex: 1;
   min-width: 0;
+  field-sizing: content;
+  max-height: calc(6lh + 10px);
+  resize: none;
   padding: 4px 6px;
   color: var(--vscode-input-foreground);
   background: var(--vscode-input-background);

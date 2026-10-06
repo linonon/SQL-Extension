@@ -45,7 +45,7 @@ let askSeq = 0;
 // 编辑器内联提问: 问题 + 当前 SQL + 表结构交给 Copilot 模型, 回答里的 ```sql 块可一键套用
 export function AiAskBar({ database, sql, selection, selectionStart, onApply, onClose }: AiAskBarProps) {
   const postMessage = usePostMessage();
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const reqId = useRef('');
   const busyRef = useRef(false);
   const [question, setQuestion] = useState('');
@@ -103,10 +103,11 @@ export function AiAskBar({ database, sql, selection, selectionStart, onApply, on
     postMessage({ type: 'aiAsk', id: reqId.current, database, question: q, sql, selection: s.selection });
   }, [question, busy, selection, selectionStart, database, sql, postMessage]);
 
-  const handleKeyDown = useCallback((e: KeyboardEvent<HTMLInputElement>) => {
+  const handleKeyDown = useCallback((e: KeyboardEvent<HTMLTextAreaElement>) => {
     // 输入法组字中的 Enter / Esc 属于输入法, 不提交也不关闭
     if (e.nativeEvent.isComposing || e.keyCode === 229) return;
-    if (e.key === 'Enter') { e.preventDefault(); ask(); }
+    // Enter 提交, Shift+Enter 换行
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ask(); }
     if (e.key === 'Escape') { e.preventDefault(); onClose(); }
   }, [ask, onClose]);
 
@@ -116,9 +117,10 @@ export function AiAskBar({ database, sql, selection, selectionStart, onApply, on
   return (
     <div className="ai-ask-bar">
       <div className="ai-ask-row">
-        <input
+        <textarea
           ref={inputRef}
           className="ai-ask-input"
+          rows={1}
           value={question}
           onChange={(e) => setQuestion(e.target.value)}
           onKeyDown={handleKeyDown}

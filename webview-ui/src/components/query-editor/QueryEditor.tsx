@@ -4,6 +4,7 @@ import { usePostMessage } from '../../hooks/usePostMessage';
 import { formatSql } from '../../utils/format-sql';
 import { diagnoseSql } from '../../utils/sql-linter';
 import { buildSelectSql } from '../../utils/sql-builder';
+import { statementAtCaret } from '../../../../src/utils/destructive-sql';
 import type { SortState } from '../../utils/sql-builder';
 import { SqlEditor } from '../sql-editor/SqlEditor';
 import { QueryHistory, useQueryHistory } from './QueryHistory';
@@ -214,17 +215,20 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const resolveSql = useCallback(() => {
-    // 格式化 / 历史 / AI 套用等程序改写内容时不触发选区事件, 记下的选区可能已过期: 原位置对不上就执行整段
+  // 有选区执行选区; 没有选区时快捷键 (带 caret) 只执行光标所在的那条语句, Execute 按钮执行整段
+  const resolveSql = useCallback((caret?: number) => {
+    // 格式化 / 历史 / AI 套用等程序改写内容时不触发选区事件, 记下的选区可能已过期: 原位置对不上就当没有选区
     const trimmedSelection = selectedText.trim();
     if (trimmedSelection && sqlText.startsWith(selectedText, selectionStart)) return trimmedSelection;
-    return sqlText.trim();
-  }, [selectedText, selectionStart, sqlText]);
+    // 宿主只在 MySQL 上按 ; 切分; 别的库含 dollar quote 或 \' 时客户端切不准 (函数体 / 以反斜杠结尾的字符串), 整段执行
+    if (caret === undefined || (driverType !== 'mysql' && /\$\w*\$|\\'/.test(sqlText))) return sqlText.trim();
+    return statementAtCaret(sqlText, caret) ?? '';
+  }, [selectedText, selectionStart, sqlText, driverType]);
 
-  const executeQuery = useCallback(() => {
+  const executeQuery = useCallback((caret?: number) => {
     // 执行中再按 Ctrl+Enter 不发新请求: 前一条会失去回执和 Cancel, 成为孤儿查询
     if (executing) return;
-    const trimmed = resolveSql();
+    const trimmed = resolveSql(caret);
     if (!trimmed) return;
     setSaveError(null);
     setBatchStatements(null);
@@ -359,7 +363,7 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
           {executing ? (
             <button onClick={cancelQuery}>Cancel</button>
           ) : (
-            <button onClick={executeQuery} disabled={!sqlText.trim()}>
+            <button onClick={() => executeQuery()} disabled={!sqlText.trim()} title="Execute the selection, or all statements">
               Execute
             </button>
           )}
@@ -376,7 +380,7 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
             Ask AI
           </button>
           <span className="db-badge" title={`Current database: ${database}`}>{database}</span>
-          <span className="hint">Ctrl+Enter to execute</span>
+          <span className="hint">Ctrl+Enter to execute the statement at cursor</span>
         </div>
       </div>
       {showAsk && (

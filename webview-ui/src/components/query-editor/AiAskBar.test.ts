@@ -1,5 +1,8 @@
-import { describe, expect, it } from 'vitest';
-import { applySql, extractSqlBlock } from './AiAskBar';
+import { describe, expect, it, vi } from 'vitest';
+import { createElement } from 'react';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { AiAskBar, applySql, extractSqlBlock } from './AiAskBar';
+import { mockPostMessage } from '../../__test__/setup';
 
 describe('AiAskBar helpers', () => {
   it('extracts the first sql block', () => {
@@ -19,5 +22,40 @@ describe('AiAskBar helpers', () => {
 
   it('refuses when the selected text changed since asking', () => {
     expect(applySql('SELECT 9;', { selection: 'SELECT 1;', start: 0 }, 'SELECT 3;')).toBeNull();
+  });
+});
+
+describe('AiAskBar 输入框', () => {
+  const setup = () => {
+    const onClose = vi.fn();
+    render(createElement(AiAskBar, { database: 'db', sql: 'SELECT 1', selection: '', selectionStart: 0, onApply: vi.fn(), onClose }));
+    const input = screen.getByTestId('ai-ask-input') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: 'first line' } });
+    const asked = () => mockPostMessage.mock.calls.map(([m]) => m).filter((m) => m.type === 'aiAsk');
+    return { input, onClose, asked };
+  };
+
+  it('多行输入: Shift+Enter 留给换行不提交, Enter 提交整段', () => {
+    const { input, asked } = setup();
+    expect(input.tagName).toBe('TEXTAREA');
+    expect(fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', shiftKey: true })).toBe(true);
+    expect(asked()).toHaveLength(0);
+
+    fireEvent.change(input, { target: { value: 'first line\nsecond line' } });
+    expect(fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' })).toBe(false);
+    expect(asked()).toHaveLength(1);
+    expect(asked()[0].question).toBe('first line\nsecond line');
+  });
+
+  it('输入法组字中的 Enter / Esc 既不提交也不关闭; 组字外 Esc 关闭', () => {
+    const { input, onClose, asked } = setup();
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', isComposing: true });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', keyCode: 229 });
+    fireEvent.keyDown(input, { key: 'Escape', code: 'Escape', isComposing: true });
+    expect(asked()).toHaveLength(0);
+    expect(onClose).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(input, { key: 'Escape', code: 'Escape' });
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

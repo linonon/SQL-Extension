@@ -123,29 +123,17 @@ export function getCompletionItems(
   ctx: AutocompleteContext,
   schema: Record<string, string[]>,
 ): readonly string[] {
-  if (ctx.triggerType === null) return [];
-
   const prefix = ctx.prefix.toLowerCase();
-
+  let candidates: readonly string[] = [];
   if (ctx.triggerType === 'table') {
-    const tables = Object.keys(schema);
-    const filtered = prefix
-      ? tables.filter((t) => t.toLowerCase().startsWith(prefix))
-      : tables;
-    return wrapQuoted(filtered, ctx.quoted);
+    candidates = Object.keys(schema);
+  } else if (ctx.triggerType === 'column' && ctx.tableName) {
+    candidates = schema[ctx.tableName] ?? schema[ctx.tableName.toLowerCase()] ?? [];
+  } else if (ctx.triggerType === 'keyword') {
+    candidates = [...SQL_KEYWORDS];
   }
-
-  if (ctx.triggerType === 'column' && ctx.tableName) {
-    const columns = schema[ctx.tableName] ?? schema[ctx.tableName.toLowerCase()] ?? [];
-    const filtered = prefix
-      ? columns.filter((c) => c.toLowerCase().startsWith(prefix))
-      : columns;
-    return wrapQuoted(filtered, ctx.quoted);
-  }
-
-  if (ctx.triggerType === 'keyword') {
-    return [...SQL_KEYWORDS].filter((kw) => kw.toLowerCase().startsWith(prefix));
-  }
-
-  return [];
+  const filtered = candidates.filter((c) => c.toLowerCase().startsWith(prefix));
+  // 已打出完整的候选 (忽略大小写) 时不弹: 这时的 Enter / Tab 是换行 / 缩进, 不能被换成更长的候选 (IN -> INSERT)
+  if (filtered.some((c) => c.toLowerCase() === prefix)) return [];
+  return ctx.triggerType === 'keyword' ? filtered : wrapQuoted(filtered, ctx.quoted);
 }

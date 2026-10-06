@@ -178,6 +178,16 @@ describe('getCompletionItems', () => {
     expect(items).toEqual([]);
   });
 
+  it('已打出完整的关键字 / 表名 / 列名 (忽略大小写) 时不弹, 即使还有更长的候选', () => {
+    const schema = { player: ['level', 'level_exp'], player_bag: ['id'] };
+    expect(getCompletionItems({ triggerType: 'keyword', prefix: 'in', quoted: false }, schema)).toEqual([]);
+    expect(getCompletionItems({ triggerType: 'keyword', prefix: 'INS', quoted: false }, schema)).toEqual(['INSERT']);
+    expect(getCompletionItems({ triggerType: 'table', prefix: 'Player', quoted: false }, schema)).toEqual([]);
+    expect(getCompletionItems({ triggerType: 'table', prefix: 'player_', quoted: true }, schema)).toEqual(['`player_bag`']);
+    expect(getCompletionItems({ triggerType: 'column', prefix: 'LEVEL', tableName: 'player', quoted: false }, schema)).toEqual([]);
+    expect(getCompletionItems({ triggerType: 'column', prefix: 'lev', tableName: 'player', quoted: false }, schema)).toEqual(['level', 'level_exp']);
+  });
+
   it('不存在的表名应该返回空数组', () => {
     const ctx: AutocompleteContext = { triggerType: 'column', prefix: '', tableName: 'nonexistent', quoted: false };
     const items = getCompletionItems(ctx, testSchema);

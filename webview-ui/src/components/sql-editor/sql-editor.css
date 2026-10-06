@@ -17,7 +17,8 @@
   left: 0;
   bottom: 0;
   width: 40px;
-  padding: 8px 4px 8px 0;
+  /* 底部多留一行: textarea 出横向滚动条时能多滚一截, 行号须跟得到底 */
+  padding: 8px 4px calc(8px + 1.5em) 0;
   text-align: right;
   background: var(--vscode-editorGutter-background, var(--vscode-editor-background));
   color: var(--vscode-editorLineNumber-foreground);
@@ -43,7 +44,7 @@
   overflow: auto;
 }
 
-/* 高亮层和输入层的共用字体属性 */
+/* 高亮层和输入层的共用排版: 不折行, 行号按逻辑行编号才能对齐 */
 .sql-editor-highlight,
 .sql-editor-input {
   font-family: var(--vscode-editor-font-family, monospace);
@@ -52,27 +53,26 @@
   padding: 8px;
   margin: 0;
   border: none;
-  white-space: pre-wrap;
-  word-wrap: break-word;
+  white-space: pre;
   tab-size: 2;
   letter-spacing: normal;
   box-sizing: border-box;
 }
 
-/* 高亮层: 只显示, 不接收事件 */
+/* 高亮层: 与 textarea 同尺寸的固定盒子, 只显示不接收事件, scrollTop / scrollLeft 由 handleScroll 跟随 textarea.
+   右侧多留: textarea 的竖向滚动条让它能多横滚一截, 高亮层须滚得到同一位置 */
 .sql-editor-highlight {
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
+  inset: 0;
+  padding-right: calc(8px + 2em);
   pointer-events: none;
-  min-height: 100%;
   overflow: hidden;
 }
 
-/* 输入层: 透明文字, 可见光标 */
+/* 输入层: 透明文字, 可见光标; block 去掉 inline 基线留白, 免得外层 body 也能滚 */
 .sql-editor-input {
   position: relative;
+  display: block;
   width: 100%;
   min-height: 100%;
   background: transparent;

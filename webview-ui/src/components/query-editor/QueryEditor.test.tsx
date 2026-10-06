@@ -16,7 +16,7 @@ vi.mock('../sql-editor/SqlEditor', () => ({
     value: string;
     onChange: (v: string) => void;
     placeholder?: string;
-    onExecute?: () => void;
+    onExecute?: (caret: number) => void;
   }) => (
     <textarea
       data-testid="sql-editor"
@@ -25,7 +25,7 @@ vi.mock('../sql-editor/SqlEditor', () => ({
       onChange={(e) => onChange(e.target.value)}
       onKeyDown={(e) => {
         if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-          onExecute?.();
+          onExecute?.(e.currentTarget.selectionStart);
         }
       }}
     />
@@ -93,7 +93,7 @@ describe('QueryEditor', () => {
 
     expect(screen.getByPlaceholderText('SELECT * FROM ...')).toBeInTheDocument();
     expect(screen.getByText('Execute')).toBeInTheDocument();
-    expect(screen.getByText('Ctrl+Enter to execute')).toBeInTheDocument();
+    expect(screen.getByText('Ctrl+Enter to execute the statement at cursor')).toBeInTheDocument();
   });
 
   it('应该在 SQL 为空时禁用 Execute 按钮', () => {
@@ -324,6 +324,39 @@ describe('QueryEditor', () => {
       type: 'requestSchema',
       database: 'test_db',
     });
+  });
+
+  it('无选区时 Ctrl+Enter 只执行光标所在的语句, Execute 按钮执行整段', () => {
+    render(<QueryEditor connectionId="conn-1" database="test_db" />);
+    const textarea = screen.getByPlaceholderText('SELECT * FROM ...') as HTMLTextAreaElement;
+    const text = 'SELECT 1;\nUPDATE t SET a = 1;\n';
+    const executed = () => mockPostMessage.mock.calls.filter(([m]) => m.type === 'executeQuery').map(([m]) => m.sql);
+    const finish = () => send({ type: 'queryResult', requestId: lastId('executeQuery'), columns: [], rows: [], affectedRows: 0, executionTime: 1 });
+    fireEvent.change(textarea, { target: { value: text } });
+
+    textarea.setSelectionRange(3, 3);
+    fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter', ctrlKey: true });
+    finish();
+    // 光标在结尾的空行里: 算 ; 之前那一条
+    textarea.setSelectionRange(text.length, text.length);
+    fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter', metaKey: true });
+    finish();
+    fireEvent.click(screen.getByText('Execute'));
+
+    expect(executed()).toEqual(['SELECT 1', 'UPDATE t SET a = 1', 'SELECT 1;\nUPDATE t SET a = 1;']);
+  });
+
+  it('PG 含 dollar quote 时 Ctrl+Enter 整段执行, 不切开函数体', () => {
+    render(<QueryEditor connectionId="conn-1" database="test_db" driverType="postgresql" />);
+    const textarea = screen.getByPlaceholderText('SELECT * FROM ...') as HTMLTextAreaElement;
+    const text = 'DO $$\nBEGIN\n  UPDATE accounts SET flagged = true WHERE score < 0;\n  DELETE FROM sessions WHERE user_id = 1;\nEND $$;';
+    fireEvent.change(textarea, { target: { value: text } });
+    const caret = text.indexOf('DELETE');
+    textarea.setSelectionRange(caret, caret);
+    fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter', metaKey: true });
+
+    const sent = mockPostMessage.mock.calls.filter(([m]) => m.type === 'executeQuery').map(([m]) => m.sql);
+    expect(sent).toEqual([text]);
   });
 
   it('执行中再按 Ctrl+Enter 不发第二条 executeQuery', () => {

@@ -40,10 +40,16 @@ function skipQuoted(sql: string, i: number, quote: string): number {
   return sql.length;
 }
 
-// 按引号 / 注释之外的 ; 切分, 返回原文片段 (要拿去执行, 不能是去掉字符串后的文本);
-// 丢掉只剩空白或注释的段. Execute 多语句与破坏性确认网共用.
-export function splitSqlStatements(sql: string): string[] {
-  const parts: string[] = [];
+// 按引号 / 注释之外的 ; 切分, 返回每条语句在原文中的 [start, end) 区间 (去掉首尾空白, 不含 ;);
+// 丢掉只剩空白或注释的段. Execute 多语句, 破坏性确认网与 webview 的光标所在语句共用.
+function splitSqlStatementRanges(sql: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
+  const push = (from: number, to: number) => {
+    const part = sql.slice(from, to);
+    const start = from + part.length - part.trimStart().length;
+    const end = to - (part.length - part.trimEnd().length);
+    if (stripCommentsAndStrings(sql.slice(start, end)).length > 0) ranges.push([start, end]);
+  };
   let start = 0;
   let i = 0;
   while (i < sql.length) {
@@ -57,14 +63,35 @@ export function splitSqlStatements(sql: string): string[] {
       const end = sql.indexOf('*/', i + 2);
       i = end < 0 ? sql.length : end + 2;
     } else if (c === ';') {
-      parts.push(sql.slice(start, i));
+      push(start, i);
       start = ++i;
     } else {
       i++;
     }
   }
-  parts.push(sql.slice(start));
-  return parts.map((p) => p.trim()).filter((p) => stripCommentsAndStrings(p).length > 0);
+  push(start, sql.length);
+  return ranges;
+}
+
+// 按引号 / 注释之外的 ; 切分, 返回原文片段 (要拿去执行, 不能是去掉字符串后的文本)
+export function splitSqlStatements(sql: string): string[] {
+  return splitSqlStatementRanges(sql).map(([start, end]) => sql.slice(start, end));
+}
+
+// 区间开头的空白与注释 (只用于定位代码起点, 不用于执行)
+const LEADING_BLANK = /^(?:\s|--[^\n]*|\/\*[\s\S]*?\*\/)*/;
+
+// 光标所在的那条语句 (原文, 去掉首尾空白): 光标在语句内, 或在它的 ; 之后到下一条的第一个代码字符之前
+// (中间的空白和注释) 都算这一条; 落在第一条之前算第一条. 没有语句返回 undefined
+export function statementAtCaret(sql: string, caret: number): string | undefined {
+  const ranges = splitSqlStatementRanges(sql);
+  const codeStarts = ranges.map(([start, end]) => start + LEADING_BLANK.exec(sql.slice(start, end))![0].length);
+  let pick = 0;
+  codeStarts.forEach((codeStart, i) => { if (codeStart <= caret) pick = i; });
+  // ; 与下一条之间没有空白时, 光标紧贴 ; 之后仍算前一条
+  if (pick > 0 && codeStarts[pick] === caret && sql[caret - 1] === ';') pick--;
+  const range = ranges[pick];
+  return range && sql.slice(range[0], range[1]);
 }
 
 export const OPEN_TRANSACTION_WARNING =

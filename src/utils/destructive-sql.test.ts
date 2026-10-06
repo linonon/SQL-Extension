@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isWholeTableWrite, openTransactionWarning, splitSqlStatements } from './destructive-sql';
+import { isWholeTableWrite, openTransactionWarning, splitSqlStatements, statementAtCaret } from './destructive-sql';
 
 describe('isWholeTableWrite', () => {
   it('DROP / TRUNCATE 总是需要确认', () => {
@@ -71,6 +71,46 @@ describe('splitSqlStatements', () => {
 
   it('全空白返回空数组', () => {
     expect(splitSqlStatements('   ;  ;')).toEqual([]);
+  });
+});
+
+describe('statementAtCaret', () => {
+  const at = (marked: string) => statementAtCaret(marked.replace('|', ''), marked.indexOf('|'));
+
+  it('光标在语句内 / 语句末尾 / ; 之前: 取这一条', () => {
+    expect(at('SELECT 1;\nUPD|ATE t SET a = 1;\nSELECT 3')).toBe('UPDATE t SET a = 1');
+    expect(at('SELECT 1;\nSELECT 2|')).toBe('SELECT 2');
+    expect(at('SELECT 1|;\nSELECT 2')).toBe('SELECT 1');
+  });
+
+  it('光标紧贴 ; 之后或落在其后的空白 / 空行里: 取前一条', () => {
+    expect(at('SELECT 1;|\nSELECT 2')).toBe('SELECT 1');
+    expect(at('SELECT 1;|SELECT 2')).toBe('SELECT 1');
+    expect(at('SELECT 1;  |\n\nSELECT 2')).toBe('SELECT 1');
+    expect(at('SELECT 1;\n|\nSELECT 2')).toBe('SELECT 1');
+    expect(at('SELECT 1;\nSELECT 2;\n|')).toBe('SELECT 2');
+  });
+
+  it('; 之后的注释里 (下一条的代码之前): 取前一条', () => {
+    expect(at('SELECT 1; -- c|\nUPDATE t SET a = 1 WHERE id = 2;')).toBe('SELECT 1');
+    expect(at('SELECT 1; /* x */|\nDELETE FROM t WHERE id = 3;')).toBe('SELECT 1');
+    expect(at('SELECT 1;\n-- next|\nDELETE FROM t WHERE id = 3;')).toBe('SELECT 1');
+    // 光标到了下一条的第一个代码字符: 取下一条 (带着它前导的注释)
+    expect(at('SELECT 1; /* x */\n|DELETE FROM t WHERE id = 3;')).toBe('/* x */\nDELETE FROM t WHERE id = 3');
+  });
+
+  it('光标在下一条开头: 取下一条; 在第一条之前的空白里: 取第一条', () => {
+    expect(at('SELECT 1;\n|SELECT 2')).toBe('SELECT 2');
+    expect(at('|\n  SELECT 1; SELECT 2')).toBe('SELECT 1');
+  });
+
+  it('引号 / 反引号 / 注释里的 ; 不切分', () => {
+    expect(at("SELECT 'a;b', `c;d` /* ; */ FROM t -- ;\nWHERE x|=1; SELECT 2")).toBe("SELECT 'a;b', `c;d` /* ; */ FROM t -- ;\nWHERE x=1");
+  });
+
+  it('空文本 / 只有空白和注释: 没有语句', () => {
+    expect(at('|')).toBeUndefined();
+    expect(at('  ;\n-- note\n|')).toBeUndefined();
   });
 });
 
