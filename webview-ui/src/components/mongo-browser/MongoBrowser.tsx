@@ -83,6 +83,10 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
   const [loading, setLoading] = useState(false);
   const [collectionsLoading, setCollectionsLoading] = useState(false);
   const [queryError, setQueryError] = useState<string | null>(null);
+  // 写操作 (文档 / 集合) 的失败原因, 行内显示 (webview sandbox 里 alert 不弹); 下次取数或写成功时清掉
+  const [writeError, setWriteError] = useState<string | null>(null);
+  // 每条文档写回执一个新对象, 编辑器据此决定关闭还是保留草稿
+  const [writeResult, setWriteResult] = useState<{ readonly ok: boolean } | null>(null);
   const [panelWidth, setPanelWidth] = useState(220);
   const [pendingSwitchSignal, setPendingSwitchSignal] = useState(0);
   const [explain, setExplain] = useState<{ loading?: boolean; summary?: MongoExplainSummary; error?: string } | null>(null);
@@ -101,6 +105,7 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
   const fetchDocs = useCallback((q: AppliedQuery, p: number, count: boolean) => {
     if (!selected) { return; }
     setQueryError(null);
+    setWriteError(null);
     setLoading(true);
     setPage(p);
     findIdRef.current = ++findSeq;
@@ -145,29 +150,23 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
         if (msg.requestId === countIdRef.current) { setTotal(msg.total); }
         break;
       case 'error':
+        // 笼统失败 (如按需重连失败) 由 App 显示; 这里清掉 spinner, 挂起的保存按失败处理 (保留草稿)
         setLoading(false);
-        // 集合列表加载若失败 (mongoListAllCollections 抛错), 后端回笼统 error: 同步清掉 spinner 避免左栏永久转
         setCollectionsLoading(false);
-        setQueryError(msg.message);
+        setWriteResult({ ok: false });
+        setExplain((prev) => (prev?.loading ? null : prev));
         break;
       case 'mongoOperationResult':
+        setWriteResult({ ok: msg.success });
         if (!msg.success) {
-          alert(`Operation failed: ${msg.error ?? 'Unknown error'}`);
+          setWriteError(`Operation failed: ${msg.error ?? 'Unknown error'}`);
         } else {
           handleRefetch();
         }
         break;
-      case 'mongoExportResult':
-        if (!msg.success) {
-          alert(`Export failed: ${msg.error ?? 'Unknown error'}`);
-        }
-        break;
+      // 导出 / 导入的失败由宿主弹提示 (宿主侧流程: 文件对话框 / 进度)
       case 'mongoImportResult':
-        if (!msg.success) {
-          alert(`Import failed: ${msg.error ?? 'Unknown error'}`);
-        } else {
-          handleRefetch();
-        }
+        if (msg.success) { handleRefetch(); }
         break;
       case 'mongoExplainResult':
         // 只接收进行中的 explain: 切 collection 时面板已清空, 旧 collection 迟到的结果丢弃
@@ -175,7 +174,7 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
         break;
       case 'mongoCollectionCreated':
         if (!msg.success) {
-          alert(`Create collection failed: ${msg.error ?? 'Unknown error'}`);
+          setWriteError(`Create collection failed: ${msg.error ?? 'Unknown error'}`);
         }
         break;
       case 'mongoCollectionDropped':
@@ -188,7 +187,7 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
           });
         }
         if (!msg.success) {
-          alert(`Drop collection failed: ${msg.error ?? 'Unknown error'}`);
+          setWriteError(`Drop collection failed: ${msg.error ?? 'Unknown error'}`);
         }
         break;
     }
@@ -351,6 +350,7 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
 
   return (
     <div className="mongo-browser">
+      {writeError && <div className="mongo-error" role="alert">{writeError}</div>}
       <div className="mongo-body">
         <div className="mongo-left-panel" style={{ width: panelWidth }}>
           <MongoCollectionList
@@ -392,6 +392,7 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
               onCloneDocument={handleCloneDocument}
               onDeleteDocument={handleDeleteDocument}
               queryError={queryError}
+              writeResult={writeResult}
               onExport={handleExport}
               onImport={handleImport}
               onExplain={handleExplain}

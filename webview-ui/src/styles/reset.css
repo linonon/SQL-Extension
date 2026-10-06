@@ -89,3 +89,39 @@ a:hover {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--vscode-scrollbarSlider-hoverBackground);
 }
+
+/* 宿主笼统失败的提示条: 浮在视图底部, 不挤占各视图 100% 高度的布局 */
+.host-error-bar {
+  position: fixed;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--vscode-errorForeground);
+  background-color: var(--vscode-inputValidation-errorBackground, rgba(90, 29, 29, 0.95));
+  border: 1px solid var(--vscode-inputValidation-errorBorder, #be1100);
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.host-error-bar span {
+  flex: 1;
+}
+
+/* 视图内的行内错误条 (Redis / Kafka 浏览器顶部) */
+.inline-error {
+  flex-shrink: 0;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--vscode-errorForeground);
+  background-color: var(--vscode-inputValidation-errorBackground, rgba(255, 0, 0, 0.1));
+  border-bottom: 1px solid var(--vscode-inputValidation-errorBorder, #f44);
+  white-space: pre-wrap;
+  word-break: break-word;
+}

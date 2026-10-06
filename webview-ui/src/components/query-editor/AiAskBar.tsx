@@ -76,6 +76,12 @@ export function AiAskBar({ database, sql, selection, selectionStart, onApply, on
       setModelId(message.models.some(m => m.id === message.selected) ? message.selected : (message.models[0]?.id ?? ''));
       return;
     }
+    // 笼统失败 (如按需重连失败, 提问没送到) 由 App 显示, 这里只结束 busy
+    if (message.type === 'error') {
+      busyRef.current = false;
+      setBusy(false);
+      return;
+    }
     if ((message.type !== 'aiChunk' && message.type !== 'aiDone') || message.id !== reqId.current) return;
     if (message.type === 'aiChunk') {
       setAnswer((prev) => prev + message.text);

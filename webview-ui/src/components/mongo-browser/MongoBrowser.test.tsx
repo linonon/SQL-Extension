@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { act, render } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import { MongoBrowser, isPathProjection } from './MongoBrowser';
 import { mockPostMessage } from '../../__test__/setup';
 import type { ExtensionMessage } from '../../types/messages';
@@ -158,5 +158,34 @@ describe('MongoBrowser - 切集合后旧查询的回执丢弃', () => {
     send({ type: 'mongoDocumentList', requestId: lastFindId(), columns: [], rows: [{ _id: 1, from: 'orders' }] });
     expect(tableProps.rows).toEqual([{ _id: 1, from: 'orders' }]);
     expect(tableProps.loading).toBe(false);
+  });
+});
+
+describe('MongoBrowser - 写失败可见', () => {
+  it('写失败行内显示 (不用 alert), 把失败回执交给编辑器保留草稿; 下次取数清掉', () => {
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
+    openUsers();
+    send({ type: 'mongoOperationResult', success: false, error: 'E11000 duplicate key error' });
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Operation failed: E11000 duplicate key error');
+    expect(tableProps.writeResult).toEqual({ ok: false });
+    expect(alertSpy).not.toHaveBeenCalled();
+
+    act(() => { tableProps.onApply(); });
+    expect(screen.queryByRole('alert')).toBeNull();
+    alertSpy.mockRestore();
+  });
+
+  it('笼统 error 结束挂起的 explain spinner, 已出结果的 explain 保留', () => {
+    openUsers();
+    act(() => { tableProps.onExplain(); });
+    expect(tableProps.explain).toEqual({ loading: true });
+    send({ type: 'error', message: 'Failed to connect: x' });
+    expect(tableProps.explain).toBeNull();
+
+    act(() => { tableProps.onExplain(); });
+    send({ type: 'mongoExplainResult', summary: { stage: 'IXSCAN', isCollScan: false } });
+    send({ type: 'error', message: 'Failed to connect: x' });
+    expect(tableProps.explain).toMatchObject({ summary: { stage: 'IXSCAN' } });
   });
 });

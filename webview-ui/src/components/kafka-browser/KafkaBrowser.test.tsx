@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { act, render } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import { KafkaBrowser } from './KafkaBrowser';
 import type { ExtensionMessage } from '../../types/messages';
 import type { KafkaMessage, KafkaPartitionInfo } from '../../types/kafka';
@@ -77,5 +77,32 @@ describe('KafkaBrowser - Latest / Refresh / 超时提示', () => {
     act(() => { tableProps.onRefreshPartitions(); });
     expect(mockPostMessage).toHaveBeenCalledWith({ type: 'kafkaListTopics' });
     expect(mockPostMessage).toHaveBeenCalledWith({ type: 'kafkaGetPartitions', topic: 'A' });
+  });
+});
+
+describe('KafkaBrowser - 失败可见', () => {
+  it('拉取失败: 结束 loading, 行内显示原因; 下一次请求清掉; 笼统 error 也结束 loading', () => {
+    render(<KafkaBrowser connectionId="c1" />);
+    act(() => { topicProps.onSelectTopic('A'); });
+    send({ type: 'kafkaPartitionList', topic: 'A', partitions: partitions(1) });
+    act(() => { tableProps.onFetch('0'); });
+    send({ type: 'kafkaMessageList', topic: 'A', partition: 0, messages: [], timedOut: false, error: 'Broker not available' });
+
+    expect(tableProps.loading).toBe(false);
+    expect(screen.getByRole('alert')).toHaveTextContent('Broker not available');
+
+    act(() => { tableProps.onFetchLatest(); });
+    expect(screen.queryByRole('alert')).toBeNull();
+    send({ type: 'error', message: 'Failed to connect: SSH tunnel ops@jump:22 failed: timeout' });
+    expect(tableProps.loading).toBe(false);
+  });
+
+  it('发送中收到笼统 error: 给出失败结果以解除 Sending, 不带 error 文本 (App 已显示)', () => {
+    render(<KafkaBrowser connectionId="c1" />);
+    act(() => { topicProps.onSelectTopic('A'); });
+    act(() => { tableProps.onProduce(null, 'v', {}); });
+    expect(tableProps.produceResult).toBeNull();
+    send({ type: 'error', message: 'Failed to connect: x' });
+    expect(tableProps.produceResult).toEqual({ success: false });
   });
 });

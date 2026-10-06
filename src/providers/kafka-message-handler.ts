@@ -1,7 +1,37 @@
 import type { WebviewMessage } from '../types/messages.js';
 import type { IKafkaDriver } from '../types/kafka-driver.js';
+import { sanitizeErrorMessage } from '../utils/sanitize-error.js';
 
+// 出错时回该请求自己的回执类型并带 error: KafkaBrowser 据此结束 loading 并显示错误
 export async function handleKafkaMessage(
+  message: WebviewMessage,
+  driver: IKafkaDriver,
+  post: (msg: unknown) => void
+): Promise<boolean> {
+  try {
+    return await routeKafkaMessage(message, driver, post);
+  } catch (err) {
+    const error = sanitizeErrorMessage(err);
+    switch (message.type) {
+      case 'kafkaListTopics':
+        post({ type: 'kafkaTopicList', topics: [], error });
+        break;
+      case 'kafkaGetPartitions':
+        post({ type: 'kafkaPartitionList', topic: message.topic, partitions: [], error });
+        break;
+      case 'kafkaFetchMessages':
+      case 'kafkaFetchLatest':
+      case 'kafkaFetchByTimestamp':
+        post({ type: 'kafkaMessageList', topic: message.topic, partition: message.partition, messages: [], timedOut: false, error });
+        break;
+      default:
+        throw err;
+    }
+    return true;
+  }
+}
+
+async function routeKafkaMessage(
   message: WebviewMessage,
   driver: IKafkaDriver,
   post: (msg: unknown) => void

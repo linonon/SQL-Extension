@@ -110,8 +110,10 @@ export class RedisDriver implements IRedisDriver {
     return this.client !== null && this.client.status === 'ready';
   }
 
+  // 以 PING 结果为准: ioredis 断线后在 reconnecting 状态自己重连, PING 进 offline queue,
+  // 重连上即成功, 重连失败按 maxRetriesPerRequest 报错; 已放弃重连 (end) 时立即报错
   async ping(): Promise<void> {
-    if (!this.client || this.client.status !== 'ready') {
+    if (!this.client) {
       throw new Error('Redis client is not connected');
     }
     await this.client.ping();

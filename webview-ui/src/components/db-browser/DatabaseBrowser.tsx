@@ -41,6 +41,10 @@ export function DatabaseBrowser({ connectionId, driverType }: DatabaseBrowserPro
       setLoadError(msg.error ?? null);
       setLoading(false);
     }
+    // 笼统失败 (如按需重连失败) 由 App 显示, 这里只结束 loading
+    if (msg.type === 'error') {
+      setLoading(false);
+    }
   }, []);
 
   useVSCodeMessage(handleMessage);

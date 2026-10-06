@@ -45,6 +45,8 @@ interface MongoDocumentTableProps {
   readonly onCloneDocument: (sourceId: unknown, original: Record<string, unknown>, doc: Record<string, unknown>) => void;
   readonly onDeleteDocument: (id: unknown) => void;
   readonly queryError: string | null;
+  // 最近一次文档写操作的回执 (每次一个新对象): 编辑器保存后等它, 成功才关编辑器, 失败保留草稿
+  readonly writeResult?: { readonly ok: boolean } | null;
   readonly onExport?: () => void;
   readonly onImport?: () => void;
   readonly onExplain?: () => void;
@@ -82,6 +84,7 @@ export function MongoDocumentTable({
   onCloneDocument,
   onDeleteDocument,
   queryError,
+  writeResult,
   onExport,
   onImport,
   onExplain,
@@ -111,7 +114,11 @@ export function MongoDocumentTable({
   // 总数未知时以 "本页取满" 判断还有下一页
   const hasNext = rows.length >= pageSize && (total === null || endRow < total);
 
+  // 已发出保存, 等宿主回执 (writeResult) 再决定关编辑器还是保留草稿; 编辑器被关掉 (取消 / 放弃) 后回执与它无关
+  const savePending = useRef(false);
+
   const clearEditor = useCallback(() => {
+    savePending.current = false;
     setEditing(null);
     setComposing(null);
     setIsDirty(false);
@@ -132,6 +139,8 @@ export function MongoDocumentTable({
   }, [editorActive, isDirty, clearEditor]);
 
   const handleSave = useCallback((original: Record<string, unknown> | null, doc: Record<string, unknown>) => {
+    // 回执到达前编辑器仍开着, 再点 Save 不重发 (Insert / Clone 重发会多插一条)
+    if (savePending.current) { return; }
     if (editing) {
       onUpdateDocument(convertTags(editing._id), original ?? {}, doc);
     } else if (original) {
@@ -140,8 +149,8 @@ export function MongoDocumentTable({
     } else {
       onInsertDocument(doc);
     }
-    clearEditor();
-  }, [editing, onUpdateDocument, onCloneDocument, onInsertDocument, clearEditor]);
+    savePending.current = true;
+  }, [editing, onUpdateDocument, onCloneDocument, onInsertDocument]);
 
   // 单元格编辑: 前后文档只含这一个 path, 与整文档编辑走同一条 diff 写回
   const handleCellEdit = useCallback((id: unknown, path: string, before: unknown, value: unknown) => {
@@ -174,11 +183,17 @@ export function MongoDocumentTable({
     if (v !== view) { guardedAction(() => setView(v)); }
   }, [view, guardedAction]);
 
-  // 编辑器保存失败 (非法 JSON / 缺 key) 时, 取消挂起的 Save-then-action, 避免之后手动保存误触发它
+  // 编辑器保存失败 (非法 JSON / 缺 key / 宿主写入失败) 时, 取消挂起的 Save-then-action, 避免之后手动保存误触发它
   const handleSaveError = useCallback(() => {
     setSwitchAfterSave(false);
     setPendingAction(null);
   }, []);
+
+  useEffect(() => {
+    if (!writeResult || !savePending.current) { return; }
+    savePending.current = false;
+    if (writeResult.ok) { clearEditor(); } else { handleSaveError(); }
+  }, [writeResult, clearEditor, handleSaveError]);
 
   // 切 collection 由父级 pendingSwitchSignal 触发, 走同一守卫
   // eslint-disable-next-line react-hooks/exhaustive-deps

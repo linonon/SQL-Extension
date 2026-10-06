@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { App } from './App';
 import { mockPostMessage } from './__test__/setup';
 import type { ExtensionMessage } from './types/messages';
@@ -114,5 +114,17 @@ describe('App', () => {
     await waitFor(() => {
       expect(screen.getByTestId('connection-form')).toBeInTheDocument();
     });
+  });
+
+  it('宿主的笼统 error 在任何视图里都显示一次, 可关闭', async () => {
+    render(<App />);
+    window.dispatchEvent(new MessageEvent('message', { data: { type: 'viewInit', view: 'connection-form' } satisfies ExtensionMessage }));
+    await screen.findByTestId('connection-form');
+
+    window.dispatchEvent(new MessageEvent('message', { data: { type: 'error', message: 'Failed to connect: boom' } satisfies ExtensionMessage }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Failed to connect: boom');
+
+    fireEvent.click(screen.getByText('Dismiss'));
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 });

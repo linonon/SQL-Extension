@@ -174,10 +174,10 @@ describe('MongoDocumentTable - 脏数据守卫 (H6)', () => {
     expect(onApply).toHaveBeenCalled();
   });
 
-  it('GAP1: 对话框 Save 内容有效 -> 先保存 (onUpdateDocument) 再执行挂起的 Apply', () => {
+  it('GAP1: 对话框 Save 内容有效 -> 先保存 (onUpdateDocument), 宿主确认成功后再执行挂起的 Apply', () => {
     const onApply = vi.fn();
     const onUpdateDocument = vi.fn();
-    renderTable({ onApply, onUpdateDocument });
+    const { props, rerender } = renderTable({ onApply, onUpdateDocument });
     fireEvent.click(screen.getByRole('button', { name: /^edit$/i }));
     const textarea = document.querySelector('.highlight-editor-textarea') as HTMLTextAreaElement;
     fireEvent.change(textarea, { target: { value: '{"name":"ok"}' } });
@@ -187,7 +187,24 @@ describe('MongoDocumentTable - 脏数据守卫 (H6)', () => {
     fireEvent.click(within(dialog).getByText('Save'));
 
     expect(onUpdateDocument).toHaveBeenCalled();
+    expect(onApply).not.toHaveBeenCalled();
+    rerender(<MongoDocumentTable {...(props as any)} writeResult={{ ok: true }} />);
     expect(onApply).toHaveBeenCalled();
+    expect(document.querySelector('.highlight-editor-textarea')).toBeNull();
+  });
+
+  it('宿主写入失败: 草稿留在编辑器里, 挂起的 Apply 取消', () => {
+    const onApply = vi.fn();
+    const { props, rerender } = renderTable({ onApply });
+    fireEvent.click(screen.getByRole('button', { name: /^edit$/i }));
+    const textarea = document.querySelector('.highlight-editor-textarea') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: '{"name":"dup"}' } });
+    fireEvent.click(screen.getByRole('button', { name: /^apply$/i }));
+    fireEvent.click(within(document.querySelector('.mongo-nav-dialog') as HTMLElement).getByText('Save'));
+
+    rerender(<MongoDocumentTable {...(props as any)} writeResult={{ ok: false }} />);
+    expect(onApply).not.toHaveBeenCalled();
+    expect((document.querySelector('.highlight-editor-textarea') as HTMLTextAreaElement).value).toBe('{"name":"dup"}');
   });
 
   it('round2 #3: 对话框 Save 但内容非法保存失败 -> 挂起的 Apply 取消, 后续手动保存不触发它', () => {

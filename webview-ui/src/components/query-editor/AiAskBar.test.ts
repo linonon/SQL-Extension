@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createElement } from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { AiAskBar, applySql, extractSqlBlock } from './AiAskBar';
 import { mockPostMessage } from '../../__test__/setup';
 
@@ -57,5 +57,16 @@ describe('AiAskBar 输入框', () => {
 
     fireEvent.keyDown(input, { key: 'Escape', code: 'Escape' });
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('提问没送到 (宿主回笼统 error): 结束 busy, 可以重新提问', () => {
+    const { input, asked } = setup();
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeTruthy();
+
+    act(() => { window.dispatchEvent(new MessageEvent('message', { data: { type: 'error', message: 'Failed to connect: x' } })); });
+    expect(screen.getByRole('button', { name: 'Ask' })).toBeTruthy();
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+    expect(asked()).toHaveLength(2);
   });
 });

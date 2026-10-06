@@ -205,6 +205,11 @@ export function QueryEditor({ connectionName, database, driverType, initialSql, 
         setSaveError(message.error);
       }
     }
+    // 笼统失败 (如按需重连失败) 由 App 显示, 这里只结束执行 / 保存中的状态
+    if (message.type === 'error') {
+      setExecuting(false);
+      setSaving(false);
+    }
   }, [refreshAfterWrite]);
 
   useVSCodeMessage(handleMessage);

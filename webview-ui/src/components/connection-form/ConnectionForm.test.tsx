@@ -373,4 +373,30 @@ describe('ConnectionForm', () => {
       expect(pwInput.placeholder).toBe('Password (optional)');
     });
   });
+
+  it('私钥认证: SSH 密码字段作为 Key Passphrase 发出; Kafka + SSH 给出单 broker 限制提示', () => {
+    render(<ConnectionForm />);
+    const form = document.querySelector('.connection-form') as HTMLElement;
+    fireEvent.change(form.querySelector('select') as HTMLSelectElement, { target: { value: 'kafka' } });
+    fireEvent.click(screen.getByText('Enable SSH Tunnel'));
+    expect(screen.getByText(/single broker whose advertised listener/)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByDisplayValue('Password'), { target: { value: 'privateKey' } });
+    expect(screen.getByText(/ssh-agent \(SSH_AUTH_SOCK\)/)).toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText('(only for an encrypted key)'), { target: { value: 'key-pass' } });
+    fireEvent.click(screen.getByText('Test Connection'));
+
+    expect(mockPostMessage).toHaveBeenCalledWith({
+      type: 'testConnection',
+      config: expect.objectContaining({ driverType: 'kafka', sshAuthType: 'privateKey', sshPassword: 'key-pass', sshPrivateKeyPath: '' }),
+    });
+  });
+
+  it('宿主回笼统 error 时结束 Testing...', () => {
+    render(<ConnectionForm />);
+    fireEvent.click(screen.getByText('Test Connection'));
+    expect(screen.getByText('Testing...')).toBeInTheDocument();
+    fireEvent(window, new MessageEvent('message', { data: { type: 'error', message: 'boom' } satisfies ExtensionMessage }));
+    expect(screen.getByText('Test Connection')).toBeInTheDocument();
+  });
 });

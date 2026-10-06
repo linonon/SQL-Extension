@@ -22,17 +22,24 @@ function deployMcpServer(extensionPath: string): void {
   }
 }
 
+// deactivate 等它关完所有连接 (subscriptions 的 dispose 不被 await)
+let activeConnectionManager: ConnectionManager | undefined;
+
 export function activate(context: vscode.ExtensionContext): void {
   deployMcpServer(context.extensionPath);
   setResourcesPath(context.extensionPath);
   const credentialStore = new CredentialStore(context.secrets);
   const connectionManager = new ConnectionManager(context.globalState, credentialStore);
+  activeConnectionManager = connectionManager;
   const treeProvider = new ConnectionTreeProvider(connectionManager);
   const viewProvider = new TableViewProvider(
     context.extensionUri,
     connectionManager,
     credentialStore
   );
+
+  // 用户在 connecting 期间点了 Cancel 的连接 id: 那次尝试之后的失败不报错
+  const cancelledConnects = new Set<string>();
 
   function openBrowserForConnection(id: string, name: string, dt: DriverType): void {
     switch (dt) {
@@ -93,6 +100,7 @@ export function activate(context: vscode.ExtensionContext): void {
           openBrowserForConnection(item.connectionId, item.connectionName, item.driverType);
           return;
         }
+        cancelledConnects.delete(item.connectionId);
         try {
           await connectionManager.connect(item.connectionId);
           // connecting 期间被 Cancel 时 connect 静默返回, 不提示也不打开 browser
@@ -101,9 +109,12 @@ export function activate(context: vscode.ExtensionContext): void {
           }
           vscode.window.showInformationMessage(`Connected to ${item.connectionName}`);
         } catch (err) {
-          vscode.window.showErrorMessage(
-            `Failed to connect: ${err instanceof Error ? err.message : String(err)}`
-          );
+          // 用户已点 Cancel 的那次尝试随后失败, 不再报错
+          if (!cancelledConnects.delete(item.connectionId)) {
+            vscode.window.showErrorMessage(
+              `Failed to connect: ${err instanceof Error ? err.message : String(err)}`
+            );
+          }
           return;
         }
         // browser 只由 UI 点击打开, agent 经 IPC 的按需连接不弹
@@ -113,6 +124,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
     ['sqlext.cancelConnect', async (item: unknown) => {
       if (item instanceof ConnectionTreeItem) {
+        cancelledConnects.add(item.connectionId);
         await connectionManager.disconnect(item.connectionId);
       }
     }],
@@ -156,9 +168,9 @@ export function activate(context: vscode.ExtensionContext): void {
     ],
   }));
 
-  context.subscriptions.push(treeView, connectionManager, viewProvider, { dispose: () => ipcServer.dispose() });
+  context.subscriptions.push(treeView, viewProvider, { dispose: () => ipcServer.dispose() });
 }
 
-export function deactivate(): void {
-  // ConnectionManager.dispose() + IpcServer.dispose() 通过 subscriptions 自动调用
+export function deactivate(): Promise<void> | undefined {
+  return activeConnectionManager?.dispose();
 }

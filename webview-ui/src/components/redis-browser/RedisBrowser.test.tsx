@@ -372,14 +372,26 @@ describe('RedisBrowser', () => {
     expect(mockPostMessage).toHaveBeenCalledWith({ type: 'redisExportPattern', database: 0, pattern: 'user:*' });
   });
 
-  it('host 回笼统 error (连接已断开) 时结束 Scanning 并提示', async () => {
-    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
+  it('host 回笼统 error (连接已断开) 时结束 Scanning (提示由 App 显示)', async () => {
     render(<RedisBrowser connectionId="conn1" database={0} />);
     expect(screen.getByTestId('redis-key-list').getAttribute('data-scanning')).toBe('true');
 
     window.dispatchEvent(new MessageEvent('message', { data: { type: 'error', message: 'No active connection: conn1' } }));
     await waitFor(() => expect(screen.getByTestId('redis-key-list').getAttribute('data-scanning')).toBe('false'));
-    expect(alertSpy).toHaveBeenCalledWith('Operation failed: No active connection: conn1');
+  });
+
+  it('操作失败行内显示 (webview 里 alert 不弹), 下一次成功后清掉', async () => {
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
+    render(<RedisBrowser connectionId="conn1" database={0} />);
+
+    window.dispatchEvent(new MessageEvent('message', { data: {
+      type: 'redisOperationResult', success: false, error: 'WRONGTYPE Operation against a key',
+    } satisfies ExtensionMessage }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Operation failed: WRONGTYPE Operation against a key');
+    expect(alertSpy).not.toHaveBeenCalled();
+
+    window.dispatchEvent(new MessageEvent('message', { data: { type: 'redisOperationResult', success: true } satisfies ExtensionMessage }));
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
     alertSpy.mockRestore();
   });
 

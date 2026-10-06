@@ -82,6 +82,8 @@ export function RedisBrowser({ database: initialDb, separator = ':' }: RedisBrow
   // command bar state
   const [commandText, setCommandText] = useState('*');
   const [commandOutput, setCommandOutput] = useState<string | null>(null);
+  // 最近一次读写操作的失败原因 (webview sandbox 里 alert 不弹); 下一次成功或换 key / 搜索 / 换库时清掉
+  const [opError, setOpError] = useState<string | null>(null);
 
   // hash 分页状态
   const [hashCursor, setHashCursor] = useState('0');
@@ -215,9 +217,10 @@ export function RedisBrowser({ database: initialDb, separator = ':' }: RedisBrow
         if (!message.success) {
           // SCAN 失败也走这里, 结束 Scanning 状态
           setScanning(false);
-          window.alert(`Operation failed: ${message.error ?? 'Unknown error'}`);
+          setOpError(`Operation failed: ${message.error ?? 'Unknown error'}`);
           break;
         }
+        setOpError(null);
         // 写成功后重拉第一页: 在途的 set Load More 不能把首屏追加到旧成员后面
         setLoadingMore.current = false;
         const key = selectedKeyRef.current;
@@ -227,9 +230,8 @@ export function RedisBrowser({ database: initialDb, separator = ':' }: RedisBrow
         break;
       }
       case 'error': {
-        // host 拿不到 driver (连接已断开) 时回笼统 error, 不清 scanning 则列表永远停在 Scanning...
+        // 笼统失败 (如按需重连失败) 由 App 显示; 不清 scanning 则列表永远停在 Scanning...
         setScanning(false);
-        window.alert(`Operation failed: ${message.message}`);
         break;
       }
       case 'redisDeleteKeysResult': {
@@ -276,6 +278,7 @@ export function RedisBrowser({ database: initialDb, separator = ':' }: RedisBrow
     setSelectedKey(null);
     setValue(null);
     setCommandOutput(null);
+    setOpError(null);
     setFilterQuery('');
     doScan(pat, '0', false);
   }, [doScan]);
@@ -293,6 +296,7 @@ export function RedisBrowser({ database: initialDb, separator = ':' }: RedisBrow
     setSelectedKey(null);
     setValue(null);
     setCommandOutput(null);
+    setOpError(null);
     setKeys([]);
   }, []);
 
@@ -301,6 +305,7 @@ export function RedisBrowser({ database: initialDb, separator = ':' }: RedisBrow
     setSelectedKey(null);
     setValue(null);
     setCommandOutput(null);
+    setOpError(null);
     setFilterQuery('');
     doScan(pattern, '0', false);
   }, [pattern, doScan]);
@@ -317,6 +322,7 @@ export function RedisBrowser({ database: initialDb, separator = ':' }: RedisBrow
     // 回执到达前不显示上一个 key 的值: 此时 Save 针对的是新 key, 会把旧内容写进去
     setValue(null);
     setCommandOutput(null);
+    setOpError(null);
     setMemberCursor('0');
     setMemberHasMore(false);
     setHashCursor('0');
@@ -459,6 +465,7 @@ export function RedisBrowser({ database: initialDb, separator = ':' }: RedisBrow
         onExport={handleExportAll}
         onImport={handleImport}
       />
+      {opError && <div className="inline-error" role="alert">{opError}</div>}
       <div className="redis-body" ref={containerRef}>
         <div className="key-panel" style={{ width: panelWidth }}>
           {keys.length > 0 && (

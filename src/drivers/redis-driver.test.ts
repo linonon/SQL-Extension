@@ -163,6 +163,17 @@ describe('RedisDriver', () => {
     });
   });
 
+  describe('ping (心跳)', () => {
+    it('reconnecting 中自己重连上了算活着, 以 PING 结果为准', async () => {
+      await driver.connect(TEST_CONFIG);
+      mockClient.status = 'reconnecting';
+      await expect(driver.ping()).resolves.toBeUndefined();
+
+      mockClient.ping.mockRejectedValueOnce(new Error('Connection is closed.'));
+      await expect(driver.ping()).rejects.toThrow('Connection is closed.');
+    });
+  });
+
   describe('listDatabases', () => {
     it('应该解析 INFO keyspace 输出', async () => {
       await driver.connect(TEST_CONFIG);

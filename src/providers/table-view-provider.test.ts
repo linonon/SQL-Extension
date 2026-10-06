@@ -11,7 +11,7 @@ const { connectSpy, createTunnel } = vi.hoisted(() => ({
 vi.mock('../drivers/mysql-driver', () => ({
   MySQLDriver: class { connect = connectSpy; disconnect = vi.fn(async () => undefined); },
 }));
-vi.mock('../services/ssh-tunnel', () => ({ createTunnel }));
+vi.mock('../services/ssh-tunnel', () => ({ createTunnel, KNOWN_HOSTS_PATH: '/tmp/known_hosts' }));
 
 describe('TableViewProvider panel 标题', () => {
   it('Query / DDL / Edit 标题带连接名, 不同环境的同名库能分开', async () => {
@@ -61,6 +61,7 @@ describe('TableViewProvider 只读连接', () => {
   const getRedisDriver = vi.fn();
   const cm = {
     getConnections: () => [{ id: 'ro', name: 'release', readOnly: true }],
+    getState: () => 'connected',
     getDriver,
     getRedisDriver,
   } as unknown as ConnectionManager;
@@ -121,7 +122,7 @@ describe('TableViewProvider 编辑连接表单不经手明文密码', () => {
   } as unknown as CredentialStore;
   const updateConnection = vi.fn(async () => undefined);
   const cm = {
-    getConnections: () => [config], updateConnection, getDriver: () => ({ driverType: 'mysql' }),
+    getConnections: () => [config], getState: () => 'connected', updateConnection, getDriver: () => ({ driverType: 'mysql' }),
   } as unknown as ConnectionManager;
   const formFields = {
     driverType: 'mysql', host: 'db', port: 3306, username: 'root', password: '', database: 'game',
@@ -152,7 +153,7 @@ describe('TableViewProvider 编辑连接表单不经手明文密码', () => {
     await openEditForm();
     await fake.send({ type: 'testConnection', config: formFields });
 
-    expect(createTunnel).toHaveBeenCalledWith(expect.objectContaining({ host: 'jump' }), 'ssh-pw', 'db', 3306);
+    expect(createTunnel).toHaveBeenCalledWith(expect.objectContaining({ host: 'jump' }), 'ssh-pw', 'db', 3306, expect.anything());
     expect(connectSpy).toHaveBeenCalledWith(expect.objectContaining({ password: 'db-pw', host: '127.0.0.1', port: 4000 }));
     expect(fake.posted).toContainEqual({ type: 'connectionTestResult', success: true });
   });
@@ -188,5 +189,46 @@ describe('TableViewProvider 编辑连接表单不经手明文密码', () => {
     await fake.send({ type: 'updateConnection', config: { ...formFields, id: 'c1', name: 'release', readOnly: true } });
     expect(query.panel.dispose).toHaveBeenCalled();
     expect(other.panel.dispose).not.toHaveBeenCalled();
+  });
+});
+
+describe('TableViewProvider 连接掉线后按需重连', () => {
+  const executeBatch = vi.fn(() => ({ promise: Promise.resolve({ results: [] }), cancel: () => {} }));
+  let state: string;
+  const connect = vi.fn(async () => { state = 'connected'; });
+  const cm = {
+    getConnections: () => [{ id: 'c1', name: 'release' }],
+    getState: () => state,
+    connect,
+    getDriver: vi.fn(() => ({ driverType: 'mysql', executeBatch })),
+  } as unknown as ConnectionManager;
+  let fake: ReturnType<typeof fakePanel>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state = 'disconnected';
+    fake = fakePanel();
+    vi.spyOn(vscode.window, 'createWebviewPanel').mockReturnValue(fake.panel as never);
+    new TableViewProvider(vscode.Uri.file('/ext'), cm, {} as CredentialStore).openQueryEditor('c1', 'game');
+  });
+
+  it('掉线后的下一条消息先连上再处理; 不碰库的消息不触发重连', async () => {
+    await fake.send({ type: 'cancelQuery' });
+    expect(connect).not.toHaveBeenCalled();
+
+    await fake.send({ type: 'executeQuery', requestId: 1, database: 'game', sql: 'SELECT 1' });
+    expect(connect).toHaveBeenCalledWith('c1');
+    expect(executeBatch).toHaveBeenCalled();
+    expect(fake.posted).toContainEqual(expect.objectContaining({ type: 'queryBatchResult', requestId: 1 }));
+  });
+
+  it('重连失败回可见的 error, 不往下处理', async () => {
+    connect.mockRejectedValueOnce(new Error('SSH tunnel ops@jump:22 failed: Timed out while waiting for handshake'));
+    await fake.send({ type: 'executeQuery', requestId: 1, database: 'game', sql: 'SELECT 1' });
+
+    expect(fake.posted).toContainEqual({
+      type: 'error', message: 'Failed to connect: SSH tunnel ops@jump:22 failed: Timed out while waiting for handshake',
+    });
+    expect(executeBatch).not.toHaveBeenCalled();
   });
 });

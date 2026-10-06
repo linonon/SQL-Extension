@@ -18,11 +18,14 @@ export function RedisHashEditor({ value, onBatchEdit, onDeleteField, hashDone, o
   const [editMap, setEditMap] = useState<Record<string, { field: string; value: string }>>({});
 
   const [filterQuery, setFilterQuery] = useState('');
+  // Save All 被拦下的原因 (重名 field); webview 里 alert 不弹, 行内显示
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // value prop 变化时重置编辑状态和 filter
   useEffect(() => {
     setEditMap({});
     setFilterQuery('');
+    setSaveError(null);
   }, [value]);
 
   const entries = Object.entries(value);
@@ -69,9 +72,10 @@ export function RedisHashEditor({ value, onBatchEdit, onDeleteField, hashDone, o
     const newFields = edits.map((e) => e.newField);
     const dupes = newFields.filter((f, i) => newFields.indexOf(f) !== i);
     if (dupes.length > 0) {
-      window.alert(`Duplicate field names: ${[...new Set(dupes)].join(', ')}`);
+      setSaveError(`Duplicate field names: ${[...new Set(dupes)].join(', ')}`);
       return;
     }
+    setSaveError(null);
     if (edits.length > 0) {
       onBatchEdit(edits);
     }
@@ -79,6 +83,7 @@ export function RedisHashEditor({ value, onBatchEdit, onDeleteField, hashDone, o
 
   const handleDiscard = useCallback(() => {
     setEditMap({});
+    setSaveError(null);
   }, []);
 
   const handleAdd = useCallback(() => {
@@ -138,6 +143,7 @@ export function RedisHashEditor({ value, onBatchEdit, onDeleteField, hashDone, o
         );
       })}
       {!hashDone && <RedisLoadMore pendingEdits={dirtyEntries.length} onLoadMore={onHashLoadMore} />}
+      {saveError && <div className="inline-error" role="alert">{saveError}</div>}
       {hasDirty && (
         <div className="batch-actions">
           <button onClick={handleSaveAll}>Save All ({dirtyEntries.length})</button>

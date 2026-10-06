@@ -87,10 +87,11 @@ export type ExtensionMessage =
   | { type: 'redisHashScanResult'; key: string; database: number; cursor: string; fields: Record<string, string>; done: boolean }
   | { type: 'redisImportResult'; success: boolean; importedCount?: number; error?: string }
   | { type: 'redisAddKeyResult'; key: string }
-  | { type: 'kafkaTopicList'; topics: readonly KafkaTopicInfo[] }
-  | { type: 'kafkaPartitionList'; topic: string; partitions: readonly KafkaPartitionInfo[] }
+  // kafka 列表类回执带 error 表示该请求失败 (列表为空)
+  | { type: 'kafkaTopicList'; topics: readonly KafkaTopicInfo[]; error?: string }
+  | { type: 'kafkaPartitionList'; topic: string; partitions: readonly KafkaPartitionInfo[]; error?: string }
   // timedOut: 加入 group 后等满 3 秒一条消息也没收到
-  | { type: 'kafkaMessageList'; topic: string; partition: number; messages: readonly KafkaMessage[]; timedOut: boolean }
+  | { type: 'kafkaMessageList'; topic: string; partition: number; messages: readonly KafkaMessage[]; timedOut: boolean; error?: string }
   | { type: 'kafkaProduceResult'; success: boolean; partition?: number; offset?: string; error?: string }
   | { type: 'mongoDocumentList'; requestId: number; columns: readonly ColumnInfo[]; rows: readonly Record<string, unknown>[]; error?: string }
   // mongoFindDocuments 带 count 时另发: total 为 null 表示计数失败或超时 (总数未知)

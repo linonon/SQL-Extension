@@ -1,8 +1,7 @@
 import * as vscode from 'vscode';
-import { newConnectionId, writeBlockedReason, type ConnectionManager } from '../services/connection-manager.js';
+import { newConnectionId, openDriver, writeBlockedReason, type ConnectionManager } from '../services/connection-manager.js';
 import { QueryService } from '../services/query-service.js';
 import { CredentialStore } from '../services/credential-store.js';
-import { createTunnel } from '../services/ssh-tunnel.js';
 import type { WebviewMessage, ViewType, SaveConnectionConfig, UpdateConnectionConfig } from '../types/messages.js';
 import type { ConnectionFormSSH } from '../types/messages.js';
 import type { ConnectionConfig, DriverType, SSHTunnelConfig } from '../types/connection.js';
@@ -15,6 +14,11 @@ import { handleSqlMessage, type SqlMessageContext } from './sql-message-handler.
 import { readOnlyRejection } from './read-only-gate.js';
 import { cancelAiAsk } from '../services/ai-assist.js';
 import { sanitizeErrorMessage } from '../utils/sanitize-error.js';
+
+// 不碰数据库的消息: 连接掉线时不为它们重连
+const OFFLINE_MESSAGES: ReadonlySet<WebviewMessage['type']> = new Set([
+  'ready', 'cancelQuery', 'aiCancel', 'aiListModels', 'aiSetModel', 'exportCsv',
+]);
 
 function buildSSHConfig(msg: ConnectionFormSSH): SSHTunnelConfig | undefined {
   if (!msg.sshEnabled) { return undefined; }
@@ -270,6 +274,17 @@ export class TableViewProvider implements vscode.Disposable {
       return;
     }
 
+    // panel 的连接被心跳拆掉 (睡眠 / VPN) 或因 Edit Connection 断开后, 下一条消息先按需重连再处理;
+    // 只连接, 不打开 browser (browser 只由 UI 的 connect 命令打开)
+    if (connectionId && !OFFLINE_MESSAGES.has(message.type) && this.connectionManager.getState(connectionId) !== 'connected') {
+      try {
+        await this.connectionManager.connect(connectionId);
+      } catch (err) {
+        panel.webview.postMessage({ type: 'error', message: `Failed to connect: ${sanitizeErrorMessage(err)}` });
+        return;
+      }
+    }
+
     // SQL (MySQL/PostgreSQL) CRUD + db-browser 导航 + dump/import 由 sql-message-handler 处理
     const sqlCtx: SqlMessageContext = {
       getDriver: () => this.connectionManager.getDriver(connectionId!),
@@ -421,13 +436,10 @@ export class TableViewProvider implements vscode.Disposable {
               return;
             }
 
-            // 文档写操作的结果在宿主侧提示 (webview sandbox 里 alert 不弹), 回执照常发给 webview
+            // 文档写操作: 成功的提示在宿主侧, 失败由 webview 行内显示; 回执照常发给 webview
             const post = (msg: unknown) => {
-              const m = msg as { type?: string; success?: boolean; error?: string; message?: string };
-              if (m.type === 'mongoOperationResult') {
-                if (!m.success) { void vscode.window.showErrorMessage(`MongoDB: ${m.error ?? 'operation failed'}`); }
-                else if (m.message) { void vscode.window.showInformationMessage(m.message); }
-              }
+              const m = msg as { type?: string; success?: boolean; message?: string };
+              if (m.type === 'mongoOperationResult' && m.success && m.message) { void vscode.window.showInformationMessage(m.message); }
               return panel.webview.postMessage(msg);
             };
             await handleMongoMessage(message, mongoDriver, post);
@@ -648,19 +660,6 @@ export class TableViewProvider implements vscode.Disposable {
     config: { driverType: DriverType; host: string; port: number; username: string; password: string; database: string; authSource?: string } & ConnectionFormSSH,
     editId?: string
   ): Promise<void> {
-    type TestableDriver = { connect(config: import('../types/connection.js').ConnectionConfig & { readonly password: string }): Promise<void>; disconnect(): Promise<void> };
-    const DRIVER_FACTORIES: Record<string, () => Promise<TestableDriver>> = {
-      mysql: async () => { const { MySQLDriver } = await import('../drivers/mysql-driver.js'); return new MySQLDriver(); },
-      postgresql: async () => { const { PgDriver } = await import('../drivers/pg-driver.js'); return new PgDriver(); },
-      redis: async () => { const { RedisDriver } = await import('../drivers/redis-driver.js'); return new RedisDriver(); },
-      kafka: async () => { const { KafkaDriver } = await import('../drivers/kafka-driver.js'); return new KafkaDriver(); },
-      mongodb: async () => { const { MongoDriver } = await import('../drivers/mongo-driver.js'); return new MongoDriver(); },
-      rabbitmq: async () => { const { RabbitMQDriver } = await import('../drivers/rabbitmq-driver.js'); return new RabbitMQDriver(); },
-    };
-    const factory = DRIVER_FACTORIES[config.driverType];
-    if (!factory) { throw new Error(`Unsupported driver type: ${config.driverType}`); }
-    const driver = await factory();
-    let tunnelClose: (() => void) | undefined;
     let { password, sshPassword } = config;
     if (editId) {
       if (!password) { password = (await this.credentialStore.getPassword(editId)) ?? ''; }
@@ -668,40 +667,21 @@ export class TableViewProvider implements vscode.Disposable {
     }
 
     try {
-      let connectHost = config.host;
-      let connectPort = config.port;
-
-      if (config.sshEnabled) {
-        const sshConfig = buildSSHConfig(config)!;
-        const tunnel = await createTunnel(sshConfig, sshPassword, config.host, config.port);
-        tunnelClose = tunnel.close;
-        connectHost = '127.0.0.1';
-        connectPort = tunnel.localPort;
-      }
-
-      await driver.connect({
+      const handle = await openDriver({
         id: '__test__',
         name: '__test__',
         driverType: config.driverType,
-        host: connectHost,
-        port: connectPort,
+        host: config.host,
+        port: config.port,
         username: config.username,
-        password,
         database: config.database,
         authSource: config.authSource,
-        // driver 据此判断是否走 tunnel (如 Mongo 需 directConnection)
         ssh: buildSSHConfig(config),
-      });
-      await driver.disconnect();
+      }, password, sshPassword);
+      await handle.close();
       panel.webview.postMessage({ type: 'connectionTestResult', success: true });
     } catch (err) {
-      panel.webview.postMessage({
-        type: 'connectionTestResult',
-        success: false,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    } finally {
-      if (tunnelClose) { tunnelClose(); }
+      panel.webview.postMessage({ type: 'connectionTestResult', success: false, error: sanitizeErrorMessage(err) });
     }
   }
 

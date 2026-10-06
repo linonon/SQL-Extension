@@ -114,6 +114,23 @@ describe('handleKafkaMessage', () => {
     expect(driver.fetchMessages).toHaveBeenLastCalledWith('topic-a', 0, '50', 50);
   });
 
+  it('出错时回该请求自己的回执并带 error, webview 据此结束 loading', async () => {
+    (driver.listTopics as Mock).mockRejectedValueOnce(new Error('Connection timeout'));
+    (driver.getTopicPartitions as Mock).mockRejectedValueOnce(new Error('UNKNOWN_TOPIC_OR_PARTITION'));
+    (driver.fetchMessages as Mock).mockRejectedValueOnce(new Error('Broker not available'));
+
+    expect(await handleKafkaMessage({ type: 'kafkaListTopics' }, driver, post)).toBe(true);
+    await handleKafkaMessage({ type: 'kafkaGetPartitions', topic: 't' }, driver, post);
+    await handleKafkaMessage({ type: 'kafkaFetchLatest', topic: 't', partition: 2, limit: 50 }, driver, post);
+
+    expect(post.mock.calls.map(([m]) => m)).toEqual([
+      { type: 'kafkaTopicList', topics: [], error: 'Connection timeout' },
+      { type: 'kafkaPartitionList', topic: 't', partitions: [], error: 'UNKNOWN_TOPIC_OR_PARTITION' },
+      expect.objectContaining({ type: 'kafkaPartitionList', topic: 't' }),
+      { type: 'kafkaMessageList', topic: 't', partition: 2, messages: [], timedOut: false, error: 'Broker not available' },
+    ]);
+  });
+
   it('未知消息类型: 返回 false', async () => {
     const handled = await handleKafkaMessage(
       { type: 'unknownType' } as any,

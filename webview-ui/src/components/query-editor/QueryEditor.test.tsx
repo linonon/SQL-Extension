@@ -156,6 +156,19 @@ describe('QueryEditor', () => {
     expect(screen.queryByText('Execute')).not.toBeInTheDocument();
   });
 
+  it('宿主回笼统 error (如重连失败) 时结束执行中状态, 不永久转圈', async () => {
+    render(<QueryEditor connectionId="conn-1" database="test_db" />);
+    fireEvent.change(screen.getByPlaceholderText('SELECT * FROM ...'), { target: { value: 'SELECT 1' } });
+    fireEvent.click(screen.getByText('Execute'));
+    expect(screen.getByText('Cancel')).toBeInTheDocument();
+
+    act(() => {
+      window.dispatchEvent(new MessageEvent('message', { data: { type: 'error', message: 'Failed to connect: x' } satisfies ExtensionMessage }));
+    });
+    expect(screen.getByText('Execute')).toBeInTheDocument();
+    expect(document.querySelector('.query-loading')).toBeNull();
+  });
+
   it('应该在点击 Cancel 时发送 cancelQuery 消息', () => {
     render(<QueryEditor connectionId="conn-1" database="test_db" />);
 

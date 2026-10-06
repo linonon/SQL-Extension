@@ -158,6 +158,10 @@ export function ConnectionForm({ editConnection }: ConnectionFormProps) {
       setTesting(false);
       setTestResult({ success: message.success, error: message.error });
     }
+    // 笼统失败 (如保存出错) 由 App 显示, 这里只结束 Testing
+    if (message.type === 'error') {
+      setTesting(false);
+    }
   }, []);
 
   useVSCodeMessage(handleMessage);
@@ -380,6 +384,12 @@ export function ConnectionForm({ editConnection }: ConnectionFormProps) {
 
           {form.sshEnabled && (
             <div className="ssh-fields">
+              {form.driverType === 'kafka' && (
+                // tunnel 只转发一个端口, kafkajs 拿到 metadata 后直连 broker 自己 advertise 的地址
+                <p className="form-hint">
+                  SSH works only for a single broker whose advertised listener is reachable through the tunnel.
+                </p>
+              )}
               <div className="form-row">
                 <div className="form-group">
                   <label>SSH Host</label>
@@ -414,7 +424,7 @@ export function ConnectionForm({ editConnection }: ConnectionFormProps) {
                   onChange={(e) => updateField('sshAuthType', e.target.value as SSHAuthType)}
                 >
                   <option value="password">Password</option>
-                  <option value="privateKey">Private Key</option>
+                  <option value="privateKey">Private Key / ssh-agent</option>
                 </select>
               </div>
 
@@ -429,14 +439,27 @@ export function ConnectionForm({ editConnection }: ConnectionFormProps) {
                   />
                 </div>
               ) : (
-                <div className="form-group">
-                  <label>Private Key Path</label>
-                  <input
-                    value={form.sshPrivateKeyPath}
-                    onChange={(e) => updateField('sshPrivateKeyPath', e.target.value)}
-                    placeholder="~/.ssh/id_rsa"
-                  />
-                </div>
+                <>
+                  <div className="form-group">
+                    <label>Private Key Path</label>
+                    <input
+                      value={form.sshPrivateKeyPath}
+                      onChange={(e) => updateField('sshPrivateKeyPath', e.target.value)}
+                      placeholder="~/.ssh/id_rsa"
+                    />
+                    <p className="form-hint">Leave empty to use the keys in ssh-agent (SSH_AUTH_SOCK).</p>
+                  </div>
+                  {/* 加密私钥的 passphrase 存在 SSH 密码字段 */}
+                  <div className="form-group">
+                    <label>Key Passphrase</label>
+                    <input
+                      type="password"
+                      value={form.sshPassword}
+                      onChange={(e) => updateField('sshPassword', e.target.value)}
+                      placeholder={editConnection?.hasSshPassword ? UNCHANGED_PLACEHOLDER : '(only for an encrypted key)'}
+                    />
+                  </div>
+                </>
               )}
             </div>
           )}

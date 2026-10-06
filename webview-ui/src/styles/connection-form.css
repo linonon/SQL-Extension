@@ -63,6 +63,12 @@
   margin-top: 12px;
 }
 
+.connection-form .form-hint {
+  margin: 4px 0 8px;
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground);
+}
+
 .connection-form .form-actions {
   display: flex;
   gap: 8px;

@@ -14,12 +14,17 @@ import type { ExtensionMessage, ViewType } from './types/messages';
 export function App() {
   const [view, setView] = useState<ViewType | null>(null);
   const [viewContext, setViewContext] = useState<Record<string, unknown>>({});
+  // 宿主的笼统失败回执 ({type:'error'}, 如按需重连失败) 在这里统一显示一次; 各视图只负责结束自己的 loading
+  const [hostError, setHostError] = useState<string | null>(null);
   const postMessage = usePostMessage();
 
   const handleMessage = useCallback((message: ExtensionMessage) => {
     if (message.type === 'viewInit') {
       setView(message.view);
       setViewContext(message.context ?? {});
+    }
+    if (message.type === 'error') {
+      setHostError(message.message);
     }
   }, []);
 
@@ -37,6 +42,12 @@ export function App() {
   return (
     <ReadOnlyContext.Provider value={viewContext.readOnly === true}>
       {renderView(view, viewContext)}
+      {hostError && (
+        <div className="host-error-bar" role="alert">
+          <span>{hostError}</span>
+          <button onClick={() => setHostError(null)}>Dismiss</button>
+        </div>
+      )}
     </ReadOnlyContext.Provider>
   );
 }
