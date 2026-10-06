@@ -28,6 +28,7 @@ const mockClient = {
   del: vi.fn().mockResolvedValue(1),
   type: vi.fn().mockResolvedValue('string'),
   ttl: vi.fn().mockResolvedValue(-1),
+  pttl: vi.fn().mockResolvedValue(-1),
   expire: vi.fn().mockResolvedValue(1),
   persist: vi.fn().mockResolvedValue(1),
   llen: vi.fn().mockResolvedValue(0),
@@ -65,6 +66,7 @@ vi.mock('ioredis', () => {
     del = mockClient.del;
     type = mockClient.type;
     ttl = mockClient.ttl;
+    pttl = mockClient.pttl;
     expire = mockClient.expire;
     persist = mockClient.persist;
     llen = mockClient.llen;
@@ -294,12 +296,22 @@ describe('RedisDriver', () => {
   });
 
   describe('setString', () => {
-    it('无 TTL 时只设值', async () => {
+    it('key 无 TTL 时只设值', async () => {
       await driver.connect(TEST_CONFIG);
 
       await driver.setString('k', 'v');
 
       expect(mockClient.set).toHaveBeenCalledWith('k', 'v');
+    });
+
+    it('不传 ttl 时保留 key 原有 TTL (PTTL + SET PX)', async () => {
+      await driver.connect(TEST_CONFIG);
+      mockClient.pttl.mockResolvedValueOnce(42000);
+
+      await driver.setString('k', 'v');
+
+      expect(mockClient.pttl).toHaveBeenCalledWith('k');
+      expect(mockClient.set).toHaveBeenCalledWith('k', 'v', 'PX', 42000);
     });
 
     it('有 TTL 时用 EX 参数', async () => {

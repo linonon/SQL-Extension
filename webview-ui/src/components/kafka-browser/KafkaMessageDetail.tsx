@@ -1,4 +1,5 @@
 import type { KafkaMessage } from '../../types/kafka';
+import { formatJsonLossless } from '../../utils/json-format';
 
 interface KafkaMessageDetailProps {
   readonly message: KafkaMessage;
@@ -6,12 +7,7 @@ interface KafkaMessageDetailProps {
 }
 
 function formatValue(value: string | null): string {
-  if (value === null) { return '(null)'; }
-  try {
-    return JSON.stringify(JSON.parse(value), null, 2);
-  } catch {
-    return value;
-  }
+  return value === null ? '(null)' : formatJsonLossless(value);
 }
 
 export function KafkaMessageDetail({ message, onClose }: KafkaMessageDetailProps) {

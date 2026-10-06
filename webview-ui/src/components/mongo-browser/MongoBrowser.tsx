@@ -54,6 +54,10 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
   const [panelWidth, setPanelWidth] = useState(220);
   const [pendingSwitchSignal, setPendingSwitchSignal] = useState(0);
   const [explain, setExplain] = useState<{ loading?: boolean; summary?: MongoExplainSummary; error?: string } | null>(null);
+  // 当前 rows 是否带 projection 查出 (文档不完整, 禁写). 按发出查询时的 projection 记账, 回包到达才生效,
+  // 看的是产出当前 rows 的那次查询, 不是输入框里尚未 Apply 的文本
+  const [projected, setProjected] = useState(false);
+  const requestedProjectionRef = useRef('');
   const pendingSwitchTarget = useRef<{ database: string; name: string } | null>(null);
 
   const postMessage = usePostMessage();
@@ -78,6 +82,7 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
     const effectiveLimit = resolveLimit(customLimitRef.current, PAGE_SIZE);
     setQueryError(null);
     setLoading(true);
+    requestedProjectionRef.current = projectionRef.current;
     postMessage({
       type: 'mongoFindDocuments',
       database: selected.database,
@@ -99,13 +104,16 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
           setSelected((prev) => prev ?? { database: msg.collections[0].database, name: msg.collections[0].name });
         }
         break;
-      case 'mongoDocumentList':
+      case 'mongoDocumentList': {
+        const p = requestedProjectionRef.current.trim();
+        setProjected(p !== '' && p !== '{}');
         setColumns(msg.columns);
         setRows(msg.rows);
         setTotal(msg.total);
         setQueryError(msg.error ?? null);
         setLoading(false);
         break;
+      }
       case 'error':
         setLoading(false);
         // 集合列表加载若失败 (mongoListAllCollections 抛错), 后端回笼统 error: 同步清掉 spinner 避免左栏永久转
@@ -168,6 +176,7 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
     if (selected) {
       setLoading(true);
       setPage(0);
+      requestedProjectionRef.current = '';
       postMessage({
         type: 'mongoFindDocuments',
         database: selected.database,
@@ -209,6 +218,7 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
     setLoading(true);
     setPage(0);
     const effectiveLimit = resolveLimit(customLimit, PAGE_SIZE);
+    requestedProjectionRef.current = projection;
     postMessage({
       type: 'mongoFindDocuments',
       database: selected.database,
@@ -227,6 +237,7 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
     setQueryError(null);
     setLoading(true);
     setPage(newPage);
+    requestedProjectionRef.current = projection;
     postMessage({
       type: 'mongoFindDocuments',
       database: selected.database,
@@ -376,6 +387,7 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
               filter={filter}
               sort={sort}
               projection={projection}
+              projected={projected}
               customLimit={customLimit}
               customSkip={customSkip}
               onFilterChange={setFilter}

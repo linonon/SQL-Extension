@@ -5,6 +5,14 @@ import type { WebviewMessage } from '../types/messages.js';
 const HASH_SCAN_COUNT = 100;
 const SET_SCAN_COUNT = 100;
 
+// Set TTL 输入框校验: 只收 -1 (移除 TTL) 或 >= 1 的整数; EXPIRE 0 会直接删 key, 不放行
+export function validateTtlInput(v: string): string | undefined {
+  if (v.trim() === '') { return 'TTL is required'; }
+  const n = Number(v);
+  if (!Number.isInteger(n) || (n !== -1 && n < 1)) { return 'Must be -1 (remove TTL) or an integer >= 1'; }
+  return undefined;
+}
+
 /**
  * 解析命令字符串, 支持双引号和单引号包裹的参数.
  * 例: SET key "hello world" -> ['SET', 'key', 'hello world']
@@ -413,6 +421,8 @@ export async function importRedisKeys(
     try {
       switch (entry.type) {
         case 'string': {
+          // 先删再写, 与其他类型一致: setString 会保留旧 key 的 TTL, 导入以导出文件的 ttl 为准
+          await driver.deleteKey(entry.key);
           await driver.setString(entry.key, entry.value as string);
           break;
         }

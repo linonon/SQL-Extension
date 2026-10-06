@@ -18,6 +18,12 @@ export class MySQLDriver implements IDatabaseDriver {
       // 而非 JS Date. 避免 Date -> JSON 变成 ISO ("...T...Z") 后写回 MySQL 被拒,
       // 也避免 Date 时区换算静默改变显示值. 编辑保存所见即所存.
       dateStrings: true,
+      // BIGINT 一律以精确字符串返回 (与 pg int8 一致), 防 snowflake id 等超出 2^53 被 Number() 舍入;
+      // COUNT(*) / TABLE_ROWS 等计数也随之变成字符串, 要当数字用的地方显式 Number().
+      supportBigNumbers: true,
+      bigNumberStrings: true,
+      // JSON 列以原文字符串返回, 网格显示 / 编辑 / Clone / CSV 都是真 JSON 而非 [object Object]
+      jsonStrings: true,
       connectionLimit: 5,
       idleTimeout: 30000,
       connectTimeout: 5000,

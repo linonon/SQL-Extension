@@ -339,15 +339,22 @@ export class MongoDriver implements IDatabaseDriver {
 
 // --- URI 构建 ---
 
-function buildUri(config: ConnectionConfig & { readonly password: string }): string {
+export function buildUri(config: ConnectionConfig & { readonly password: string }): string {
   const { host, port, username, password, database } = config;
   let auth = '';
   if (username) {
     auth = password ? `${encodeURIComponent(username)}:${encodeURIComponent(password)}@` : `${encodeURIComponent(username)}@`;
   }
   const dbPart = database ? `/${database}` : '';
-  const authSource = config.authSource;
-  const query = authSource ? `?authSource=${encodeURIComponent(authSource)}` : '';
+  const params: string[] = [];
+  if (config.authSource) {
+    params.push(`authSource=${encodeURIComponent(config.authSource)}`);
+  }
+  // SSH tunnel 只暴露一个本地端口: 不直连的话 driver 会按副本集成员的内网地址做拓扑发现, 必然超时
+  if (config.ssh?.enabled) {
+    params.push('directConnection=true');
+  }
+  const query = params.length > 0 ? `?${params.join('&')}` : '';
   return `mongodb://${auth}${host}:${port}${dbPart}${query}`;
 }
 

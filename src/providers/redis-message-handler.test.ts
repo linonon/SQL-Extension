@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
-import { handleRedisMessage, parseCommandArgs, exportRedisKeys, importRedisKeys } from './redis-message-handler';
+import { handleRedisMessage, parseCommandArgs, exportRedisKeys, importRedisKeys, validateTtlInput } from './redis-message-handler';
 import type { IRedisDriver } from '../types/redis-driver';
 import type { WebviewMessage } from '../types/messages';
 
@@ -525,7 +525,7 @@ describe('handleRedisMessage', () => {
   });
 
   describe('importRedisKeys', () => {
-    it('导入 string 类型 - 不调 deleteKey', async () => {
+    it('导入 string 类型 - 先 deleteKey (不继承旧 key 的 TTL)', async () => {
       const data = { version: 1, exportedAt: '', database: 0, keys: [
         { key: 'k1', type: 'string', ttl: -1, value: 'hello' },
       ] };
@@ -534,7 +534,7 @@ describe('handleRedisMessage', () => {
 
       expect(result.importedCount).toBe(1);
       expect(driver.setString).toHaveBeenCalledWith('k1', 'hello');
-      expect(driver.deleteKey).not.toHaveBeenCalled();
+      expect(driver.deleteKey).toHaveBeenCalledWith('k1');
       expect(driver.setTTL).not.toHaveBeenCalled();
     });
 
@@ -641,6 +641,18 @@ describe('handleRedisMessage', () => {
         success: false,
         error: 'Connection lost',
       });
+    });
+  });
+
+  describe('validateTtlInput', () => {
+    it('只接受 -1 或 >= 1 的整数 (0 会删 key)', () => {
+      expect(validateTtlInput('-1')).toBeUndefined();
+      expect(validateTtlInput('1')).toBeUndefined();
+      expect(validateTtlInput(' 3600 ')).toBeUndefined();
+      for (const bad of ['0', '-2', '1.5', 'abc']) {
+        expect(validateTtlInput(bad)).toBe('Must be -1 (remove TTL) or an integer >= 1');
+      }
+      expect(validateTtlInput(' ')).toBe('TTL is required');
     });
   });
 });

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import pg from 'pg';
 import { PgDriver } from './pg-driver';
 
 // Mock pg
@@ -19,14 +20,24 @@ vi.mock('pg', () => {
         on = mockPool.on;
       },
       types: {
-        builtins: { DATE: 1082, TIMESTAMP: 1114, TIMESTAMPTZ: 1184 },
+        builtins: { DATE: 1082, TIMESTAMP: 1114, TIMESTAMPTZ: 1184, JSON: 114, JSONB: 3802 },
         setTypeParser: vi.fn(),
       },
     },
   };
 });
 
+// 模块加载时注册的 type parser (beforeEach 的 clearAllMocks 会清掉调用记录, 先留存)
+const typeParserCalls = [...vi.mocked(pg.types.setTypeParser).mock.calls] as unknown as [number, (v: string) => unknown][];
+
 describe('PgDriver', () => {
+  it('日期与 JSON/JSONB 注册 identity parser, 保持 PG 原生文本', () => {
+    const calls = typeParserCalls;
+    expect(calls.map(([oid]) => oid).sort((a, b) => a - b)).toEqual([114, 1082, 1114, 1184, 3802]);
+    const json = calls.find(([oid]) => oid === 3802)![1];
+    expect(json('{"uid":1234567890123456789}')).toBe('{"uid":1234567890123456789}');
+  });
+
   let driver: PgDriver;
 
   beforeEach(() => {

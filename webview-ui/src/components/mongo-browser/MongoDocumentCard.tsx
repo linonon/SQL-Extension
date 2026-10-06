@@ -9,6 +9,8 @@ import { MongoFieldEditor } from './MongoFieldEditor';
 interface MongoDocumentCardProps {
   readonly doc: Record<string, unknown>;
   readonly view: Exclude<MongoView, 'table'>;
+  // 文档由 projection 查出, 不完整: 禁用 Edit / Clone (保存会删掉未投影字段, Clone 会插入残缺文档)
+  readonly projected?: boolean;
   readonly editing?: boolean;
   readonly fieldNames?: readonly string[];
   readonly onEdit: (doc: Record<string, unknown>) => void;
@@ -24,6 +26,7 @@ interface MongoDocumentCardProps {
 export function MongoDocumentCard({
   doc,
   view,
+  projected,
   editing,
   fieldNames,
   onEdit,
@@ -86,13 +89,14 @@ export function MongoDocumentCard({
   // 投影排除 _id 时无法定位文档, 增删改禁用 (Copy 仍可用)
   const hasId = doc._id != null;
   const noIdTitle = hasId ? undefined : 'projection 排除了 _id, 无法定位该文档进行增删改';
+  const writeBlockedTitle = noIdTitle ?? (projected ? 'Clear the projection to edit' : undefined);
 
   return (
     <div className="mongo-doc-card">
       <div className="mongo-doc-card-actions">
-        <button className="btn-small" title={noIdTitle ?? 'Edit'} disabled={!hasId} onClick={() => onEdit(doc)}>Edit</button>
+        <button className="btn-small" title={writeBlockedTitle ?? 'Edit'} disabled={writeBlockedTitle != null} onClick={() => onEdit(doc)}>Edit</button>
         <button className="btn-small" title="Copy" onClick={() => navigator.clipboard.writeText(shellText)}>Copy</button>
-        <button className="btn-small" title={noIdTitle ?? 'Clone (复制为新建, _id 可改)'} disabled={!hasId} onClick={() => onClone(doc)}>Clone</button>
+        <button className="btn-small" title={writeBlockedTitle ?? 'Clone (复制为新建, _id 可改)'} disabled={writeBlockedTitle != null} onClick={() => onClone(doc)}>Clone</button>
         <button className="btn-small btn-danger" title={noIdTitle ?? 'Delete'} disabled={!hasId} onClick={() => onDelete(id)}>Delete</button>
       </div>
       {view === 'list'

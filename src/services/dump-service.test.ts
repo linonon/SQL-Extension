@@ -93,7 +93,8 @@ describe('DumpService', () => {
       // 第二次 execute: SELECT page 1
       // 第三次 execute: SELECT page 2 (空)
       (driver.execute as any)
-        .mockResolvedValueOnce({ columns: [], rows: [{ cnt: 2 }], affectedRows: 0, executionTime: 0 })
+        // MySQL bigNumberStrings 下 COUNT(*) 是字符串
+        .mockResolvedValueOnce({ columns: [], rows: [{ cnt: '2' }], affectedRows: 0, executionTime: 0 })
         .mockResolvedValueOnce({
           columns: [],
           rows: [
@@ -149,7 +150,8 @@ describe('DumpService', () => {
       const onProgress = vi.fn();
 
       (driver.execute as any)
-        .mockResolvedValueOnce({ columns: [], rows: [{ cnt: 2 }], affectedRows: 0, executionTime: 0 })
+        // MySQL bigNumberStrings 下 COUNT(*) 是字符串
+        .mockResolvedValueOnce({ columns: [], rows: [{ cnt: '2' }], affectedRows: 0, executionTime: 0 })
         .mockResolvedValueOnce({
           columns: [],
           rows: [{ id: 1 }, { id: 2 }],
@@ -193,12 +195,10 @@ describe('DumpService', () => {
         { name: 'id', dataType: 'int', nullable: false, isPrimaryKey: true, defaultValue: null, extra: '' },
       ]);
 
-      const result = await service.dumpStructAndData(driver, 'testdb', 'users', undefined, token);
-
-      // 应该只有第一页的数据 (取消前)
-      expect(result).toContain('INSERT INTO');
-      // execute 不应被调用 3 次 (第三页不应请求)
-      expect((driver.execute as any).mock.calls.length).toBeLessThanOrEqual(3);
+      // 取消抛错而不是交回半截 dump; 第三页不会请求 (count + 两页)
+      await expect(service.dumpStructAndData(driver, 'testdb', 'users', undefined, token))
+        .rejects.toThrow('Dump cancelled');
+      expect((driver.execute as any).mock.calls.length).toBe(3);
     });
   });
 
@@ -234,7 +234,8 @@ describe('DumpService', () => {
 
     it('boolean -> TRUE / FALSE', async () => {
       (driver.execute as any)
-        .mockResolvedValueOnce({ columns: [], rows: [{ cnt: 2 }], affectedRows: 0, executionTime: 0 })
+        // MySQL bigNumberStrings 下 COUNT(*) 是字符串
+        .mockResolvedValueOnce({ columns: [], rows: [{ cnt: '2' }], affectedRows: 0, executionTime: 0 })
         .mockResolvedValueOnce({
           columns: [],
           rows: [{ val: true }, { val: false }],

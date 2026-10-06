@@ -64,7 +64,13 @@ export const window = {
   showInformationMessage: async () => undefined,
   showWarningMessage: async () => undefined,
   showErrorMessage: async () => undefined,
+  showSaveDialog: async () => undefined,
+  withProgress: async (_opts: unknown, task: Function) => task({ report: () => {} }, { isCancellationRequested: false }),
 };
+
+export enum ProgressLocation {
+  Notification = 15,
+}
 
 export const commands = {
   registerCommand: (_id: string, _handler: Function) => ({ dispose: () => {} }),
@@ -75,4 +81,8 @@ export const workspace = {
     get: () => undefined,
     update: async () => {},
   }),
+  workspaceFolders: undefined,
+  fs: {
+    writeFile: async () => {},
+  },
 };

@@ -76,13 +76,13 @@ export class DumpService {
     let offset = 0;
 
     while (offset < total) {
-      if (cancellationToken?.isCancellationRequested) {
-        break;
-      }
-
       const result = await driver.execute(
         `SELECT * FROM ${qualifiedTable} LIMIT ${PAGE_SIZE} OFFSET ${offset}`
       );
+      // 取消即抛错 (含最后一页期间取消), 调用方不写文件: 半截 dump 没有截断标记, 不能当成备份交出去
+      if (cancellationToken?.isCancellationRequested) {
+        throw new Error('Dump cancelled');
+      }
 
       if (result.rows.length === 0) {
         break;

@@ -23,6 +23,8 @@ interface MongoDocumentTableProps {
   readonly filter: string;
   readonly sort: string;
   readonly projection: string;
+  // 当前 rows 由非空 projection 查出: 文档不完整, replaceOne / Clone 会丢字段, 禁用 Edit / Clone / 单元格编辑
+  readonly projected?: boolean;
   readonly customLimit: string;
   readonly customSkip: string;
   readonly onFilterChange: (filter: string) => void;
@@ -58,6 +60,7 @@ export function MongoDocumentTable({
   filter,
   sort,
   projection,
+  projected = false,
   customLimit,
   customSkip,
   onFilterChange,
@@ -117,6 +120,11 @@ export function MongoDocumentTable({
     onDeleteDocument(id);
     clearEditor();
   }, [onDeleteDocument, clearEditor]);
+
+  // rows 是 projection 结果时文档不完整, 现存文档编辑器保存会 replaceOne 掉未投影字段: 直接退出编辑
+  useEffect(() => {
+    if (projected && editingId !== null) { clearEditor(); }
+  }, [projected, editingId, clearEditor]);
 
   const handleEnterEdit = useCallback((doc: Record<string, unknown>) => {
     setComposing(null);
@@ -418,12 +426,23 @@ export function MongoDocumentTable({
             性能保护: 仅渲染前 {capped.rows.length} / {rows.length} 条 (本页). 用 Filter 缩小范围或翻页 (每页 50).
           </div>
         )}
+        {!loading && !queryError && projected && rows.length > 0 && (
+          <div className="mongo-render-cap-notice">
+            已应用 Projection, 文档只含部分字段: Edit / Clone / 单元格编辑已禁用. 清空 Projection 并 Apply 后可编辑.
+          </div>
+        )}
         {!loading && !queryError && (rows.length > 0 || composing !== null) && (
           view === 'table'
-            ? <MongoTableView columns={columns} rows={capped.rows} onRowClick={(row) => { setView('list'); handleEnterEdit(row); }} onCellEdit={onUpdateField} />
+            ? <MongoTableView
+                columns={columns}
+                rows={capped.rows}
+                onRowClick={(row) => { setView('list'); if (!projected) { handleEnterEdit(row); } }}
+                onCellEdit={projected ? undefined : onUpdateField}
+              />
             : <MongoDocumentList
                 rows={capped.rows}
                 view={view}
+                projected={projected}
                 fieldNames={fieldNames}
                 editingId={editingId}
                 composing={composing}

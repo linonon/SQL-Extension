@@ -93,6 +93,18 @@ describe('QueryService', () => {
       ])).rejects.toThrow('constraint violation');
     });
 
+    it.each([0, 2])('某行命中 %i 行时抛错 (事务内, 触发回滚) 并点名主键', async (matched) => {
+      const exec = vi.fn()
+        .mockResolvedValueOnce({ columns: [], rows: [], affectedRows: 1, executionTime: 1 } as QueryResult)
+        .mockResolvedValueOnce({ columns: [], rows: [], affectedRows: matched, executionTime: 1 } as QueryResult);
+      mockDriver.transaction = vi.fn(async (work) => work(exec));
+
+      await expect(service.batchUpdate(mockDriver, 'testdb', 'users', [
+        { primaryKeys: { id: '1' }, changes: { name: 'A' } },
+        { primaryKeys: { id: '1234567890123456789' }, changes: { name: 'B' } },
+      ])).rejects.toThrow(`UPDATE matched ${matched} rows for id=1234567890123456789`);
+    });
+
     it('空 updates 不触发 transaction', async () => {
       mockDriver.transaction = vi.fn();
       await service.batchUpdate(mockDriver, 'testdb', 'users', []);

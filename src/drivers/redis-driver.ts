@@ -158,10 +158,16 @@ export class RedisDriver implements IRedisDriver {
     return result;
   }
 
+  // 不传 ttl 时保留 key 原有 TTL: 裸 SET 会清掉 TTL, KEEPTTL 要 Redis 6+, 所以先读 PTTL 再 SET PX
   async setString(key: string, value: string, ttl?: number): Promise<void> {
     this.assertConnected();
     if (ttl !== undefined && ttl > 0) {
       await this.client!.set(key, value, 'EX', ttl);
+      return;
+    }
+    const pttl = await this.client!.pttl(key);
+    if (pttl > 0) {
+      await this.client!.set(key, value, 'PX', pttl);
     } else {
       await this.client!.set(key, value);
     }

@@ -9,7 +9,7 @@ import type { WebviewMessage, ViewType, SaveConnectionConfig, UpdateConnectionCo
 import type { ConnectionFormSSH } from '../types/messages.js';
 import type { DriverType, SSHTunnelConfig } from '../types/connection.js';
 import type { AlterTableChanges } from '../types/query.js';
-import { handleRedisMessage, exportRedisKeys, importRedisKeys } from './redis-message-handler.js';
+import { handleRedisMessage, exportRedisKeys, importRedisKeys, validateTtlInput } from './redis-message-handler.js';
 import { handleKafkaMessage } from './kafka-message-handler.js';
 import { handleMongoMessage, buildExportPipeline } from './mongo-message-handler.js';
 import { getWebviewContent, getWebviewOptions } from './webview-helper.js';
@@ -325,8 +325,10 @@ export class TableViewProvider implements vscode.Disposable {
             }
 
             if (message.type === 'mongoDeleteDocument') {
+              // 点名库 / 集合 / _id: 删的是这条消息里的目标, 让用户能核对它是否就是界面上看到的那条
+              const { database, collection, id } = message;
               const confirmDelete = await vscode.window.showWarningMessage(
-                'Delete this document?', { modal: true }, 'Delete'
+                `Delete document ${id} from ${database}.${collection}?`, { modal: true }, 'Delete'
               );
               if (confirmDelete !== 'Delete') { return; }
             }
@@ -465,13 +467,7 @@ export class TableViewProvider implements vscode.Disposable {
               const ttlMsg = message as { key: string; database: number };
               const input = await vscode.window.showInputBox({
                 prompt: 'Enter TTL in seconds (-1 to remove)',
-                validateInput: (v) => {
-                  if (v.trim() === '') { return 'TTL is required'; }
-                  const n = Number(v);
-                  if (isNaN(n) || !Number.isInteger(n)) { return 'Must be an integer'; }
-                  if (n < -1) { return 'Must be -1 (remove) or >= 0'; }
-                  return undefined;
-                },
+                validateInput: validateTtlInput,
               });
               if (input === undefined) { return; }
               const ttl = Number(input);
@@ -615,6 +611,8 @@ export class TableViewProvider implements vscode.Disposable {
         password: config.password,
         database: config.database,
         authSource: config.authSource,
+        // driver 据此判断是否走 tunnel (如 Mongo 需 directConnection)
+        ssh: buildSSHConfig(config),
       });
       await driver.disconnect();
       panel.webview.postMessage({ type: 'connectionTestResult', success: true });

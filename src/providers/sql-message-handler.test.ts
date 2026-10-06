@@ -113,3 +113,34 @@ describe('handleSqlMessage executeQuery mysql batch', () => {
     expect(driver.executeCancellable).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('handleSqlMessage dumpTable', () => {
+  it('取消 Dump Struct and Data: 不写文件, 提示 Dump cancelled', async () => {
+    const driver = createMysqlDriver([]);
+    (driver.getTableDDL as ReturnType<typeof vi.fn>).mockResolvedValue('CREATE TABLE t (id int)');
+    (driver.listColumns as ReturnType<typeof vi.fn>).mockResolvedValue([{ name: 'id' }]);
+    const token = { isCancellationRequested: false };
+    (driver.execute as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({ columns: [], rows: [{ cnt: '5000' }], affectedRows: 0, executionTime: 0 })
+      .mockImplementation(async () => {
+        token.isCancellationRequested = true;
+        return { columns: [], rows: [{ id: 1 }], affectedRows: 0, executionTime: 0 };
+      });
+    vi.spyOn(vscode.window, 'showSaveDialog').mockResolvedValue(vscode.Uri.file('/tmp/t.sql') as never);
+    vi.spyOn(vscode.window, 'withProgress').mockImplementation(
+      (async (_o: unknown, task: (p: unknown, t: unknown) => Promise<unknown>) => task({ report: vi.fn() }, token)) as never
+    );
+    const writeFile = vi.spyOn(vscode.workspace.fs, 'writeFile');
+    const info = vi.spyOn(vscode.window, 'showInformationMessage');
+    const posts: unknown[] = [];
+
+    await handleSqlMessage(
+      { type: 'dumpTable', database: 'db', table: 't', includeData: true } as WebviewMessage,
+      createCtx(driver, posts)
+    );
+
+    expect(writeFile).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledWith('Dump cancelled');
+    expect(posts).toEqual([]);
+  });
+});

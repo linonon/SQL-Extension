@@ -326,11 +326,19 @@ export async function handleSqlMessage(
           await vscode.window.withProgress(
             { location: vscode.ProgressLocation.Notification, title: `Dumping ${table}...`, cancellable: true },
             async (progress, token) => {
-              const content = await dumpService.dumpStructAndData(
-                driver, database, table,
-                (current, total) => { progress.report({ increment: 0, message: `${current}/${total} rows` }); },
-                token
-              );
+              let content: string;
+              try {
+                content = await dumpService.dumpStructAndData(
+                  driver, database, table,
+                  (current, total) => { progress.report({ increment: 0, message: `${current}/${total} rows` }); },
+                  token
+                );
+              } catch (err) {
+                // 取消不写文件; 其余错误交给外层兜底
+                if (!token.isCancellationRequested) { throw err; }
+                vscode.window.showInformationMessage('Dump cancelled');
+                return;
+              }
               await vscode.workspace.fs.writeFile(uri, Buffer.from(content, 'utf-8'));
               vscode.window.showInformationMessage(`Data dumped to ${uri.fsPath}`);
             }

@@ -66,6 +66,34 @@ describe('MongoDocumentTable - 渲染保护 (H8/P3a)', () => {
   });
 });
 
+describe('MongoDocumentTable - projection 下禁写', () => {
+  it('projected 时 Edit/Clone 禁用带提示, Delete 仍可用; 表格视图不可原地编辑也不进编辑器', () => {
+    renderTable({ projected: true });
+    expect(screen.getByText(/已应用 Projection/)).toBeInTheDocument();
+    const edit = screen.getByRole('button', { name: 'Edit' });
+    expect(edit).toBeDisabled();
+    expect(edit).toHaveAttribute('title', 'Clear the projection to edit');
+    expect(screen.getByRole('button', { name: 'Clone' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Table' }));
+    fireEvent.doubleClick(screen.getByText('Alice'));
+    expect(document.querySelector('.mongo-cell-input')).toBeNull();
+    fireEvent.click(screen.getByText('Alice'));
+    expect(document.querySelector('.mongo-doc-card-editing')).toBeNull();
+  });
+
+  it('编辑中 rows 变为 projection 结果时退出编辑器, 切回 List 也不再进入编辑态', () => {
+    const { props, rerender } = renderTable();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    expect(document.querySelector('.mongo-doc-card-editing')).not.toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Table' }));
+    rerender(<MongoDocumentTable {...(props as any)} projected />);
+    fireEvent.click(screen.getByRole('button', { name: 'List' }));
+    expect(document.querySelector('.mongo-doc-card-editing')).toBeNull();
+  });
+});
+
 describe('MongoDocumentTable - 下拉互斥 (M10)', () => {
   it('打开 Builder 再打开 History 时 Builder 关闭', () => {
     renderTable();

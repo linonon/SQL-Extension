@@ -52,6 +52,11 @@ describe('MySQLDriver', () => {
       expect(driver.isConnected()).toBe(true);
       expect(mockPool.getConnection).toHaveBeenCalled();
       expect(mockConn.release).toHaveBeenCalled();
+      // BIGINT 精确字符串, JSON 列原文
+      const mysql = await import('mysql2/promise');
+      expect(mysql.default.createPool).toHaveBeenCalledWith(expect.objectContaining({
+        supportBigNumbers: true, bigNumberStrings: true, jsonStrings: true,
+      }));
     });
 
     it('连接失败时应该抛出错误', async () => {
@@ -146,8 +151,9 @@ describe('MySQLDriver', () => {
       mockPool.getConnection.mockResolvedValue(mockConn);
       mockPool.query.mockResolvedValue([
         [
-          { name: 'users', schema: 'testdb', rowCount: 100 },
-          { name: 'orders', schema: 'testdb', rowCount: 500 },
+          // bigNumberStrings 下 TABLE_ROWS (BIGINT UNSIGNED) 以字符串返回
+          { name: 'users', schema: 'testdb', rowCount: '100' },
+          { name: 'orders', schema: 'testdb', rowCount: '500' },
         ],
         [],
       ]);

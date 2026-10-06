@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { MongoDriver, deepFormatValue, deepFormatDocument } from './mongo-driver';
+import { MongoDriver, deepFormatValue, deepFormatDocument, buildUri } from './mongo-driver';
 import { ObjectId, Long, Binary, UUID, Timestamp } from 'mongodb';
 
 // Mock mongodb
@@ -937,5 +937,22 @@ describe('deepFormatValue', () => {
   it('Timestamp 转 Timestamp(t,i) — H3', () => {
     const t = new Timestamp({ t: 1700000000, i: 5 });
     expect(deepFormatValue(t)).toBe('Timestamp(1700000000,5)');
+  });
+});
+
+describe('buildUri', () => {
+  const base = { id: 't', name: 't', driverType: 'mongodb' as const, host: '127.0.0.1', port: 40001, username: 'u', password: 'p@ss', database: 'game' };
+  const ssh = { enabled: true, host: 'bastion', port: 22, username: 'ops', authType: 'password' as const };
+
+  it('走 SSH tunnel 时带 directConnection=true (不按副本集成员内网地址发现)', () => {
+    expect(buildUri({ ...base, authSource: 'admin', ssh })).toBe(
+      'mongodb://u:p%40ss@127.0.0.1:40001/game?authSource=admin&directConnection=true'
+    );
+    expect(buildUri({ ...base, ssh })).toBe('mongodb://u:p%40ss@127.0.0.1:40001/game?directConnection=true');
+  });
+
+  it('不走 tunnel 时不加 directConnection', () => {
+    expect(buildUri({ ...base, authSource: 'admin' })).toBe('mongodb://u:p%40ss@127.0.0.1:40001/game?authSource=admin');
+    expect(buildUri({ ...base, ssh: { ...ssh, enabled: false } })).toBe('mongodb://u:p%40ss@127.0.0.1:40001/game');
   });
 });
