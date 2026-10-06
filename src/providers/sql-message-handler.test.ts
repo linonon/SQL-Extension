@@ -304,3 +304,25 @@ describe('handleSqlMessage listDatabasesAndTables', () => {
     expect(posts).toEqual([{ type: 'databaseTableList', databases: [], error: 'Connection terminated' }]);
   });
 });
+
+describe('handleSqlMessage Edit Table / CSV', () => {
+  it('Preview DDL 走独立回执, 没有改动时 ddl 为空串', async () => {
+    const posts: unknown[] = [];
+    const changes = { addedColumns: [], droppedColumns: [], modifiedColumns: [], renamedColumns: [] };
+    await handleSqlMessage(
+      { type: 'previewAlterTable', database: 'db', table: 't', changes } as WebviewMessage,
+      createCtx(createMysqlDriver([]), posts)
+    );
+    expect(posts).toEqual([{ type: 'alterTablePreview', ddl: '' }]);
+  });
+
+  it('CSV 默认存到 workspace 目录下', async () => {
+    const save = vi.spyOn(vscode.window, 'showSaveDialog').mockResolvedValue(undefined);
+    vi.spyOn(vscode.workspace, 'workspaceFolders', 'get').mockReturnValue([{ uri: { fsPath: '/ws' } }] as never);
+    await handleSqlMessage(
+      { type: 'exportCsv', content: 'a', defaultFileName: 'export.csv' } as WebviewMessage,
+      createCtx(createMysqlDriver([]), [])
+    );
+    expect(save.mock.lastCall?.[0]?.defaultUri?.path).toBe('/ws/export.csv');
+  });
+});

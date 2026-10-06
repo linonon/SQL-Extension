@@ -512,6 +512,7 @@ describe('PgDriver', () => {
         fields: [
           { name: 'id', dataTypeID: 23 },
           { name: 'name', dataTypeID: 1043 },
+          { name: 'born', dataTypeID: 1082 },
         ],
         rowCount: 2,
       };
@@ -532,8 +533,11 @@ describe('PgDriver', () => {
       const result = await driver.execute('SELECT * FROM users', []);
 
       expect(result.rows).toEqual(mockResult.rows);
-      expect(result.columns).toHaveLength(2);
+      expect(result.columns).toHaveLength(3);
       expect(result.columns[0].name).toBe('id');
+      // 内置类型按 OID 反查类型名 (mock 的 builtins 只含 DATE 等), 查不到的保留 OID
+      expect(result.columns[2].dataType).toBe('date');
+      expect(result.columns[0].dataType).toBe('23');
       expect(result.affectedRows).toBe(2);
       expect(result.executionTime).toBeGreaterThanOrEqual(0);
     });

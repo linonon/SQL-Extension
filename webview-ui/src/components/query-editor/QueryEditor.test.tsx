@@ -45,7 +45,7 @@ vi.mock('./QueryHistory', () => ({
 
 // mock QueryResultsGrid
 vi.mock('./QueryResultsGrid', () => ({
-  QueryResultsGrid: ({ columns, rows, error, editable, readOnlyReason, onInsertRow, onSave }: {
+  QueryResultsGrid: ({ columns, rows, error, editable, readOnlyReason, onInsertRow, onSave, onSort, note, onPendingCountChange }: {
     columns: unknown[];
     rows: unknown[];
     error?: string;
@@ -53,14 +53,21 @@ vi.mock('./QueryResultsGrid', () => ({
     readOnlyReason?: string;
     onInsertRow?: unknown;
     onSave?: (updates: { primaryKeys: Record<string, unknown>; changes: Record<string, unknown> }[]) => void;
+    onSort?: (column: string) => void;
+    note?: string;
+    onPendingCountChange?: (count: number) => void;
   }) => (
     <div
       data-testid="query-results"
       data-editable={String(editable)}
       data-readonly={readOnlyReason ?? ''}
       data-can-insert={String(!!onInsertRow)}
+      data-rows={JSON.stringify(rows)}
+      data-note={note ?? ''}
     >
       <button data-testid="save" onClick={() => onSave?.([{ primaryKeys: { id: 1 }, changes: { name: 'x' } }])} />
+      <button data-testid="sort-v" onClick={() => onSort?.('v')} />
+      <button data-testid="edit" onClick={() => onPendingCountChange?.(2)} />
       {error ? (
         <div data-testid="error">{error}</div>
       ) : (
@@ -453,6 +460,61 @@ describe('QueryEditor', () => {
     fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
     send({ type: 'batchUpdateResult', success: true });
     expect(executed()).toEqual(['SELECT * FROM t', 'SELECT * FROM t', 'UPDATE t SET n = n + 1 WHERE id = 5']);
+  });
+  it('Save 成功后只重跑产出网格的那条语句, 不重跑同批的写语句', () => {
+    render(<QueryEditor connectionId="c" database="db" table="t" initialSql="UPDATE t SET v = 10 WHERE id = 1; SELECT * FROM t" autoExecute />);
+    const src = { schema: 'db', table: 't' };
+    send({ type: 'columnsResult', requestId: lastId('listColumns'), columns: [col('id', { isPrimaryKey: true }), col('v')] });
+    send({
+      type: 'queryBatchResult', requestId: lastId('executeQuery'),
+      statements: [
+        { index: 1, sql: 'UPDATE t SET v = 10 WHERE id = 1', status: 'ok', affectedRows: 1, executionTime: 1 },
+        { index: 2, sql: 'SELECT * FROM t', status: 'ok', columns: [col('id', { source: src }), col('v', { source: src })], rows: [{ id: 1, v: 10 }], executionTime: 1 },
+      ],
+    });
+    fireEvent.click(screen.getByTestId('save'));
+    send({ type: 'batchUpdateResult', success: true });
+    const executed = mockPostMessage.mock.calls.filter(([m]) => m.type === 'executeQuery').map(([m]) => m.sql);
+    expect(executed).toEqual(['UPDATE t SET v = 10 WHERE id = 1; SELECT * FROM t', 'SELECT * FROM t']);
+  });
+
+  it('表头排序: 默认浏览 SQL 走服务端; 用户改过的 SQL 只排已加载的行, 不覆盖编辑器', () => {
+    const browse = 'SELECT * FROM `t` LIMIT 50 OFFSET 0';
+    render(<QueryEditor connectionId="c" database="db" driverType="mysql" table="t" initialSql={browse} autoExecute />);
+    const textarea = screen.getByPlaceholderText('SELECT * FROM ...') as HTMLTextAreaElement;
+    const executed = () => mockPostMessage.mock.calls.filter(([m]) => m.type === 'executeQuery').map(([m]) => m.sql);
+    const rows = [{ v: '10' }, { v: null }, { v: '9' }];
+    const show = () => send({ type: 'queryResult', requestId: lastId('executeQuery'), columns: [col('v')], rows, affectedRows: 0, executionTime: 1 });
+    show();
+
+    fireEvent.click(screen.getByTestId('sort-v'));
+    expect(textarea.value).toBe('SELECT * FROM `t` ORDER BY `v` ASC LIMIT 50 OFFSET 0');
+    expect(executed()).toHaveLength(2);
+    show();
+
+    fireEvent.change(textarea, { target: { value: 'SELECT * FROM t WHERE v > 1' } });
+    fireEvent.click(screen.getByText('Execute'));
+    show();
+    fireEvent.click(screen.getByTestId('sort-v'));
+    expect(executed()).toHaveLength(3);
+    expect(textarea.value).toBe('SELECT * FROM t WHERE v > 1');
+    const grid = screen.getByTestId('query-results');
+    expect(JSON.parse(grid.getAttribute('data-rows')!)).toEqual([{ v: '9' }, { v: '10' }, { v: null }]);
+    expect(grid).toHaveAttribute('data-note', 'Sorted loaded rows only');
+  });
+
+  it('网格有未保存编辑时重新执行先确认, 确认后才发', () => {
+    render(<QueryEditor connectionId="c" database="db" initialSql="SELECT 1" autoExecute />);
+    send({ type: 'queryResult', requestId: lastId('executeQuery'), columns: [col('v')], rows: [{ v: 1 }], affectedRows: 0, executionTime: 1 });
+    fireEvent.click(screen.getByTestId('edit'));
+    const count = () => mockPostMessage.mock.calls.filter(([m]) => m.type === 'executeQuery').length;
+
+    fireEvent.click(screen.getByText('Execute'));
+    expect(count()).toBe(1);
+    expect(screen.getByText('2 unsaved edits in the grid will be discarded.')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Discard and Execute'));
+    expect(count()).toBe(2);
+    expect(screen.queryByText(/will be discarded/)).not.toBeInTheDocument();
   });
 });
 

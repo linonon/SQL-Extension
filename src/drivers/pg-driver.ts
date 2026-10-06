@@ -19,6 +19,11 @@ for (const oid of [
 
 // PG 连接绑定单个 database, 跨库只能另起连接: 每个库懒建一个 pool, 连接参数相同 (SSH tunnel 时 host/port 是本地转发端口).
 // 只看 public schema
+// 结果列类型: OID 反查内置类型名 (int4 / varchar ...), 枚举 / 域等非内置类型保留 OID
+const PG_TYPE_NAMES = new Map<number, string>(
+  Object.entries(pg.types.builtins).map(([name, oid]) => [oid as number, name.toLowerCase()]),
+);
+
 export class PgDriver implements IDatabaseDriver {
   readonly driverType = 'postgresql';
   private config: (ConnectionConfig & { readonly password: string }) | null = null;
@@ -240,7 +245,7 @@ export class PgDriver implements IDatabaseDriver {
   private toQueryResult(result: pg.QueryResult, executionTime: number): QueryResult {
     const columns: ColumnInfo[] = (result.fields ?? []).map((f) => ({
       name: f.name,
-      dataType: String(f.dataTypeID),
+      dataType: PG_TYPE_NAMES.get(f.dataTypeID) ?? String(f.dataTypeID),
       nullable: true,
       isPrimaryKey: false,
       defaultValue: null,

@@ -36,8 +36,9 @@ export function CloneRowModal({ row, columns, onSubmit, onClose }: CloneRowModal
   });
   const [nullFlags, setNullFlags] = useState<Record<string, boolean>>(() => {
     const flags: Record<string, boolean> = {};
+    // 只有 nullable 列有 NULL 开关; NOT NULL 列没有值时给空输入框让用户填, 不能锁成 NULL
     for (const col of columns) {
-      flags[col.name] = !autoIncrementCols.has(col.name) && (row[col.name] === null || row[col.name] === undefined);
+      flags[col.name] = col.nullable && !autoIncrementCols.has(col.name) && (row[col.name] === null || row[col.name] === undefined);
     }
     return flags;
   });

@@ -7,6 +7,7 @@ interface QueryResultsToolbarProps {
   readonly saving: boolean;
   readonly onSave: () => void;
   readonly onDiscard: () => void;
+  readonly note?: string;
 }
 
 export function QueryResultsToolbar({
@@ -18,12 +19,14 @@ export function QueryResultsToolbar({
   saving,
   onSave,
   onDiscard,
+  note,
 }: QueryResultsToolbarProps) {
   return (
     <div className="query-results-toolbar">
       <span className="query-results-toolbar-info">
         {rowCount} rows in {executionTime}ms
       </span>
+      {note && <span className="query-results-toolbar-info">{note}</span>}
       {readOnlyReason && (
         <span className="query-results-toolbar-info">{readOnlyReason}</span>
       )}

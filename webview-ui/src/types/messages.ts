@@ -72,7 +72,9 @@ export type ExtensionMessage =
   | { type: 'aiDone'; id: string; model?: string; error?: string }
   | { type: 'aiModels'; models: { id: string; name: string }[]; selected: string; error?: string }
   | { type: 'tableDetails'; columns: DetailedColumnInfo[]; tableName: string }
-  | { type: 'alterTableResult'; success: boolean; error?: string; ddlPreview?: string }
+  | { type: 'alterTableResult'; success: boolean; error?: string }
+  // previewAlterTable 的回执: ddl 为空串表示没有改动
+  | { type: 'alterTablePreview'; ddl: string }
   | { type: 'redisScanResult'; requestId: number; keys: readonly RedisKeyInfo[]; cursor: string; done: boolean }
   | { type: 'redisValueResult'; key: string; database: number; keyType: RedisKeyType; value: RedisValue; ttl: number }
   | { type: 'redisOperationResult'; success: boolean; error?: string }

@@ -34,8 +34,8 @@ function validateDateLike(colName: string, s: string): string | null {
 // 防御目标: 语法合法但值非法被静默写库 (如非数字写进 INT, 非法日期写进 DATE).
 // 原则: 只拦"客户端能确定为非法"的情形, 不替 DB 重做完整类型系统.
 export function validateCellValue(col: ColumnInfo, value: unknown): string | null {
-  if (value === null || value === undefined || value === '') {
-    // 空值: 仅对 NOT NULL 且非自动填充列拦截 (自增/默认值列空值是合法的"交给 DB")
+  if (value === null || value === undefined) {
+    // NULL: 仅对 NOT NULL 且非自动填充列拦截 (自增/默认值列空值是合法的"交给 DB")
     if (!col.nullable && !isAutoFilledColumn(col)) {
       return `列 "${col.name}" 不可为空 (NOT NULL)`;
     }
@@ -43,7 +43,7 @@ export function validateCellValue(col: ColumnInfo, value: unknown): string | nul
   }
   const s = String(value).trim();
   const type = col.dataType.toLowerCase();
-  // 纯空白: 对数字/日期列是非法值 (Number("")=0 会静默放行), 字符串列空白合法
+  // 空串 / 纯空白: 对数字/日期列是非法值 (Number("")=0 会静默放行), 字符串列合法 (空串不是 NULL)
   if (s === '') {
     if (NUMERIC_TYPE_RE.test(type) || DATE_TYPE_RE.test(type)) {
       return `列 "${col.name}" (${col.dataType}) 不能为纯空白`;

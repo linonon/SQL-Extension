@@ -1,8 +1,12 @@
 import mysql from 'mysql2/promise';
+import { Types } from 'mysql2';
 import type { ConnectionConfig } from '../types/connection.js';
 import type { IDatabaseDriver } from '../types/driver.js';
 import type { BatchOutcome, ColumnInfo, DetailedColumnInfo, QueryResult, StatementOutcome, TableInfo } from '../types/query.js';
 import { openTransactionWarning } from '../utils/destructive-sql.js';
+
+// mysql2 的 Types 同时是 数字码 -> 类型名 的反查表 (3 -> 'LONG', 253 -> 'VAR_STRING')
+const TYPE_NAMES = Types as unknown as Record<number, string | undefined>;
 
 export class MySQLDriver implements IDatabaseDriver {
   readonly driverType = 'mysql';
@@ -128,12 +132,16 @@ export class MySQLDriver implements IDatabaseDriver {
     return String(rows[0]?.['Create Table'] ?? '');
   }
 
-  // SELECT 类查询返回行数组, INSERT/UPDATE/DELETE 返回 ResultSetHeader
+  // SELECT 类查询返回行数组, INSERT/UPDATE/DELETE 返回 ResultSetHeader;
+  // CALL 存储过程返回 [结果集1, 结果集2, ..., ResultSetHeader] 且 fields 同形, 只展示第一个结果集
   private toQueryResult(
     result: unknown,
     fields: mysql.FieldPacket[] | undefined,
     executionTime: number
   ): QueryResult {
+    if (Array.isArray(result) && Array.isArray(result[0])) {
+      return this.toQueryResult(result[0], (fields as unknown as (mysql.FieldPacket[] | undefined)[] | undefined)?.[0], executionTime);
+    }
     if (Array.isArray(result)) {
       // 自连接时同一张表以多个别名 (f.table) 出现, 各列分属不同行实例, 按主键写回会写错行, 这张表的列都不挂 source
       const aliasesByTable = new Map<string, Set<string>>();
@@ -143,7 +151,7 @@ export class MySQLDriver implements IDatabaseDriver {
       }
       const columns: ColumnInfo[] = (fields ?? []).map((f: mysql.FieldPacket) => ({
         name: f.name,
-        dataType: String(f.type),
+        dataType: (f.type !== undefined ? TYPE_NAMES[f.type] : undefined) ?? String(f.type),
         nullable: true,
         isPrimaryKey: false,
         defaultValue: null,

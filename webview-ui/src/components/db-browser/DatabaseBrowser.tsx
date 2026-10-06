@@ -4,6 +4,7 @@ import { usePostMessage } from '../../hooks/usePostMessage';
 import type { ExtensionMessage } from '../../types/messages';
 import { DatabaseObjectList, type DatabaseInfo } from './DatabaseObjectList';
 import { QueryEditor } from '../query-editor/QueryEditor';
+import { ConfirmBar } from '../common/ConfirmBar';
 import { buildSelectSql } from '../../utils/sql-builder';
 import '../../styles/db-browser.css';
 
@@ -21,9 +22,13 @@ export function DatabaseBrowser({ connectionId, driverType }: DatabaseBrowserPro
   const [databases, setDatabases] = useState<readonly DatabaseInfo[]>([]);
   const [selected, setSelected] = useState<SelectedTable | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [panelWidth, setPanelWidth] = useState(220);
   // key 用于强制 QueryEditor 重新 mount
   const [queryKey, setQueryKey] = useState(0);
+  // 当前表网格里未保存的编辑数; 切表会重挂载编辑器丢掉它们, 先确认
+  const [pendingEdits, setPendingEdits] = useState(0);
+  const [switchTo, setSwitchTo] = useState<SelectedTable | null>(null);
 
   const postMessage = usePostMessage();
   const resizing = useRef(false);
@@ -33,6 +38,7 @@ export function DatabaseBrowser({ connectionId, driverType }: DatabaseBrowserPro
   const handleMessage = useCallback((msg: ExtensionMessage) => {
     if (msg.type === 'databaseTableList') {
       setDatabases(msg.databases);
+      setLoadError(msg.error ?? null);
       setLoading(false);
     }
   }, []);
@@ -45,10 +51,25 @@ export function DatabaseBrowser({ connectionId, driverType }: DatabaseBrowserPro
     postMessage({ type: 'listDatabasesAndTables' });
   }, [postMessage]);
 
-  const handleSelectTable = useCallback((database: string, table: string) => {
-    setSelected({ database, table });
+  const openTable = useCallback((target: SelectedTable) => {
+    setSwitchTo(null);
+    setSelected(target);
     setQueryKey((k) => k + 1);
   }, []);
+
+  // 编辑已保存或撤销, 待确认的切表直接作废 (用户再点一次即可)
+  const handlePendingEdits = useCallback((count: number) => {
+    setPendingEdits(count);
+    if (count === 0) setSwitchTo(null);
+  }, []);
+
+  const handleSelectTable = useCallback((database: string, table: string) => {
+    if (pendingEdits > 0) {
+      setSwitchTo({ database, table });
+      return;
+    }
+    openTable({ database, table });
+  }, [pendingEdits, openTable]);
 
   const handleNewQuery = useCallback((database: string) => {
     postMessage({ type: 'newQuery', database });
@@ -76,6 +97,7 @@ export function DatabaseBrowser({ connectionId, driverType }: DatabaseBrowserPro
 
   const handleRefresh = useCallback(() => {
     setLoading(true);
+    setLoadError(null);
     postMessage({ type: 'listDatabasesAndTables' });
   }, [postMessage]);
 
@@ -114,21 +136,36 @@ export function DatabaseBrowser({ connectionId, driverType }: DatabaseBrowserPro
       </div>
       <div className="db-browser-body">
         <div className="db-left-panel" style={{ width: panelWidth }}>
-          <DatabaseObjectList
-            databases={databases}
-            selected={selected}
-            loading={loading}
-            onSelectTable={handleSelectTable}
-            onNewQuery={handleNewQuery}
-            onImportSql={handleImportSql}
-            onEditTable={handleEditTable}
-            onShowDDL={handleShowDDL}
-            onDumpStruct={handleDumpStruct}
-            onDumpStructAndData={handleDumpStructAndData}
-          />
+          {loadError ? (
+            <div className="db-load-error">
+              <span>{loadError}</span>
+              <button onClick={handleRefresh}>Retry</button>
+            </div>
+          ) : (
+            <DatabaseObjectList
+              databases={databases}
+              selected={selected}
+              loading={loading}
+              onSelectTable={handleSelectTable}
+              onNewQuery={handleNewQuery}
+              onImportSql={handleImportSql}
+              onEditTable={handleEditTable}
+              onShowDDL={handleShowDDL}
+              onDumpStruct={handleDumpStruct}
+              onDumpStructAndData={handleDumpStructAndData}
+            />
+          )}
         </div>
         <div className="db-resize-handle" onMouseDown={handleMouseDown} />
         <div className="db-right-panel">
+          {switchTo && (
+            <ConfirmBar
+              message={`${pendingEdits} unsaved edit${pendingEdits > 1 ? 's' : ''} in ${selected?.table ?? ''} will be discarded.`}
+              confirmLabel={`Discard and Open ${switchTo.table}`}
+              onConfirm={() => openTable(switchTo)}
+              onCancel={() => setSwitchTo(null)}
+            />
+          )}
           {selected ? (
             <QueryEditor
               key={queryKey}
@@ -138,6 +175,7 @@ export function DatabaseBrowser({ connectionId, driverType }: DatabaseBrowserPro
               initialSql={initialSql}
               autoExecute={true}
               table={selected.table}
+              onPendingEditsChange={handlePendingEdits}
             />
           ) : (
             <div className="db-empty">Select a table to browse data</div>

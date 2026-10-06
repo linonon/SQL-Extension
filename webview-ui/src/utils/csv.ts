@@ -10,6 +10,7 @@ function escapeField(value: unknown): string {
   return str;
 }
 
+// 开头带 UTF-8 BOM: Excel 没有 BOM 时按本地编码打开, 中文会乱码
 export function generateCsv(
   columns: readonly ColumnInfo[],
   rows: readonly Record<string, unknown>[]
@@ -18,5 +19,5 @@ export function generateCsv(
   const body = rows.map((row) =>
     columns.map((col) => escapeField(row[col.name])).join(',')
   );
-  return [header, ...body].join('\r\n');
+  return '\uFEFF' + [header, ...body].join('\r\n');
 }

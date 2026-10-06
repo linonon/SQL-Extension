@@ -120,7 +120,7 @@ export async function handleSqlMessage(
 
       case 'previewAlterTable': {
         const stmts = buildAlterTableStatements(ctx.getDriver().driverType, message.table, message.changes);
-        ctx.post({ type: 'alterTableResult', success: true, ddlPreview: stmts.join('\n') });
+        ctx.post({ type: 'alterTablePreview', ddl: stmts.join('\n') });
         return true;
       }
 
@@ -152,9 +152,10 @@ export async function handleSqlMessage(
       }
 
       case 'exportCsv': {
+        const baseDir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? os.homedir();
         const uri = await vscode.window.showSaveDialog({
           filters: { 'CSV Files': ['csv'] },
-          defaultUri: vscode.Uri.file(message.defaultFileName),
+          defaultUri: vscode.Uri.file(`${baseDir}/${message.defaultFileName}`),
         });
         if (uri) {
           await vscode.workspace.fs.writeFile(uri, Buffer.from(message.content, 'utf-8'));
@@ -224,7 +225,7 @@ export async function handleSqlMessage(
           ctx.post({
             type: 'databaseTableList',
             databases: [],
-            error: err instanceof Error ? err.message : String(err),
+            error: sanitizeErrorMessage(err),
           });
         }
         return true;

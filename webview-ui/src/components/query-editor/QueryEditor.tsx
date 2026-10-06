@@ -4,6 +4,7 @@ import { usePostMessage } from '../../hooks/usePostMessage';
 import { formatSql } from '../../utils/format-sql';
 import { diagnoseSql } from '../../utils/sql-linter';
 import { buildSelectSql } from '../../utils/sql-builder';
+import { sortLoadedRows } from '../../utils/sort-rows';
 import { statementAtCaret } from '../../../../src/utils/destructive-sql';
 import type { SortState } from '../../utils/sql-builder';
 import { SqlEditor } from '../sql-editor/SqlEditor';
@@ -11,6 +12,7 @@ import { QueryHistory, useQueryHistory } from './QueryHistory';
 import { QueryResultsGrid } from './QueryResultsGrid';
 import { StatementSummaryList } from './StatementSummaryList';
 import { AiAskBar } from './AiAskBar';
+import { ConfirmBar } from '../common/ConfirmBar';
 import type { ColumnInfo } from '../../types/database';
 import type { ExtensionMessage, StatementResult } from '../../types/messages';
 import '../../styles/query-editor.css';
@@ -23,6 +25,8 @@ interface QueryEditorProps {
   readonly initialSql?: string;
   readonly autoExecute?: boolean;
   readonly table?: string;
+  // 网格未保存编辑数变化时通知 (db-browser 切表前确认用)
+  readonly onPendingEditsChange?: (count: number) => void;
 }
 
 interface ResultState {
@@ -31,6 +35,8 @@ interface ResultState {
   readonly affectedRows: number;
   readonly executionTime: number;
   readonly error?: string;
+  // 产出这个结果集的那一条语句 (批里的写语句不在内), 保存 / 插入后只重跑它刷新
+  readonly sql?: string;
 }
 
 function lastResultSetFromBatch(statements: readonly StatementResult[]): ResultState | null {
@@ -42,6 +48,7 @@ function lastResultSetFromBatch(statements: readonly StatementResult[]): ResultS
         rows: s.rows ?? [],
         affectedRows: s.affectedRows ?? 0,
         executionTime: s.executionTime ?? 0,
+        sql: s.sql,
       };
     }
   }
@@ -86,7 +93,7 @@ export function readOnlyReason(
 // 请求序号在整个 webview 内递增: db-browser 切表会重挂载编辑器, 旧实例的请求不能与新实例的撞号
 let requestSeq = 0;
 
-export function QueryEditor({ database, driverType, initialSql, autoExecute, table }: QueryEditorProps) {
+export function QueryEditor({ database, driverType, initialSql, autoExecute, table, onPendingEditsChange }: QueryEditorProps) {
   const [sqlText, setSqlText] = useState(initialSql ?? '');
   const [executing, setExecuting] = useState(false);
   const [result, setResult] = useState<ResultState | null>(null);
@@ -102,15 +109,19 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
   // 执行结束时会话随连接销毁带来的提示 (如未提交的事务已被回滚)
   const [batchWarning, setBatchWarning] = useState<string | null>(null);
   const [sortState, setSortState] = useState<SortState | null>(null);
+  // true: sortState 只作用于内存里已加载的行 (编辑器不是默认浏览 SQL, 不能改写成 ORDER BY)
+  const [clientSort, setClientSort] = useState(false);
   const [showAsk, setShowAsk] = useState(false);
+  const [pendingEdits, setPendingEdits] = useState(0);
+  // 有未保存编辑时用户要执行的 SQL, 等确认丢弃
+  const [discardPrompt, setDiscardPrompt] = useState<string | null>(null);
   const postMessage = usePostMessage();
   const { entries: historyEntries, addEntry: addHistoryEntry } = useQueryHistory();
   const lastSqlRef = useRef<string>('');
   // 最近一次 executeQuery / listColumns 的 requestId, 回执对不上即是过期回包, 丢弃
   const queryIdRef = useRef(0);
   const columnsIdRef = useRef(0);
-  // 发 Save / Insert 时网格结果所属的 query requestId: 成功回执到达时若已有新查询替换了网格, 不重跑 lastSql
-  // (lastSql 此时是用户新跑的语句, 可能是 UPDATE, 重跑即重复写)
+  // 发 Save / Insert 时网格结果所属的 query requestId, 供 refreshAfterWrite 判断网格是否已被新查询替换
   const saveQueryIdRef = useRef(0);
   const inputRef = useRef<HTMLDivElement>(null);
   const [inputHeight, setInputHeight] = useState<number | undefined>(undefined);
@@ -121,9 +132,25 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
     lastSqlRef.current = sql;
     setExecuting(true);
     setResult(null);
+    setPendingEdits(0);
     setBatchWarning(null);
     postMessage({ type: 'executeQuery', requestId: queryIdRef.current, database, sql });
   }, [database, postMessage]);
+
+  useEffect(() => {
+    onPendingEditsChange?.(pendingEdits);
+    // 编辑已保存或撤销时撤掉待确认的执行
+    if (pendingEdits === 0) setDiscardPrompt(null);
+  }, [pendingEdits, onPendingEditsChange]);
+
+  // Save / Insert 成功后刷新网格: 只重跑产出网格的那条语句; 网格已被新查询替换时不重跑 (那是用户新跑的语句, 可能是写)
+  const resultSqlRef = useRef<string | undefined>(undefined);
+  resultSqlRef.current = result?.sql;
+  const refreshAfterWrite = useCallback(() => {
+    if (resultSqlRef.current && queryIdRef.current === saveQueryIdRef.current) {
+      sendQuery(resultSqlRef.current);
+    }
+  }, [sendQuery]);
 
   const handleMessage = useCallback((message: ExtensionMessage) => {
     if ((message.type === 'queryBatchResult' || message.type === 'queryResult') && message.requestId !== queryIdRef.current) return;
@@ -143,6 +170,7 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
         affectedRows: message.affectedRows,
         executionTime: message.executionTime,
         error: message.error,
+        sql: lastSqlRef.current,
       });
       setExecuting(false);
     }
@@ -156,10 +184,7 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
       setSaving(false);
       if (message.success) {
         setSaveError(null);
-        // 重新执行原始 SQL 刷新数据
-        if (lastSqlRef.current && queryIdRef.current === saveQueryIdRef.current) {
-          sendQuery(lastSqlRef.current);
-        }
+        refreshAfterWrite();
       }
       if (message.error) {
         // 行内提示, 保留结果表与未保存编辑, 用户可就地改正重存, 无需重跑 query
@@ -169,15 +194,13 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
     if (message.type === 'insertRowResult') {
       if (message.success) {
         setSaveError(null);
-        if (lastSqlRef.current && queryIdRef.current === saveQueryIdRef.current) {
-          sendQuery(lastSqlRef.current);
-        }
+        refreshAfterWrite();
       }
       if (message.error) {
         setSaveError(message.error);
       }
     }
-  }, [sendQuery]);
+  }, [refreshAfterWrite]);
 
   useVSCodeMessage(handleMessage);
 
@@ -225,15 +248,32 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
     return statementAtCaret(sqlText, caret) ?? '';
   }, [selectedText, selectionStart, sqlText, driverType]);
 
+  const isBrowseSql = useCallback(
+    (sql: string, sort: SortState | null) => !!table && !!driverType && sql.trim() === buildSelectSql(driverType, table, undefined, sort),
+    [table, driverType]
+  );
+
+  const runUserQuery = useCallback((sql: string) => {
+    setSaveError(null);
+    setBatchStatements(null);
+    // 排序标记跟着新结果走: 执行的正是当前排序的默认浏览 SQL 才保留, 内存排序一律作废
+    if (!isBrowseSql(sql, sortState)) setSortState(null);
+    setClientSort(false);
+    sendQuery(sql);
+  }, [isBrowseSql, sortState, sendQuery]);
+
   const executeQuery = useCallback((caret?: number) => {
     // 执行中再按 Ctrl+Enter 不发新请求: 前一条会失去回执和 Cancel, 成为孤儿查询
     if (executing) return;
     const trimmed = resolveSql(caret);
     if (!trimmed) return;
-    setSaveError(null);
-    setBatchStatements(null);
-    sendQuery(trimmed);
-  }, [executing, resolveSql, sendQuery]);
+    // 新结果会替换网格, 未保存的编辑先确认丢弃
+    if (pendingEdits > 0) {
+      setDiscardPrompt(trimmed);
+      return;
+    }
+    runUserQuery(trimmed);
+  }, [executing, resolveSql, pendingEdits, runUserQuery]);
 
   const cancelQuery = useCallback(() => {
     postMessage({ type: 'cancelQuery' });
@@ -319,9 +359,10 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
     [postMessage]
   );
 
+  // 编辑器里还是 panel 表的默认浏览 SQL 时改写 ORDER BY 交给服务端排;
+  // 否则 (用户写了 WHERE 等) 不动编辑器, 只在内存里排已加载的行
   const handleSort = useCallback(
     (columnId: string) => {
-      if (!table || !driverType) return;
       const next: SortState | null =
         sortState?.column !== columnId
           ? { column: columnId, direction: 'ASC' }
@@ -329,11 +370,20 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
             ? { column: columnId, direction: 'DESC' }
             : null;
       setSortState(next);
-      const newSql = buildSelectSql(driverType, table, undefined, next);
-      setSqlText(newSql);
-      sendQuery(newSql);
+      const serverSort = isBrowseSql(sqlText, sortState);
+      setClientSort(!serverSort && next !== null);
+      if (serverSort && table && driverType) {
+        const newSql = buildSelectSql(driverType, table, undefined, next);
+        setSqlText(newSql);
+        sendQuery(newSql);
+      }
     },
-    [table, driverType, sortState, sendQuery]
+    [isBrowseSql, table, driverType, sortState, sqlText, sendQuery]
+  );
+
+  const gridRows = useMemo(
+    () => (result && clientSort && sortState ? sortLoadedRows(result.rows, sortState) : result?.rows ?? []),
+    [result, clientSort, sortState]
   );
 
   // 合并 fullColumns 的元信息到 result.columns
@@ -394,6 +444,14 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
         />
       )}
       <div className="query-editor-resizer" onMouseDown={handleResizerMouseDown} />
+      {discardPrompt !== null && (
+        <ConfirmBar
+          message={`${pendingEdits} unsaved edit${pendingEdits > 1 ? 's' : ''} in the grid will be discarded.`}
+          confirmLabel="Discard and Execute"
+          onConfirm={() => { setDiscardPrompt(null); runUserQuery(discardPrompt); }}
+          onCancel={() => setDiscardPrompt(null)}
+        />
+      )}
       {showHistory && (
         <div className="query-history-panel">
           <QueryHistory entries={historyEntries} onSelect={handleHistorySelect} />
@@ -411,7 +469,7 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
       {result && (
         <QueryResultsGrid
           columns={displayColumns}
-          rows={result.rows}
+          rows={gridRows}
           affectedRows={result.affectedRows}
           executionTime={result.executionTime}
           error={result.error}
@@ -421,10 +479,13 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
           readOnlyReason={lockReason ?? undefined}
           saving={saving}
           onSave={handleBatchSave}
-          sortState={table ? sortState : undefined}
-          onSort={table ? handleSort : undefined}
+          sortState={sortState}
+          onSort={handleSort}
+          note={clientSort && sortState ? 'Sorted loaded rows only' : undefined}
           onExportCsv={handleExportCsv}
           onInsertRow={canInsert ? handleInsertRow : undefined}
+          tableColumns={fullColumns}
+          onPendingCountChange={setPendingEdits}
         />
       )}
     </div>

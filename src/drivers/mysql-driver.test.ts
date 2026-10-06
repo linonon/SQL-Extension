@@ -384,6 +384,28 @@ describe('MySQLDriver', () => {
       expect(result.columns.map((c) => c.source)).toEqual([{ schema: 'app', table: 'users' }, undefined, undefined]);
     });
 
+    it('CALL 多结果集取第一个; 列类型显示类型名而非数字码', async () => {
+      mockPool.getConnection.mockResolvedValue({ release: vi.fn() });
+      mockPool.query.mockResolvedValue([
+        [[{ id: 1, name: 'a' }], [{ total: 9 }], { affectedRows: 0 }],
+        [
+          [{ name: 'id', orgName: 'id', table: 'u', orgTable: 'users', db: 'app', type: 3 },
+            { name: 'name', orgName: 'name', table: 'u', orgTable: 'users', db: 'app', type: 253 }],
+          [{ name: 'total', orgName: '', table: '', orgTable: '', db: '', type: 8 }],
+          undefined,
+        ],
+      ]);
+      await driver.connect({
+        id: 'test-id', name: 'test', driverType: 'mysql', host: 'localhost', port: 3306,
+        username: 'root', password: 'secret', database: 'testdb',
+      });
+
+      const result = await driver.execute('CALL list_users()');
+
+      expect(result.rows).toEqual([{ id: 1, name: 'a' }]);
+      expect(result.columns.map((c) => c.dataType)).toEqual(['LONG', 'VAR_STRING']);
+    });
+
     it('自连接 (同表多个别名): 该表的列都不挂 source', async () => {
       mockPool.getConnection.mockResolvedValue({ release: vi.fn() });
       mockPool.query.mockResolvedValue([

@@ -112,11 +112,13 @@ export function EditTable({ database, table }: EditTableProps) {
         setSelectedIndex(-1);
         break;
       }
+      case 'alterTablePreview': {
+        setDdlPreview(message.ddl || 'No changes');
+        setShowPreview(true);
+        break;
+      }
       case 'alterTableResult': {
-        if (message.ddlPreview) {
-          setDdlPreview(message.ddlPreview);
-          setShowPreview(true);
-        } else if (message.success) {
+        if (message.success) {
           setSuccessMsg('Changes applied successfully');
           setError('');
           setShowPreview(false);
