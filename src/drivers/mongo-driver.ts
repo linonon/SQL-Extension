@@ -11,6 +11,9 @@ import { summarizeExplain, type ExplainSummary } from '../utils/mongo-explain.js
 // 用 mongodb 自带的 bson 实例: 单独 import 'bson' 可能加载第二份, instanceof 跨实例不成立
 const { EJSON } = BSON;
 
+// 浏览查询的服务端超时. 导出不设: 整表导出可能合法地超过它
+export const BROWSE_TIMEOUT_MS = 60_000;
+
 // MongoDB driver: 不是 SQL driver (不实现 IDatabaseDriver), 集合名 / filter / 文档都作为数据传入.
 export class MongoDriver {
   readonly driverType = 'mongodb';
@@ -137,7 +140,7 @@ export class MongoDriver {
     // 导致导出空集或错集 (与 findDocumentsForBrowser 对齐).
     const bsonPipeline = convertEjsonToBson(pipeline) as Document[];
     const docs = await this.client!.db(database).collection(collection)
-      .aggregate(bsonPipeline, { promoteValues: false }).toArray();
+      .aggregate(bsonPipeline, { promoteValues: false, allowDiskUse: true }).toArray();
     const json = jsonl
       ? docs.map((d) => `${EJSON.stringify(d, { relaxed: false })}\n`).join('')
       : EJSON.stringify(docs, undefined, 2, { relaxed: false });
@@ -159,8 +162,9 @@ export class MongoDriver {
       }
       return stage;
     });
+    // allowDiskUse: 6.0 以下的大 $sort / 深页 $skip 不受 100MB 内存上限限制
     const docs = await this.client!.db(database).collection(collection)
-      .aggregate(bsonPipeline).toArray();
+      .aggregate(bsonPipeline, { maxTimeMS: BROWSE_TIMEOUT_MS, allowDiskUse: true }).toArray();
     return { rows: docs.map(deepFormatDocument), columns: inferSchema(docs) };
   }
 

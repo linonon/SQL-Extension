@@ -1,9 +1,9 @@
 import * as vscode from 'vscode';
 import type { Document } from 'mongodb';
 import type { ExtensionMessage, WebviewMessage } from '../types/messages.js';
-import { userFilter, type MongoDriver } from '../drivers/mongo-driver.js';
+import { BROWSE_TIMEOUT_MS, userFilter, type MongoDriver } from '../drivers/mongo-driver.js';
 import { convertEjsonToBson, convertShellToJson } from '../utils/mongo-shell-to-json.js';
-import { buildClone, buildUpdate, diffDocuments, isEmptyDiff, type DocumentDiff } from '../utils/mongo-update.js';
+import { buildClone, buildUpdate, castLike, changedSinceLoaded, diffDocuments, isEmptyDiff, type DocumentDiff } from '../utils/mongo-update.js';
 
 const NOT_FOUND = 'document not found (deleted or _id changed)';
 
@@ -30,7 +30,10 @@ export async function handleMongoMessage(
         post({ type: 'mongoDocumentList', requestId, columns: docsResult.columns, rows: docsResult.rows });
         if (counting) { post({ type: 'mongoDocumentCount', requestId, total: await counting }); }
       } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : String(err);
+        // 50 = MaxTimeMSExpired: 浏览查询撞到服务端超时
+        const errorMsg = (err as { code?: unknown } | null)?.code === 50
+          ? `Query exceeded ${BROWSE_TIMEOUT_MS / 1000}s; filter on an indexed field`
+          : err instanceof Error ? err.message : String(err);
         post({ type: 'mongoDocumentList', requestId, columns: [], rows: [], error: errorMsg });
       }
       return true;
@@ -100,7 +103,7 @@ export async function handleMongoMessage(
     case 'mongoDropCollection': {
       const { database, collection } = message;
       const confirm = await vscode.window.showWarningMessage(
-        `Drop collection "${collection}"? This cannot be undone.`,
+        `Drop collection "${database}.${collection}"? This cannot be undone.`,
         { modal: true },
         'Drop'
       );
@@ -148,13 +151,13 @@ export async function handleMongoMessage(
           ? (JSON.parse(content.trim()) as unknown[]).length
           : content.trim().split('\n').filter((l) => l.trim()).length;
         const confirm = await vscode.window.showWarningMessage(
-          `Import will insert ${lineCount} document(s) into "${collection}". Continue?`,
+          `Import will insert ${lineCount} document(s) into "${database}.${collection}". Continue?`,
           { modal: true },
           'Insert'
         );
         if (confirm !== 'Insert') { return true; }
         const inserted = await mongo.importDocuments(database, collection, content);
-        vscode.window.showInformationMessage(`Imported ${inserted} document(s) into "${collection}"`);
+        vscode.window.showInformationMessage(`Imported ${inserted} document(s) into "${database}.${collection}"`);
         post({ type: 'mongoImportResult', success: true, inserted });
       } catch (e) {
         const errMsg = e instanceof Error ? e.message : String(e);
@@ -198,17 +201,31 @@ async function writeDocument(message: WriteMessage, mongo: MongoDriver): Promise
   const { database, collection } = message;
   switch (message.type) {
     case 'mongoInsertDocument':
-      await mongo.insertOne(database, collection, convertEjsonToBson(message.document) as Document);
+      // 没有原文档作类型模板: 裸数字按 castLike 的无模板规则落库
+      await mongo.insertOne(database, collection, castLike(undefined, convertEjsonToBson(message.document)) as Document);
       return { success: true, affectedRows: 1 };
 
     case 'mongoUpdateDocument': {
-      // 只写用户改过的 path, 没动的字段 (及期间别人写的值) 不被旧快照覆盖
-      const diff = editDiff(message.original, message.document);
+      // 只写用户改过的 path, 没动的字段不被旧快照覆盖
+      const original = convertEjsonToBson(message.original) as Record<string, unknown>;
+      const diff = diffDocuments(original, convertEjsonToBson(message.document) as Record<string, unknown>);
       if (isEmptyDiff(diff)) { return { success: true, affectedRows: 0, message: 'No changes' }; }
       const filter = { _id: convertEjsonToBson(message.id) };
-      // 重读库内文档只为取原值的 BSON 数值类型
+      // 重读库内文档: 要写的 path 期间被别人 (如游戏服) 改过就拒绝, 否则沿用原值的 BSON 数值类型写入.
+      // 重读到 updateOne 之间仍有毫秒级窗口
       const current = await mongo.findOneTyped(database, collection, filter);
-      const matched = current ? await mongo.updateOne(database, collection, filter, buildUpdate(current, diff)) : 0;
+      if (!current) { return { success: false, error: NOT_FOUND }; }
+      const changed = changedSinceLoaded(original, current, diff);
+      if (changed.length > 0) {
+        // projection 只裁顶层字段: 原文档缺而库里有的顶层字段, 也可能只是被 projection 隐藏了
+        const maybeHidden = changed.some((p) => !Object.hasOwn(original, p.split('.')[0]));
+        return {
+          success: false,
+          error: `Field(s) ${changed.join(', ')} changed since the document was loaded; reload and edit again`
+            + (maybeHidden ? ' (fields hidden by the projection count as changed; clear the projection first)' : ''),
+        };
+      }
+      const matched = await mongo.updateOne(database, collection, filter, buildUpdate(current, diff));
       return matched ? { success: true, affectedRows: matched } : { success: false, error: NOT_FOUND };
     }
 

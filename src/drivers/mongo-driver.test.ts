@@ -390,6 +390,8 @@ describe('MongoDriver', () => {
 
       const res = await driver.findDocumentsForBrowser('db', 'coll', []);
 
+      // 浏览查询带服务端超时, 大 sort / 深页 skip 允许落盘
+      expect(mockCollection.aggregate.mock.calls[0][1]).toEqual({ maxTimeMS: 60000, allowDiskUse: true });
       expect(res.rows[0].bind).toEqual({ aid: 'w-1' });
       expect(res.rows[0]._id).toBe(`ObjectId("${'b'.repeat(24)}")`);
       expect(res.columns.some((c) => c.name === '_id')).toBe(true);
@@ -437,14 +439,14 @@ describe('MongoDriver', () => {
       });
     });
 
-    it('pipeline 内 EJSON 被还原为 BSON (导出过滤可命中), 读时 promoteValues:false', async () => {
+    it('pipeline 内 EJSON 被还原为 BSON (导出过滤可命中), 读时 promoteValues:false, 允许落盘但不设超时', async () => {
       mockCollection.aggregate.mockReturnValue({ toArray: vi.fn().mockResolvedValue([{ _id: 'x' }]) });
       const res = await driver.exportDocuments('db', 'coll', [
         { $match: { _id: { $oid: '507f1f77bcf86cd799439011' } } },
       ], false);
       const [pipelineArg, options] = mockCollection.aggregate.mock.calls[0];
       expect(pipelineArg[0].$match._id).toBeInstanceOf(ObjectId);
-      expect(options).toEqual({ promoteValues: false });
+      expect(options).toEqual({ promoteValues: false, allowDiskUse: true });
       expect(res.count).toBe(1);
     });
 

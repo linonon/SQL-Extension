@@ -15,6 +15,7 @@ import type { MongoExplainSummary } from '../../../../src/types/messages';
 import { useReadOnly } from '../../hooks/useReadOnly';
 
 interface MongoDocumentTableProps {
+  readonly database: string;
   readonly collection: string;
   readonly columns: readonly ColumnInfo[];
   readonly rows: readonly Record<string, unknown>[];
@@ -58,6 +59,7 @@ interface MongoDocumentTableProps {
 }
 
 export function MongoDocumentTable({
+  database,
   collection,
   columns,
   rows,
@@ -238,13 +240,15 @@ export function MongoDocumentTable({
     setShowBuilder(false);
   }, [onFilterChange]);
 
-  // Apply 时记录查询历史 (在真实 filter/sort/projection 上); 经脏数据守卫
+  // Apply 时记录查询历史 (在真实 filter/sort/projection 上); 经脏数据守卫.
+  // 查询进行中不重发: Apply 按钮与各输入框的 Enter 都走这里
   const applyAndRecord = useCallback(() => {
+    if (loading) { return; }
     guardedAction(() => {
       addFilterHistory(filter, sort, projection);
       onApply();
     });
-  }, [guardedAction, addFilterHistory, filter, sort, projection, onApply]);
+  }, [loading, guardedAction, addFilterHistory, filter, sort, projection, onApply]);
 
   const handlePageChange = useCallback((p: number) => {
     guardedAction(() => onPageChange(p));
@@ -308,7 +312,7 @@ export function MongoDocumentTable({
       )}
       <div className="mongo-document-header">
         <div className="mongo-header-row">
-          <h3>{collection}</h3>
+          <h3>{database}.{collection}</h3>
           <ViewToggle value={view} onChange={handleViewChange} />
           {!connectionReadOnly && (
             <button

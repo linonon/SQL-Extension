@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as vscode from 'vscode';
-import { BSON, EJSON, Double, Long } from 'bson';
+import { BSON, EJSON, Double, Int32, Long } from 'bson';
 // instanceof 断言用 mongodb 包里的类: 被测代码经 mongodb 构造 BSON 值 (vitest 下与直接 import 的 bson 是两份模块)
 import { ObjectId } from 'mongodb';
 import { handleMongoMessage } from './mongo-message-handler';
@@ -10,6 +10,8 @@ import type { WebviewMessage } from '../types/messages';
 const NOT_FOUND = 'document not found (deleted or _id changed)';
 const OID = 'aaaaaaaaaaaaaaaaaaaaaaaa';
 const canonical = (v: unknown): unknown => JSON.parse(EJSON.stringify(v, { relaxed: false }));
+// 经 BSON 序列化后实际落库的类型 (canonical EJSON 会把 int32 外的 JS 整数写成 $numberLong, driver 却存成 Double)
+const written = (v: unknown): unknown => canonical(BSON.deserialize(BSON.serialize(v as Record<string, unknown>), { promoteValues: false }));
 
 function mockMongo() {
   return {
@@ -25,6 +27,7 @@ function mockMongo() {
     deleteOne: vi.fn().mockResolvedValue(1),
     createCollection: vi.fn(),
     dropCollection: vi.fn(),
+    importDocuments: vi.fn(),
   };
 }
 
@@ -106,6 +109,14 @@ describe('handleMongoMessage', () => {
       expect(post).toHaveBeenLastCalledWith({ type: 'mongoDocumentCount', requestId: 3, total: null });
     });
 
+    it('服务端超时 (code 50 MaxTimeMSExpired) 换成可操作的提示', async () => {
+      mongo.findDocumentsForBrowser.mockRejectedValue(Object.assign(new Error('operation exceeded time limit'), { code: 50 }));
+      await send({ ...find, collection: 'users', filter: '{"a": 1}', count: false });
+      expect(post).toHaveBeenCalledWith({
+        type: 'mongoDocumentList', requestId: 3, columns: [], rows: [], error: 'Query exceeded 60s; filter on an indexed field',
+      });
+    });
+
     it('driver 抛错时回带 requestId 与 error, 不发总数', async () => {
       mongo.findDocumentsForBrowser.mockRejectedValue(new Error('aggregation failed'));
       await send({ ...find, collection: 'users', filter: '{"a": 1}' });
@@ -149,6 +160,15 @@ describe('handleMongoMessage', () => {
 
       await send({ ...base, original: projected, document: { name: 'a', bag: { gold: 6, items: [1, 2] } } });
       expect(canonical(mongo.updateOne.mock.calls[1][3])).toEqual({ $set: { 'bag.gold': { $numberInt: '6' } } });
+
+      // 新加的字段恰是被 projection 隐藏的已有字段: 拒绝, 提示可能是 projection 所致
+      await send({ ...base, original: projected, document: { ...projected, gold: 7 } });
+      expect(mongo.updateOne).toHaveBeenCalledTimes(2);
+      expect(post).toHaveBeenLastCalledWith({
+        type: 'mongoOperationResult', success: false,
+        error: 'Field(s) gold changed since the document was loaded; reload and edit again'
+          + ' (fields hidden by the projection count as changed; clear the projection first)',
+      });
     });
 
     it('复合 _id 内的 ObjectId / Date 按真实类型进 filter; 24-hex 字符串 _id 不被转成 ObjectId', async () => {
@@ -170,6 +190,25 @@ describe('handleMongoMessage', () => {
       await send({ ...base, original: shown, document: { ...shown, name: 'b' } });
       expect(post).toHaveBeenNthCalledWith(1, { type: 'mongoOperationResult', success: false, error: NOT_FOUND });
       expect(post).toHaveBeenNthCalledWith(2, { type: 'mongoOperationResult', success: false, error: NOT_FOUND });
+    });
+
+    it('字段级乐观锁: 要写的数组期间被游戏服 push 过 -> 拒绝并点名 path; 只改别的字段照常写', async () => {
+      // 打开时 bag.items 是 [a, b]; 期间游戏服 push 了 c
+      const loaded = { name: 'a', bag: { items: [{ id: 1, n: 1 }, { id: 2, n: 1 }] } };
+      mongo.findOneTyped.mockResolvedValue(BSON.deserialize(BSON.serialize({
+        _id: new ObjectId(OID), name: 'a',
+        bag: { items: [1, 2, 3].map((id) => ({ id: Long.fromNumber(id), n: new Int32(1) })) },
+      }), { promoteValues: false }));
+
+      await send({ ...base, original: loaded, document: { ...loaded, bag: { items: [{ id: 1, n: 1 }, { id: 2, n: 5 }] } } });
+      expect(mongo.updateOne).not.toHaveBeenCalled();
+      expect(post).toHaveBeenLastCalledWith({
+        type: 'mongoOperationResult', success: false,
+        error: 'Field(s) bag.items changed since the document was loaded; reload and edit again',
+      });
+
+      await send({ ...base, original: loaded, document: { ...loaded, name: 'b' } });
+      expect(canonical(mongo.updateOne.mock.calls[0][3])).toEqual({ $set: { name: 'b' } });
     });
 
     it('改到不能按 path 写的字段名 -> 报错, 不写库', async () => {
@@ -207,10 +246,25 @@ describe('handleMongoMessage', () => {
     });
   });
 
-  it('mongoInsertDocument: EJSON 还原成 BSON 后插入', async () => {
-    await send({ type: 'mongoInsertDocument', database: 'db', collection: 'users', document: { n: { $numberLong: '5' } } });
-    expect(canonical(mongo.insertOne.mock.calls[0][2])).toEqual({ n: { $numberLong: '5' } });
+  it('mongoInsertDocument: EJSON 还原成 BSON 后插入; 裸数字 int32 外的整数存 Long', async () => {
+    await send({ type: 'mongoInsertDocument', database: 'db', collection: 'users', document: { n: { $numberLong: '5' }, lvl: 5, uid: 10000000002, items: [{ id: 3000000000 }] } });
+    expect(written(mongo.insertOne.mock.calls[0][2])).toEqual({
+      n: { $numberLong: '5' }, lvl: { $numberInt: '5' }, uid: { $numberLong: '10000000002' }, items: [{ id: { $numberLong: '3000000000' } }],
+    });
     expect(post).toHaveBeenCalledWith({ type: 'mongoOperationResult', success: true, affectedRows: 1 });
+  });
+
+  it('删集合 / 导入的确认框点名 database.collection (多区服同名集合); 取消不执行', async () => {
+    const warn = vi.spyOn(vscode.window, 'showWarningMessage').mockResolvedValue(undefined as never);
+    await send({ type: 'mongoDropCollection', database: 'game_s1', collection: 'players' });
+    expect(warn.mock.calls[0][0]).toContain('"game_s1.players"');
+    expect(mongo.dropCollection).not.toHaveBeenCalled();
+
+    vi.spyOn(vscode.window, 'showOpenDialog').mockResolvedValue([vscode.Uri.file('/tmp/p.json')] as never);
+    vi.spyOn(vscode.workspace.fs, 'readFile').mockResolvedValue(Buffer.from('[{"a": 1}]') as never);
+    await send({ type: 'mongoImportCollection', database: 'game_s1', collection: 'players' });
+    expect(warn.mock.calls[1][0]).toContain('1 document(s) into "game_s1.players"');
+    expect(mongo.importDocuments).not.toHaveBeenCalled();
   });
 
   it('mongoDeleteDocument: 先在宿主确认, 取消不删; 按 EJSON _id 删除, 没删到报 not found', async () => {

@@ -1,11 +1,16 @@
 // MongoDB shell 语法 <-> JSON 转换 (webview 端, 纯正则, 不依赖 mongodb 包)
 
+// ISODate 里没写时区的日期时间按 UTC 解释 (mongosh 语义): 空格换成 T 再补 Z.
+// 纯日期本来就按 UTC; new Date("..") 不经此处, 与 mongosh 一样按本地时区
+const ZONELESS_DATETIME = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)$/;
+const isoDateUtc = (iso: string): string => iso.replace(ZONELESS_DATETIME, '$1T$2Z');
+
 const SHELL_PATTERNS: ReadonlyArray<{
   readonly pattern: RegExp;
   readonly replace: string | ((...args: string[]) => string);
 }> = [
   { pattern: /ObjectId\(\s*"([0-9a-fA-F]{24})"\s*\)/g, replace: '{"$$oid":"$1"}' },
-  { pattern: /ISODate\(\s*"([^"]+)"\s*\)/g, replace: '{"$$date":"$1"}' },
+  { pattern: /ISODate\(\s*"([^"]+)"\s*\)/g, replace: (_m, iso) => `{"$date":"${isoDateUtc(iso)}"}` },
   { pattern: /ISODate\(\s*\)/g, replace: () => `{"$date":"${new Date().toISOString()}"}` },
   { pattern: /new\s+Date\(\s*"([^"]+)"\s*\)/g, replace: '{"$$date":"$1"}' },
   { pattern: /new\s+Date\(\s*\)/g, replace: () => `{"$date":"${new Date().toISOString()}"}` },

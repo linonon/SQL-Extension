@@ -4,15 +4,15 @@ import type { ChangeEvent, KeyboardEvent, RefObject } from 'react';
 import { MongoDocumentTable } from './MongoDocumentTable';
 import { convertShellToJson } from '../../utils/mongo-shell-to-json';
 
-// 卡片编辑器 / filter 输入用 autocomplete hook, mock 掉避免 DOM 测量
+// 卡片编辑器 / filter 输入用 autocomplete hook, mock 掉避免 DOM 测量; 保留 "Enter 触发 onApply"
 vi.mock('../../hooks/useMongoAutocomplete', () => ({
-  useMongoAutocomplete: ({ onChange }: { onChange: (v: string) => void }) => ({
+  useMongoAutocomplete: ({ onChange, onApply }: { onChange: (v: string) => void; onApply?: () => void }) => ({
     textareaRef: { current: null } as RefObject<HTMLTextAreaElement>,
     completionItems: [] as readonly string[],
     selectedIndex: 0,
     popupPos: { top: 0, left: 0 },
     handleChange: (e: ChangeEvent<HTMLTextAreaElement>) => onChange(e.target.value),
-    handleKeyDown: (_e: KeyboardEvent<HTMLTextAreaElement>) => {},
+    handleKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => { if (e.key === 'Enter') { onApply?.(); } },
     applyCompletion: (_item: string) => {},
   }),
 }));
@@ -21,6 +21,7 @@ const col = (name: string) => ({ name, dataType: 'string', nullable: true, isPri
 
 function renderTable(over: Record<string, unknown> = {}) {
   const props = {
+    database: 'game_s1',
     collection: 'users',
     columns: [col('_id'), col('name')],
     rows: [{ _id: 'ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa")', name: 'Alice' }],
@@ -135,6 +136,23 @@ describe('MongoDocumentTable - 分页 (偏移含 Skip, 总数可能未知)', () 
     renderTable({ rows: twoRows, total: 14, page: 1, offset: 12, pageSize: 2 });
     expect(screen.getByText('13-14 of 14')).toBeInTheDocument();
     expect(next()).toBeDisabled();
+  });
+});
+
+describe('MongoDocumentTable - 标题与 Apply', () => {
+  it('标题写 database.collection (多区服同名集合)', () => {
+    renderTable();
+    expect(screen.getByRole('heading', { name: 'game_s1.users' })).toBeInTheDocument();
+  });
+
+  it('查询进行中: Filter 框按 Enter 不重发, 结束后才发', () => {
+    const { props, rerender } = renderTable({ loading: true });
+    const filterBox = document.querySelector('textarea.mongo-filter-input') as HTMLTextAreaElement;
+    fireEvent.keyDown(filterBox, { key: 'Enter' });
+    expect(props.onApply).not.toHaveBeenCalled();
+    rerender(<MongoDocumentTable {...(props as any)} loading={false} />);
+    fireEvent.keyDown(filterBox, { key: 'Enter' });
+    expect(props.onApply).toHaveBeenCalledTimes(1);
   });
 });
 

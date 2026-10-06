@@ -366,6 +366,7 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
         <div className="mongo-right-panel">
           {selected ? (
             <MongoDocumentTable
+              database={selected.database}
               collection={selected.name}
               columns={columns}
               rows={rows}

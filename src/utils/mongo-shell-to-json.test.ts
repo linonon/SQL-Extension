@@ -74,6 +74,15 @@ describe('convertShellToJson', () => {
     expect(result).toBe('{"$date":"2024-01-15T00:00:00.000Z"}');
   });
 
+  it('ISODate 不带时区的日期时间按 UTC (mongosh 语义); 带时区 / 纯日期 / new Date 不变', () => {
+    expect(convertShellToJson('ISODate("2026-01-01 08:00:00")')).toBe('{"$date":"2026-01-01T08:00:00Z"}');
+    expect(convertShellToJson('ISODate("2026-01-01T08:00")')).toBe('{"$date":"2026-01-01T08:00Z"}');
+    expect(convertShellToJson('ISODate("2026-01-01T08:00:00.123")')).toBe('{"$date":"2026-01-01T08:00:00.123Z"}');
+    expect(convertShellToJson('ISODate("2026-01-01T08:00:00+08:00")')).toBe('{"$date":"2026-01-01T08:00:00+08:00"}');
+    expect(convertShellToJson('ISODate("2026-01-01")')).toBe('{"$date":"2026-01-01"}');
+    expect(convertShellToJson('new Date("2026-01-01 08:00:00")')).toBe('{"$date":"2026-01-01 08:00:00"}');
+  });
+
   it('ISODate() 转为当前时间的 {"$date":"..."}', () => {
     const result = convertShellToJson('ISODate()');
     const parsed = JSON.parse(result);

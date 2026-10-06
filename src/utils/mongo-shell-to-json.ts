@@ -2,6 +2,11 @@ import { ObjectId, Long, Int32, Decimal128, MinKey, MaxKey, Binary, UUID, Timest
 
 // --- MongoDB shell 语法转 Extended JSON ---
 
+// ISODate 里没写时区的日期时间按 UTC 解释 (mongosh 语义): 空格换成 T 再补 Z.
+// 纯日期本来就按 UTC; new Date("..") 不经此处, 与 mongosh 一样按本地时区
+const ZONELESS_DATETIME = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)$/;
+const isoDateUtc = (iso: string): string => iso.replace(ZONELESS_DATETIME, '$1T$2Z');
+
 const SHELL_PATTERNS: ReadonlyArray<{
   readonly pattern: RegExp;
   readonly replace: (...args: string[]) => string;
@@ -12,7 +17,7 @@ const SHELL_PATTERNS: ReadonlyArray<{
   },
   {
     pattern: /ISODate\(\s*"([^"]+)"\s*\)/g,
-    replace: (_, iso) => `{"$date":"${iso}"}`,
+    replace: (_, iso) => `{"$date":"${isoDateUtc(iso)}"}`,
   },
   {
     pattern: /ISODate\(\s*\)/g,
