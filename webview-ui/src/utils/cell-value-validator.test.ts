@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { validateCellValue, validateRow } from './cell-value-validator';
-import type { ColumnInfo } from '../types/database';
+import type { ColumnInfo } from '../../../src/types/query';
 
 function col(overrides: Partial<ColumnInfo>): ColumnInfo {
   return {
@@ -55,14 +55,15 @@ describe('validateCellValue', () => {
   });
 
   describe('NOT NULL', () => {
-    it('NOT NULL 非自增列空值拦截', () => {
+    it('NOT NULL 非自增列 NULL 拦截, 空串不是 NULL', () => {
       const c = col({ name: 'x', nullable: false, dataType: 'varchar(20)' });
-      expect(validateCellValue(c, '')).toMatch(/不可为空/);
       expect(validateCellValue(c, null)).toMatch(/不可为空/);
+      expect(validateCellValue(c, '')).toBeNull();
+      expect(validateCellValue(col({ nullable: false, dataType: 'int' }), '')).toMatch(/空白/);
     });
     it('NOT NULL 自增列空值放行 (交给 DB)', () => {
       const c = col({ name: 'id', nullable: false, dataType: 'int', extra: 'auto_increment' });
-      expect(validateCellValue(c, '')).toBeNull();
+      expect(validateCellValue(c, null)).toBeNull();
     });
     it('nullable 列空值放行', () => {
       expect(validateCellValue(col({ nullable: true }), '')).toBeNull();

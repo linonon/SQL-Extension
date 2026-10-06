@@ -1,18 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { App } from './App';
 import { mockPostMessage } from './__test__/setup';
-import type { ExtensionMessage } from './types/messages';
+import type { ExtensionMessage } from '../../src/types/messages';
 
 // mock 子组件避免依赖问题
-vi.mock('./components/data-grid/DataGrid', () => ({
-  DataGrid: ({ connectionId, database, table }: { connectionId: string; database: string; table: string }) => (
-    <div data-testid="data-grid">
-      DataGrid: {connectionId} / {database} / {table}
-    </div>
-  ),
-}));
-
 vi.mock('./components/query-editor/QueryEditor', () => ({
   QueryEditor: ({ connectionId, database }: { connectionId: string; database: string }) => (
     <div data-testid="query-editor">
@@ -40,27 +32,6 @@ describe('App', () => {
     render(<App />);
 
     expect(screen.getByText('Loading...')).toBeInTheDocument();
-  });
-
-  it('应该在收到 viewInit 消息后渲染 table 视图', async () => {
-    render(<App />);
-
-    const message: ExtensionMessage = {
-      type: 'viewInit',
-      view: 'table',
-      context: {
-        connectionId: 'conn-123',
-        database: 'test_db',
-        table: 'users',
-      },
-    };
-
-    window.dispatchEvent(new MessageEvent('message', { data: message }));
-
-    await waitFor(() => {
-      expect(screen.getByTestId('data-grid')).toBeInTheDocument();
-      expect(screen.getByText('DataGrid: conn-123 / test_db / users')).toBeInTheDocument();
-    });
   });
 
   it('应该在收到 viewInit 消息后渲染 query 视图', async () => {
@@ -143,5 +114,17 @@ describe('App', () => {
     await waitFor(() => {
       expect(screen.getByTestId('connection-form')).toBeInTheDocument();
     });
+  });
+
+  it('宿主的笼统 error 在任何视图里都显示一次, 可关闭', async () => {
+    render(<App />);
+    window.dispatchEvent(new MessageEvent('message', { data: { type: 'viewInit', view: 'connection-form' } satisfies ExtensionMessage }));
+    await screen.findByTestId('connection-form');
+
+    window.dispatchEvent(new MessageEvent('message', { data: { type: 'error', message: 'Failed to connect: boom' } satisfies ExtensionMessage }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Failed to connect: boom');
+
+    fireEvent.click(screen.getByText('Dismiss'));
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 });

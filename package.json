@@ -77,51 +77,20 @@
         "icon": "$(debug-disconnect)"
       },
       {
-        "command": "sqlext.openTable",
-        "title": "Open Table",
-        "category": "Database"
-      },
-      {
-        "command": "sqlext.newQuery",
-        "title": "New Query",
-        "icon": "$(terminal)",
-        "category": "Database"
-      },
-      {
         "command": "sqlext.editConnection",
         "title": "Edit Connection",
         "icon": "$(edit)",
         "category": "Database"
       },
       {
+        "command": "sqlext.duplicateConnection",
+        "title": "Duplicate Connection",
+        "category": "Database"
+      },
+      {
         "command": "sqlext.refreshConnections",
         "title": "Refresh",
         "icon": "$(refresh)",
-        "category": "Database"
-      },
-      {
-        "command": "sqlext.showTableDDL",
-        "title": "Show Table DDL",
-        "category": "Database"
-      },
-      {
-        "command": "sqlext.dumpStruct",
-        "title": "Dump Struct",
-        "category": "Database"
-      },
-      {
-        "command": "sqlext.dumpStructAndData",
-        "title": "Dump Struct and Data",
-        "category": "Database"
-      },
-      {
-        "command": "sqlext.importSql",
-        "title": "Import SQL",
-        "category": "Database"
-      },
-      {
-        "command": "sqlext.editTable",
-        "title": "Edit Table",
         "category": "Database"
       },
       {
@@ -132,6 +101,32 @@
       }
     ],
     "menus": {
+      "commandPalette": [
+        {
+          "command": "sqlext.removeConnection",
+          "when": "false"
+        },
+        {
+          "command": "sqlext.connect",
+          "when": "false"
+        },
+        {
+          "command": "sqlext.disconnect",
+          "when": "false"
+        },
+        {
+          "command": "sqlext.editConnection",
+          "when": "false"
+        },
+        {
+          "command": "sqlext.duplicateConnection",
+          "when": "false"
+        },
+        {
+          "command": "sqlext.cancelConnect",
+          "when": "false"
+        }
+      ],
       "view/title": [
         {
           "command": "sqlext.addConnection",
@@ -156,17 +151,17 @@
           "group": "context"
         },
         {
-          "command": "sqlext.refreshConnections",
-          "when": "viewItem =~ /^connection-connected/",
-          "group": "inline"
-        },
-        {
           "command": "sqlext.disconnect",
           "when": "viewItem =~ /^connection-connected/",
           "group": "inline"
         },
         {
           "command": "sqlext.editConnection",
+          "when": "viewItem =~ /^connection/",
+          "group": "context"
+        },
+        {
+          "command": "sqlext.duplicateConnection",
           "when": "viewItem =~ /^connection/",
           "group": "context"
         },
@@ -179,7 +174,7 @@
     }
   },
   "scripts": {
-    "compile": "node esbuild.js",
+    "compile": "tsc --noEmit -p . && node esbuild.js",
     "watch": "node esbuild.js --watch",
     "build:webview": "cd webview-ui && npm run build",
     "build": "npm run compile && npm run build:webview",

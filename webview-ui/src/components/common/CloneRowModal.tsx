@@ -1,16 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ColumnInfo } from '../../types/database';
+import type { ColumnInfo } from '../../../../src/types/query';
 import { isAutoFilledColumn } from '../../utils/insert-row';
 import { validateRow } from '../../utils/cell-value-validator';
 
 interface CloneRowModalProps {
+  // Insert New Row / Clone as New Row
+  readonly title: string;
   readonly row: Record<string, unknown>;
   readonly columns: ColumnInfo[];
   readonly onSubmit: (row: Record<string, unknown>) => void;
   readonly onClose: () => void;
 }
 
-export function CloneRowModal({ row, columns, onSubmit, onClose }: CloneRowModalProps) {
+export function CloneRowModal({ title, row, columns, onSubmit, onClose }: CloneRowModalProps) {
   // 自动填充列 (MySQL auto_increment / PG serial-nextval / identity) 克隆时清空, 让 DB 自增
   const autoIncrementCols = useMemo(() => {
     const set = new Set<string>();
@@ -36,8 +38,9 @@ export function CloneRowModal({ row, columns, onSubmit, onClose }: CloneRowModal
   });
   const [nullFlags, setNullFlags] = useState<Record<string, boolean>>(() => {
     const flags: Record<string, boolean> = {};
+    // 只有 nullable 列有 NULL 开关; NOT NULL 列没有值时给空输入框让用户填, 不能锁成 NULL
     for (const col of columns) {
-      flags[col.name] = !autoIncrementCols.has(col.name) && (row[col.name] === null || row[col.name] === undefined);
+      flags[col.name] = col.nullable && !autoIncrementCols.has(col.name) && (row[col.name] === null || row[col.name] === undefined);
     }
     return flags;
   });
@@ -99,7 +102,7 @@ export function CloneRowModal({ row, columns, onSubmit, onClose }: CloneRowModal
   return (
     <div className="clone-row-overlay" ref={overlayRef} onClick={handleOverlayClick}>
       <div className="clone-row-modal">
-        <div className="clone-row-header">Clone as New Row</div>
+        <div className="clone-row-header">{title}</div>
         <div className="clone-row-body">
           {columns.map((col) => {
             const isAutoInc = autoIncrementCols.has(col.name);
@@ -115,8 +118,9 @@ export function CloneRowModal({ row, columns, onSubmit, onClose }: CloneRowModal
                   </span>
                 </div>
                 <div className="clone-row-field-input">
-                  <input
-                    type="text"
+                  <textarea
+                    rows={1}
+                    spellCheck={false}
                     value={isNull ? '' : values[col.name]}
                     placeholder={isAutoInc ? 'AUTO' : col.nullable ? 'NULL' : ''}
                     disabled={isNull}

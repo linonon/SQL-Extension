@@ -47,13 +47,16 @@
 }
 
 .kafka-filter-bar {
+  display: flex;
+  gap: 4px;
   padding: 4px 8px;
   border-bottom: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.35));
   flex-shrink: 0;
 }
 
 .kafka-filter-bar input[type="text"] {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   box-sizing: border-box;
 }
 

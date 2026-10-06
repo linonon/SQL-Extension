@@ -10,7 +10,9 @@ vi.hoisted(() => {
   process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'sqlext-ipc-'));
 });
 
-import { IpcServer, SOCKET_PATH, SOCKET_DIR } from './ipc-server.js';
+import * as vscode from 'vscode';
+import { IpcServer, SOCKET_PATH, SOCKET_DIR, confirmAgentRequest } from './ipc-server.js';
+import { PROTOCOL_MISMATCH_ERROR, PROTOCOL_VERSION } from '../mcp/ipc-protocol.js';
 
 const result = {
   columns: [{ name: 'id', dataType: 'int' }],
@@ -38,22 +40,22 @@ function makeConnectionManager() {
       },
     ]),
     connect: vi.fn().mockResolvedValue(undefined),
-    disconnect: vi.fn().mockResolvedValue(undefined),
     getState: vi.fn().mockReturnValue('disconnected'),
     getDriver: vi.fn().mockReturnValue({
       execute: vi.fn(),
       executeReadOnly: vi.fn().mockResolvedValue(result),
-      executeCancellable: vi.fn().mockReturnValue({ promise: Promise.resolve(result), cancel: () => {} }),
+      executeBatch: vi.fn().mockReturnValue({ promise: Promise.resolve({ results: [{ ...result, sql: 'x' }] }), cancel: () => {} }),
     }),
   } as any;
 }
 
-function sendRequest(socketPath: string, req: object): Promise<any> {
+// 默认带上当前协议版本; raw 原样发送 (模拟旧版 MCP 进程)
+function sendRequest(socketPath: string, req: object, raw = false): Promise<any> {
   return new Promise((resolve, reject) => {
     const client = net.createConnection(socketPath);
     let buffer = '';
     client.on('connect', () => {
-      client.write(JSON.stringify(req) + '\n');
+      client.write(JSON.stringify(raw ? req : { protocolVersion: PROTOCOL_VERSION, ...req }) + '\n');
     });
     client.on('data', (data) => {
       buffer += data.toString();
@@ -101,29 +103,7 @@ describe('IpcServer', () => {
     expect(resp.result[0].name).toBe('test-db');
     expect(resp.result[0].driverType).toBe('mysql');
     expect(resp.result[0]).not.toHaveProperty('password');
-  });
-
-  it('should handle connect', async () => {
-    await new Promise(r => setTimeout(r, 100));
-    const resp = await sendRequest(SOCKET_PATH, {
-      id: '2',
-      method: 'connect',
-      params: { connectionId: 'test-id' },
-    });
-    expect(resp.id).toBe('2');
-    expect(resp.result.success).toBe(true);
-    expect(cm.connect).toHaveBeenCalledWith('test-id');
-  });
-
-  it('should handle disconnect', async () => {
-    await new Promise(r => setTimeout(r, 100));
-    const resp = await sendRequest(SOCKET_PATH, {
-      id: '3',
-      method: 'disconnect',
-      params: { connectionId: 'test-id' },
-    });
-    expect(resp.result.success).toBe(true);
-    expect(cm.disconnect).toHaveBeenCalledWith('test-id');
+    expect(resp.result[0]).not.toHaveProperty('readOnly');
   });
 
   it('should auto-connect and run read through the read-only path with default database', async () => {
@@ -134,7 +114,7 @@ describe('IpcServer', () => {
       params: { connectionId: 'test-id', query: 'SELECT 1' },
     });
     expect(cm.connect).toHaveBeenCalledWith('test-id');
-    expect(JSON.parse(resp.result.content[0].text).rows).toEqual([{ id: 1 }]);
+    expect(JSON.parse(resp.result.content[0].text)).toMatchObject({ columns: ['id'], rows: [[1]] });
     expect(cm.getDriver().executeReadOnly).toHaveBeenCalledWith('SELECT 1\nLIMIT 500', 'mydb');
   });
 
@@ -149,8 +129,63 @@ describe('IpcServer', () => {
     expect(cm.getDriver().executeReadOnly).not.toHaveBeenCalled();
   });
 
+  it('execute 的破坏性请求先弹 modal 点名连接 / 库 / 语句; 拒绝则不连接不执行, 放行才执行', async () => {
+    await new Promise(r => setTimeout(r, 100));
+    const warn = vi.spyOn(vscode.window, 'showWarningMessage').mockClear().mockResolvedValue(undefined as never);
+    const req = { id: '7', method: 'execute', params: { connectionId: 'test-id', query: 'DROP TABLE users' } };
+    const denied = await sendRequest(SOCKET_PATH, req);
+    expect(warn).toHaveBeenCalledWith('An agent wants to run a destructive request on test-db/mydb: DROP TABLE users', { modal: true }, 'Run');
+    expect(JSON.parse(denied.result.content[0].text)).toEqual({ error: 'Denied by user', code: 'NOT_CONFIRMED' });
+    expect(cm.connect).not.toHaveBeenCalled();
+    expect(cm.getDriver().executeBatch).not.toHaveBeenCalled();
+
+    warn.mockResolvedValue('Run' as never);
+    const ran = await sendRequest(SOCKET_PATH, { ...req, id: '8' });
+    expect(ran.result.isError).toBeUndefined();
+    expect(cm.getDriver().executeBatch).toHaveBeenCalledWith(['DROP TABLE users'], 'mydb');
+  });
+
+  it('非破坏性 execute 不弹确认', async () => {
+    await new Promise(r => setTimeout(r, 100));
+    const warn = vi.spyOn(vscode.window, 'showWarningMessage').mockClear();
+    await sendRequest(SOCKET_PATH, { id: '9', method: 'execute', params: { connectionId: 'test-id', query: 'DELETE FROM users WHERE id = 1' } });
+    expect(warn).not.toHaveBeenCalled();
+    expect(cm.getDriver().executeBatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('只读连接: listConnections 标出 readOnly; execute 不弹确认, 不连接, 回 READONLY_VIOLATION; read 照常', async () => {
+    await new Promise(r => setTimeout(r, 100));
+    const ro = { ...cm.getConnections()[0], readOnly: true };
+    cm.getConnections.mockReturnValue([ro]);
+    cm.getConnectionInfo.mockReturnValue([{ config: ro, state: 'disconnected' }]);
+    const warn = vi.spyOn(vscode.window, 'showWarningMessage').mockClear();
+
+    const list = await sendRequest(SOCKET_PATH, { id: '10', method: 'listConnections' });
+    expect(list.result[0].readOnly).toBe(true);
+
+    const exec = await sendRequest(SOCKET_PATH, { id: '11', method: 'execute', params: { connectionId: 'test-id', query: 'DROP TABLE users' } });
+    expect(JSON.parse(exec.result.content[0].text)).toEqual({ error: 'Connection test-db is read-only', code: 'READONLY_VIOLATION' });
+    expect(warn).not.toHaveBeenCalled();
+    expect(cm.connect).not.toHaveBeenCalled();
+    expect(cm.getDriver().executeBatch).not.toHaveBeenCalled();
+
+    const read = await sendRequest(SOCKET_PATH, { id: '12', method: 'read', params: { connectionId: 'test-id', query: 'SELECT 1' } });
+    expect(read.result.isError).toBeUndefined();
+    expect(cm.getDriver().executeReadOnly).toHaveBeenCalled();
+  });
+
   it('should keep socket dir private', () => {
     expect(fs.statSync(SOCKET_DIR).mode & 0o777).toBe(0o700);
+  });
+
+  it('协议版本不符 (旧扩展留下的 MCP 进程) 回明确错误, 不执行', async () => {
+    await new Promise(r => setTimeout(r, 100));
+    const read = { id: '13', method: 'read', params: { connectionId: 'test-id', query: 'SELECT 1' } };
+    const legacy = await sendRequest(SOCKET_PATH, read, true);
+    expect(legacy).toEqual({ id: '13', error: PROTOCOL_MISMATCH_ERROR, protocolVersion: PROTOCOL_VERSION });
+    const newer = await sendRequest(SOCKET_PATH, { ...read, protocolVersion: PROTOCOL_VERSION + 1 }, true);
+    expect(newer.error).toBe(PROTOCOL_MISMATCH_ERROR);
+    expect(cm.connect).not.toHaveBeenCalled();
   });
 
   it('should return error for unknown method', async () => {
@@ -163,5 +198,22 @@ describe('IpcServer', () => {
     server.dispose();
     // socket 文件应被删除
     expect(fs.existsSync(SOCKET_PATH)).toBe(false);
+  });
+});
+
+describe('confirmAgentRequest', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('60s 无应答按拒绝处理, 长语句保留首尾', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(vscode.window, 'showWarningMessage').mockClear().mockReturnValue(new Promise(() => {}) as never);
+    const answer = confirmAgentRequest('c/db', `UPDATE t SET doc = '${'x'.repeat(400)}' -- tail`);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(await answer).toBe('No answer within 60s, not executed');
+    const msg = warn.mock.calls[0][0] as string;
+    expect(msg).toContain(': UPDATE t SET doc');
+    expect(msg).toContain(' ... ');
+    expect(msg.endsWith("' -- tail")).toBe(true);
+    expect(msg.length).toBeLessThan(400);
   });
 });

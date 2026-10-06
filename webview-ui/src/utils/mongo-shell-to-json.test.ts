@@ -2,6 +2,17 @@ import { describe, it, expect, vi } from 'vitest';
 import { convertShellToJson, stripShellTypes, jsonToShell } from './mongo-shell-to-json';
 
 describe('convertShellToJson', () => {
+  it('字符串值里形似 shell 写法的文本原样保留; 字符串外的照常转换 (编辑器 jsonToShell -> convertShellToJson 往返)', () => {
+    // 文档的 ObjectId 以 shell 写法字符串到达 webview
+    const doc = { _id: 'ObjectId("abc123456789012345678901")', note: 'call Long(5) or ISODate("x") here, NumberInt(3)' };
+    const shell = jsonToShell(JSON.stringify(doc, null, 2));
+    expect(shell).toContain('"_id": ObjectId("abc123456789012345678901")');
+    expect(JSON.parse(convertShellToJson(shell))).toEqual({
+      _id: { $oid: 'abc123456789012345678901' },
+      note: 'call Long(5) or ISODate("x") here, NumberInt(3)',
+    });
+  });
+
   it('ObjectId -> $oid Extended JSON', () => {
     expect(convertShellToJson('ObjectId("abc123456789012345678901")'))
       .toBe('{"$oid":"abc123456789012345678901"}');
@@ -102,6 +113,25 @@ describe('convertShellToJson', () => {
     expect(result).toContain('{"$numberInt":"5"}');
     expect(result).toContain('{"$date":"2024-01-15T00:00:00.000Z"}');
     expect(result).toContain('{"$numberLong":"999"}');
+  });
+
+  it('字符串外超出 2^53 的裸整数包成 $numberLong, 安全整数 / 小数 / 指数 / 字符串内的不动', () => {
+    const out = convertShellToJson('{"uid": 9007199254740993, "neg": -9223372036854775808, "n": 9007199254740991, "f": 9007199254740993.5, "e": 1e25, "s": "9007199254740993", "t": "a\\"9007199254740993"}');
+    expect(JSON.parse(out)).toEqual({
+      uid: { $numberLong: '9007199254740993' },
+      neg: { $numberLong: '-9223372036854775808' },
+      n: 9007199254740991,
+      f: 9007199254740993.5,
+      e: 1e25,
+      s: '9007199254740993',
+      t: 'a"9007199254740993',
+    });
+  });
+
+  it('超出 int64 的裸整数只能是 double, 原样不包; 负指数里的数字不动', () => {
+    for (const s of ['{"a":100000000000000000000}', '{"a":-9223372036854775809}', '{"a":1e-99999999999999999999}']) {
+      expect(convertShellToJson(s)).toBe(s);
+    }
   });
 });
 

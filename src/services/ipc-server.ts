@@ -2,9 +2,12 @@ import * as net from 'net';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import type { ConnectionManager } from './connection-manager.js';
-import type { MongoDriver } from '../drivers/mongo-driver.js';
-import { routeByDriver, type DriverSource, type RouteMode } from '../mcp/query-router.js';
+import * as vscode from 'vscode';
+import { writeBlockedReason, type ConnectionManager } from './connection-manager.js';
+import { isDestructiveRequest, routeByDriver, type DriverSource, type RouteMode } from './query-router.js';
+import { ErrorCode } from './utils.js';
+import { makeError } from '../mcp/tools/mcp-result.js';
+import { PROTOCOL_MISMATCH_ERROR, PROTOCOL_VERSION } from '../mcp/ipc-protocol.js';
 import { sanitizeErrorMessage } from '../utils/sanitize-error.js';
 
 export const SOCKET_DIR = path.join(os.homedir(), '.sql-extension');
@@ -12,8 +15,34 @@ export const SOCKET_DIR = path.join(os.homedir(), '.sql-extension');
 // 任一窗口关闭 (libuv close 按名字 unlink) 又把别人的路径删掉. MCP 端按 mtime 挑最新的连.
 export const SOCKET_PATH = path.join(SOCKET_DIR, `ipc-${process.pid}.sock`);
 
+const CONFIRM_TIMEOUT_MS = 60_000;
+const CONFIRM_PREVIEW_CHARS = 300;
+
+// agent 的破坏性请求在本窗口 (持有 IPC socket 的窗口) 弹 modal 确认, 返回拒绝原因, 放行返回 undefined.
+// execute 在 MCP 端不设超时, 用户看不到这个窗口时不能让 agent 一直挂着: 60s 无应答按拒绝处理.
+// 超时后 modal 仍留在屏幕上, 之后再点 Run 不会执行
+// 长语句保留首尾各一半: 决定破坏性的部分可能在尾部 (缺 WHERE, 长注释后的 DROP)
+export async function confirmAgentRequest(target: string, query: string): Promise<string | undefined> {
+  const q = query.trim();
+  const half = CONFIRM_PREVIEW_CHARS / 2;
+  const stmt = q.length > CONFIRM_PREVIEW_CHARS ? `${q.slice(0, half)} ... ${q.slice(-half)}` : q;
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<'timeout'>((resolve) => { timer = setTimeout(() => resolve('timeout'), CONFIRM_TIMEOUT_MS); });
+  try {
+    const answer = await Promise.race([
+      vscode.window.showWarningMessage(`An agent wants to run a destructive request on ${target}: ${stmt}`, { modal: true }, 'Run'),
+      timeout,
+    ]);
+    if (answer === 'Run') { return undefined; }
+    return answer === 'timeout' ? `No answer within ${CONFIRM_TIMEOUT_MS / 1000}s, not executed` : 'Denied by user';
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 interface IpcRequest {
   readonly id: string;
+  readonly protocolVersion?: number;
   readonly method: string;
   readonly params?: Record<string, unknown>;
 }
@@ -22,18 +51,13 @@ interface IpcResponse {
   readonly id: string;
   readonly result?: unknown;
   readonly error?: string;
+  readonly protocolVersion?: number;
 }
 
 export class IpcServer {
   private server: net.Server | null = null;
-  // 正在由外部 agent 发起连接的 id: onDidChange 监听方据此不自动弹出 browser
-  private readonly agentConnecting = new Set<string>();
 
   constructor(private readonly connectionManager: ConnectionManager) {}
-
-  isAgentConnect(id: string): boolean {
-    return this.agentConnecting.has(id);
-  }
 
   start(): void {
     // 目录收紧到 0700 (mode 对已存在目录无效, 故再 chmod); 锁不住就不开 IPC, 不拖垮扩展
@@ -81,6 +105,10 @@ export class IpcServer {
     } catch {
       return;
     }
+    if (req.protocolVersion !== PROTOCOL_VERSION) {
+      this.send(socket, { id: req.id, error: PROTOCOL_MISMATCH_ERROR });
+      return;
+    }
     try {
       const result = await this.dispatch(req.method, req.params ?? {});
       this.send(socket, { id: req.id, result });
@@ -89,15 +117,15 @@ export class IpcServer {
     }
   }
 
-  // 未连接则按需连接 (连接状态按窗口保存, agent 无从得知要先 db_connect)
+  // 未连接则按需连接: 连接状态按窗口保存, agent 不感知也不管理连接
   private async ensureConnected(id: string): Promise<void> {
     if (this.connectionManager.getState(id) === 'connected') { return; }
-    this.agentConnecting.add(id);
-    try {
-      await this.connectionManager.connect(id);
-    } finally {
-      this.agentConnecting.delete(id);
-    }
+    await this.connectionManager.connect(id);
+  }
+
+  // db_schema 的库 / 表 / 列 / DDL: SQL 与 MongoDB driver 都提供这四个方法
+  private schemaDriver(id: string, driverType: string) {
+    return driverType === 'mongodb' ? this.connectionManager.getMongoDriver(id) : this.connectionManager.getDriver(id);
   }
 
   private findConfig(id: string) {
@@ -117,36 +145,32 @@ export class IpcServer {
           port: info.config.port,
           database: info.config.database,
           state: info.state,
+          ...(info.config.readOnly ? { readOnly: true } : {}),
         }));
-
-      case 'connect': {
-        const id = params.connectionId as string;
-        this.findConfig(id);
-        await this.ensureConnected(id);
-        return { success: true };
-      }
-
-      case 'disconnect': {
-        const id = params.connectionId as string;
-        await this.connectionManager.disconnect(id);
-        return { success: true };
-      }
 
       case 'read':
       case 'execute': {
         const id = params.connectionId as string;
+        const query = params.query as string;
         const config = this.findConfig(id);
+        const database = (params.database as string | undefined) || config.database || undefined;
+        // 只读连接在连接与破坏性确认之前就拒绝 execute; read 照常走只读路径
+        const blocked = method === 'execute' ? writeBlockedReason(config) : undefined;
+        if (blocked) { return makeError(blocked, ErrorCode.READONLY_VIOLATION); }
+        if (method === 'execute' && isDestructiveRequest(config.driverType, query)) {
+          const denied = await confirmAgentRequest(database ? `${config.name}/${database}` : config.name, query);
+          if (denied) { return makeError(denied, ErrorCode.NOT_CONFIRMED); }
+        }
         await this.ensureConnected(id);
         const cm = this.connectionManager;
         const drivers: DriverSource = {
           getDriver: (i) => cm.getDriver(i),
           getRedisDriver: (i) => cm.getRedisDriver(i),
-          getMongoDriver: (i) => cm.getDriver(i) as unknown as MongoDriver,
+          getMongoDriver: (i) => cm.getMongoDriver(i),
           getKafkaDriver: (i) => cm.getKafkaDriver(i),
           getRabbitMQDriver: (i) => cm.getRabbitMQDriver(i),
         };
-        const database = (params.database as string | undefined) || config.database || undefined;
-        return routeByDriver(method as RouteMode, config.driverType, id, params.query as string, database, drivers);
+        return routeByDriver(method as RouteMode, config.driverType, id, query, database, drivers);
       }
 
       case 'listDatabases': {
@@ -159,8 +183,7 @@ export class IpcServer {
           return { error: 'N/A for this database type' };
         }
         await this.ensureConnected(id);
-        const driver = this.connectionManager.getDriver(id);
-        return await driver.listDatabases();
+        return await this.schemaDriver(id, config.driverType).listDatabases();
       }
 
       case 'listTables': {
@@ -177,52 +200,25 @@ export class IpcServer {
         if (config.driverType === 'redis') {
           return { error: 'N/A for Redis' };
         }
-        const driver = this.connectionManager.getDriver(id);
-        return await driver.listTables(database);
+        return await this.schemaDriver(id, config.driverType).listTables(database);
       }
 
       case 'listColumns': {
         const id = params.connectionId as string;
         const database = params.database as string;
         const table = params.table as string;
-        this.findConfig(id);
+        const config = this.findConfig(id);
         await this.ensureConnected(id);
-        const driver = this.connectionManager.getDriver(id);
-        return await driver.listColumns(database, table);
+        return await this.schemaDriver(id, config.driverType).listColumns(database, table);
       }
 
       case 'getTableDDL': {
         const id = params.connectionId as string;
         const database = params.database as string;
         const table = params.table as string;
-        this.findConfig(id);
+        const config = this.findConfig(id);
         await this.ensureConnected(id);
-        const driver = this.connectionManager.getDriver(id);
-        return await driver.getTableDDL(database, table);
-      }
-
-      case 'saveConnection': {
-        const config = params.config as Record<string, unknown>;
-        const password = (params.password as string) ?? '';
-        const sshPassword = params.sshPassword as string | undefined;
-        const id = config.id as string || `conn_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-        const connConfig = {
-          id,
-          name: (config.name as string) || id,
-          driverType: config.driverType as string,
-          host: config.host as string,
-          port: config.port as number,
-          username: (config.username as string) ?? '',
-          database: (config.database as string) ?? '',
-          authSource: config.authSource as string | undefined,
-          ssh: config.ssh as Record<string, unknown> | undefined,
-        };
-        await this.connectionManager.addConnection(
-          connConfig as unknown as import('../types/connection.js').ConnectionConfig,
-          password,
-          sshPassword,
-        );
-        return { success: true, connectionId: id };
+        return await this.schemaDriver(id, config.driverType).getTableDDL(database, table);
       }
 
       default:
@@ -232,11 +228,11 @@ export class IpcServer {
 
   private send(socket: net.Socket, response: IpcResponse): void {
     try {
-      socket.write(JSON.stringify(response) + '\n');
+      socket.write(JSON.stringify({ ...response, protocolVersion: PROTOCOL_VERSION }) + '\n');
     } catch (err) {
       // 序列化失败 (结果过大) 也要回同 id 的错误, 否则 read/execute 无超时会永远挂住
       try {
-        socket.write(JSON.stringify({ id: response.id, error: `Result too large to return: ${(err as Error).message}` }) + '\n');
+        socket.write(JSON.stringify({ id: response.id, protocolVersion: PROTOCOL_VERSION, error: `Result too large to return: ${(err as Error).message}` }) + '\n');
       } catch {}
     }
   }

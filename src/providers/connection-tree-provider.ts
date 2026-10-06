@@ -60,7 +60,8 @@ export class ConnectionTreeProvider implements vscode.TreeDataProvider<Connectio
           info.config.host,
           info.config.port,
           info.config.driverType,
-          info.state
+          info.state,
+          info.config.readOnly
         )
     );
   }

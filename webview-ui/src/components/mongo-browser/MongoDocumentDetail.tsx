@@ -6,6 +6,7 @@ import { findMatches } from '../../utils/text-search';
 import { AutocompletePopup } from '../sql-editor/AutocompletePopup';
 import { HighlightEditor } from './HighlightEditor';
 import { idToShell } from './mongo-id';
+import { convertTags } from './mongo-field-editor';
 
 type DetailMode = 'edit' | 'insert';
 
@@ -14,8 +15,10 @@ interface MongoDocumentDetailProps {
   readonly mode: DetailMode;
   readonly fieldNames: readonly string[];
   readonly onClose: () => void;
-  readonly onSave: (id: string | null, doc: Record<string, unknown>) => void;
-  readonly onDelete: (id: string) => void;
+  // original: 编辑器打开时的文档 (新建空白文档时为 null); doc: 编辑结果. 都是 EJSON
+  readonly onSave: (original: Record<string, unknown> | null, doc: Record<string, unknown>) => void;
+  // id: 文档 _id 的 EJSON 值
+  readonly onDelete: (id: unknown) => void;
   readonly onDirtyChange?: (dirty: boolean) => void;
   readonly onSaveError?: () => void;
   readonly saveSignal?: number;
@@ -28,13 +31,13 @@ function stripId(doc: Record<string, unknown>): Record<string, unknown> {
 
 export function MongoDocumentDetail({ document, mode, fieldNames, onClose, onSave, onDelete, onDirtyChange, onSaveError, saveSignal }: MongoDocumentDetailProps) {
   const displayId = document ? String(document._id ?? '') : '';
-  // docId 携带 _id 的 shell 形式 (保留类型), 供 update/delete filter 在 backend 还原
   const docId = document ? idToShell(document._id) : '';
-  // edit: _id 单列只读, body 去掉 _id; insert(含 clone seed): 保留 _id 让其可编辑
-  const initialText = useMemo(
-    () => document ? jsonToShell(JSON.stringify(mode === 'edit' ? stripId(document) : document, null, 2)) : '{}',
-    [document, mode]
+  // edit: _id 单列只读, body 去掉 _id; insert(含 clone seed): 保留 _id 让其可编辑.
+  // 取打开编辑器那一刻的文档 (空白新建为 null): 编辑内容与保存时的对比基准都以它为准, 期间列表刷新不改基准
+  const [openedText] = useState(
+    () => document ? jsonToShell(JSON.stringify(mode === 'edit' ? stripId(document) : document, null, 2)) : null
   );
+  const initialText = openedText ?? '{}';
 
   const [text, setText] = useState(initialText);
   const [toast, setToast] = useState('');
@@ -141,11 +144,13 @@ export function MongoDocumentDetail({ document, mode, fieldNames, onClose, onSav
     if (!validation.ok) { onSaveError?.(); return; }
     try {
       const parsed = JSON.parse(convertShellToJson(text)) as Record<string, unknown>;
-      onSave(mode === 'edit' ? docId : null, parsed);
+      // 打开时的文本与编辑结果走同一解析, 没动过的字段两边逐字相同, 宿主按 path 对比后只写改动
+      const original = openedText !== null ? JSON.parse(convertShellToJson(openedText)) as Record<string, unknown> : null;
+      onSave(original, parsed);
     } catch {
       onSaveError?.();
     }
-  }, [text, mode, docId, onSave, onSaveError, validation.ok]);
+  }, [text, openedText, onSave, onSaveError, validation.ok]);
 
   useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
 
@@ -153,8 +158,8 @@ export function MongoDocumentDetail({ document, mode, fieldNames, onClose, onSav
   useEffect(() => { if (saveSignal) { handleSave(); } }, [saveSignal]);
 
   const handleDelete = useCallback(() => {
-    onDelete(docId);
-  }, [docId, onDelete]);
+    onDelete(convertTags(document?._id));
+  }, [document, onDelete]);
 
   const showToast = useCallback((msg: string) => {
     setToast('');

@@ -13,15 +13,7 @@ function getPlaceholder(driverType: string): PlaceholderFn {
   return driverType === 'postgresql' ? pgPlaceholder : mysqlPlaceholder;
 }
 
-// MongoDB collection name 校验: 仅允许合法标识符
-function validateMongoCollection(name: string): string {
-  if (!/^[a-zA-Z_$][\w$]*$/.test(name)) {
-    throw new Error(`Invalid MongoDB collection name: "${name}"`);
-  }
-  return name;
-}
-
-// MySQL 用反引号, PG 用双引号 (alter-table-builder 复用同一实现, 避免转义规则两份漂移)
+// MySQL 用反引号, PG 用双引号 (alter-table-builder 与 webview 复用同一实现, 避免转义规则两份漂移)
 export function escapeIdentifier(driverType: string, name: string): string {
   if (driverType === 'mysql') {
     return `\`${name.replace(/`/g, '``')}\``;
@@ -29,55 +21,18 @@ export function escapeIdentifier(driverType: string, name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
 }
 
-// MySQL 用 qualified name (database.table), PG 连接已绑定 database 不需要
-function qualifyTable(driverType: string, table: string, database?: string): string {
+// PG 列默认值 nextval('<seq>'::regclass) 里的序列名, 返回可直接拼进 SQL 的标识符文本 (保留 "..." 引用与 schema 前缀)
+export function pgSequenceOfDefault(columnDefault: unknown): string | undefined {
+  const m = /^nextval\('(.+)'::regclass\)$/.exec(String(columnDefault ?? ''));
+  return m ? m[1].replace(/''/g, "'") : undefined;
+}
+
+// MySQL 用 qualified name (database.table); PG 由 driver 按 database 选该库的 pool 执行, 不需要
+export function qualifyTable(driverType: string, table: string, database?: string): string {
   if (database && driverType === 'mysql') {
     return `${escapeIdentifier(driverType, database)}.${escapeIdentifier(driverType, table)}`;
   }
   return escapeIdentifier(driverType, table);
-}
-
-// 生成人类可读 SQL, 用于预填到 QueryEditor 给用户编辑
-export function buildDefaultSelectSql(
-  driverType: string,
-  table: string,
-  database?: string,
-  limit: number = 50
-): string {
-  if (driverType === 'mongodb') {
-    return `db.${validateMongoCollection(table)}.find({})`;
-  }
-  return `SELECT * FROM ${qualifyTable(driverType, table, database)} LIMIT ${limit} OFFSET 0`;
-}
-
-export function buildSelect(
-  driverType: string,
-  table: string,
-  offset: number,
-  limit: number,
-  database?: string
-): BuiltSQL {
-  if (driverType === 'mongodb') {
-    return {
-      sql: `db.${validateMongoCollection(table)}.aggregate([{"$skip":${offset}},{"$limit":${limit}}])`,
-      params: [],
-    };
-  }
-  const ph = getPlaceholder(driverType);
-  return {
-    sql: `SELECT * FROM ${qualifyTable(driverType, table, database)} LIMIT ${ph(1)} OFFSET ${ph(2)}`,
-    params: [limit, offset],
-  };
-}
-
-export function buildCount(driverType: string, table: string, database?: string): BuiltSQL {
-  if (driverType === 'mongodb') {
-    return { sql: `db.${validateMongoCollection(table)}.countDocuments({})`, params: [] };
-  }
-  return {
-    sql: `SELECT COUNT(*) as count FROM ${qualifyTable(driverType, table, database)}`,
-    params: [],
-  };
 }
 
 export function buildInsert(
@@ -86,9 +41,6 @@ export function buildInsert(
   row: Record<string, unknown>,
   database?: string
 ): BuiltSQL {
-  if (driverType === 'mongodb') {
-    return { sql: `db.${validateMongoCollection(table)}.insertOne(${JSON.stringify(row)})`, params: [] };
-  }
   const ph = getPlaceholder(driverType);
   const keys = Object.keys(row);
   const qualified = qualifyTable(driverType, table, database);
@@ -114,12 +66,6 @@ export function buildUpdate(
   changes: Record<string, unknown>,
   database?: string
 ): BuiltSQL {
-  if (driverType === 'mongodb') {
-    return {
-      sql: `db.${validateMongoCollection(table)}.updateOne(${JSON.stringify(primaryKeys)},{"$set":${JSON.stringify(changes)}})`,
-      params: [],
-    };
-  }
   const ph = getPlaceholder(driverType);
   const changeKeys = Object.keys(changes);
   const pkKeys = Object.keys(primaryKeys);
@@ -149,27 +95,6 @@ export function buildUpdate(
   };
 }
 
-export function buildDelete(
-  driverType: string,
-  table: string,
-  primaryKeys: Record<string, unknown>,
-  database?: string
-): BuiltSQL {
-  if (driverType === 'mongodb') {
-    return { sql: `db.${validateMongoCollection(table)}.deleteOne(${JSON.stringify(primaryKeys)})`, params: [] };
-  }
-  const ph = getPlaceholder(driverType);
-  const keys = Object.keys(primaryKeys);
-  if (keys.length === 0) {
-    throw new Error('buildDelete: refusing DELETE without WHERE (no primary key)');
-  }
-  const whereClauses = keys.map((k, i) => `${escapeIdentifier(driverType, k)} = ${ph(i + 1)}`);
-  return {
-    sql: `DELETE FROM ${qualifyTable(driverType, table, database)} WHERE ${whereClauses.join(' AND ')}`,
-    params: keys.map((k) => primaryKeys[k]),
-  };
-}
-
 // 批量删除: DELETE FROM t WHERE (pk1, pk2) IN ((v1, v2), (v3, v4), ...)
 export function buildBatchDelete(
   driverType: string,
@@ -179,13 +104,6 @@ export function buildBatchDelete(
 ): BuiltSQL {
   if (primaryKeysList.length === 0) {
     return { sql: '', params: [] };
-  }
-  if (driverType === 'mongodb') {
-    const filters = primaryKeysList.map((pks) => JSON.stringify(pks));
-    return {
-      sql: `db.${validateMongoCollection(table)}.deleteMany({"$or":[${filters.join(',')}]})`,
-      params: [],
-    };
   }
   const ph = getPlaceholder(driverType);
   const keys = Object.keys(primaryKeysList[0]);

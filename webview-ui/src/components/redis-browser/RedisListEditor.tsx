@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
+import { RedisLoadMore } from './RedisLoadMore';
+import { useReadOnly } from '../../hooks/useReadOnly';
+import { RedisValueInput } from './RedisValueInput';
 
 interface RedisListEditorProps {
   readonly value: readonly string[];
+  // value[0] 的 Redis index; value[i] 即 index start + i
+  readonly start: number;
   readonly total: number;
   readonly onPush: (value: string, position: 'head' | 'tail') => void;
   readonly onRemove: (index: number) => void;
@@ -12,6 +17,7 @@ interface RedisListEditorProps {
 
 export function RedisListEditor({
   value,
+  start,
   total,
   onPush,
   onRemove,
@@ -19,8 +25,9 @@ export function RedisListEditor({
   onLoadMore,
   hasMore,
 }: RedisListEditorProps) {
+  const readOnly = useReadOnly();
   const [newValue, setNewValue] = useState('');
-  // editMap: index -> edited value (只追踪被修改过的 item)
+  // editMap: value 数组下标 -> edited value (只追踪被修改过的 item)
   const [editMap, setEditMap] = useState<Record<number, string>>({});
 
   // value prop 变化时 (save/delete 后 re-fetch) 清除编辑状态
@@ -48,7 +55,8 @@ export function RedisListEditor({
   const dirtyEntries = Object.entries(editMap)
     .filter(([, edited]) => edited !== undefined)
     .map(([idx, edited]) => ({ index: Number(idx), value: edited }))
-    .filter((entry) => entry.value !== value[entry.index]);
+    .filter((entry) => entry.value !== value[entry.index])
+    .map((entry) => ({ index: start + entry.index, value: entry.value }));
   const hasDirty = dirtyEntries.length > 0;
 
   const handleSaveAll = useCallback(() => {
@@ -71,36 +79,33 @@ export function RedisListEditor({
         const isDirty = index in editMap && editMap[index] !== item;
         return (
           <div key={index} className="list-item">
-            <span className="index">[{index}]</span>
-            <input
-              className={`value${isDirty ? ' editing-dirty' : ''}`}
+            <span className="index">[{start + index}]</span>
+            <RedisValueInput
               value={currentValue}
-              onChange={(e) => handleEditChange(index, item, e.target.value)}
+              dirty={isDirty}
+              readOnly={readOnly}
+              onChange={(v) => handleEditChange(index, item, v)}
             />
-            <button
-              className="btn-icon"
-              onClick={() => onRemove(index)}
-              title="Remove item"
-            >
-              x
-            </button>
+            {!readOnly && (
+              <button
+                className="btn-icon"
+                onClick={() => onRemove(start + index)}
+                title="Remove item"
+              >
+                x
+              </button>
+            )}
           </div>
         );
       })}
-      {hasMore && (
-        <div className="redis-load-more">
-          <button className="secondary" onClick={onLoadMore}>
-            Load More
-          </button>
-        </div>
-      )}
+      {hasMore && <RedisLoadMore pendingEdits={dirtyEntries.length} onLoadMore={onLoadMore} />}
       {hasDirty && (
         <div className="batch-actions">
           <button onClick={handleSaveAll}>Save All ({dirtyEntries.length})</button>
           <button className="secondary" onClick={handleDiscardAll}>Discard</button>
         </div>
       )}
-      <div className="add-form">
+      {!readOnly && <div className="add-form">
         <input
           placeholder="Value"
           value={newValue}
@@ -119,7 +124,7 @@ export function RedisListEditor({
         >
           Push Tail
         </button>
-      </div>
+      </div>}
     </div>
   );
 }

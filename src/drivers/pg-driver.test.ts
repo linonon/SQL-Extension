@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import pg from 'pg';
 import { PgDriver } from './pg-driver';
 
 // Mock pg
@@ -9,29 +10,242 @@ const mockPool = {
   on: vi.fn(),
 };
 
+// 每个 new pg.Pool 记下构造参数; 方法共用 mockPool 的 vi.fn, 用 mock.contexts 区分调用落在哪个 pool
+const pools = vi.hoisted(() => ({ instances: [] as { opts: { database?: string; host?: string; port?: number } }[] }));
+// cancel 另开的短连接: 记下构造参数, 方法共用
+const killer = vi.hoisted(() => ({ opts: [] as unknown[], connect: vi.fn(), query: vi.fn(), end: vi.fn() }));
+
 vi.mock('pg', () => {
   return {
     default: {
       Pool: class MockPool {
+        constructor(public opts: { database?: string }) { pools.instances.push(this); }
+        get options() { return this.opts; }
         connect = mockPool.connect;
         query = mockPool.query;
         end = mockPool.end;
         on = mockPool.on;
       },
+      Client: class MockClient {
+        constructor(opts: unknown) { killer.opts.push(opts); }
+        connect = killer.connect;
+        query = killer.query;
+        end = killer.end;
+      },
       types: {
-        builtins: { DATE: 1082, TIMESTAMP: 1114, TIMESTAMPTZ: 1184 },
+        builtins: { DATE: 1082, TIMESTAMP: 1114, TIMESTAMPTZ: 1184, JSON: 114, JSONB: 3802 },
         setTypeParser: vi.fn(),
       },
     },
   };
 });
 
+// 模块加载时注册的 type parser (beforeEach 的 clearAllMocks 会清掉调用记录, 先留存)
+const typeParserCalls = [...vi.mocked(pg.types.setTypeParser).mock.calls] as unknown as [number, (v: string) => unknown][];
+
 describe('PgDriver', () => {
+  it('日期与 JSON/JSONB 注册 identity parser, 保持 PG 原生文本', () => {
+    const calls = typeParserCalls;
+    expect(calls.map(([oid]) => oid).sort((a, b) => a - b)).toEqual([114, 1082, 1114, 1184, 3802]);
+    const json = calls.find(([oid]) => oid === 3802)![1];
+    expect(json('{"uid":1234567890123456789}')).toBe('{"uid":1234567890123456789}');
+  });
+
   let driver: PgDriver;
 
   beforeEach(() => {
     driver = new PgDriver();
     vi.clearAllMocks();
+    pools.instances.length = 0;
+  });
+
+  const cfg = {
+    id: 'test-id', name: 'test', driverType: 'postgresql' as const, host: '127.0.0.1', port: 50123,
+    username: 'postgres', password: 'secret', database: 'app_prod',
+  };
+  const dbOf = (fn: { mock: { contexts: unknown[] } }) =>
+    fn.mock.contexts.map((p) => (p as { opts: { database?: string } }).opts.database);
+
+  describe('按库建 pool', () => {
+    it('两个库两个 pool, 各方法的查询落到目标库; 缺省用配置库; disconnect 关掉全部', async () => {
+      mockPool.connect.mockResolvedValue({ release: vi.fn() });
+      mockPool.query.mockResolvedValue({ rows: [], fields: [], rowCount: 0 });
+      await driver.connect(cfg);
+
+      await driver.listTables('app_staging');
+      await driver.listColumns('app_staging', 'users');
+      await driver.execute('UPDATE users SET a = 1 WHERE id = $1', [1], 'app_staging');
+      await driver.execute('SELECT 1');
+      await driver.listDatabases();
+
+      // 新 pool 沿用连接参数 (SSH tunnel 时就是本地转发端口), 只换 database
+      // 其他库的空闲连接很快关掉 (列出全部库时每库一条连接)
+      expect(pools.instances.map((p) => p.opts)).toEqual([
+        expect.objectContaining({ host: '127.0.0.1', port: 50123, database: 'app_prod', idleTimeoutMillis: 30000 }),
+        expect.objectContaining({ host: '127.0.0.1', port: 50123, database: 'app_staging', idleTimeoutMillis: 1000 }),
+      ]);
+      expect(dbOf(mockPool.query)).toEqual(['app_staging', 'app_staging', 'app_staging', 'app_prod', 'app_prod']);
+
+      await driver.disconnect();
+      expect(mockPool.end).toHaveBeenCalledTimes(2);
+      expect(driver.isConnected()).toBe(false);
+    });
+
+    it('连接验证失败: 清掉 pool, 状态为未连接', async () => {
+      mockPool.connect.mockRejectedValueOnce(new Error('Connection refused'));
+      await expect(driver.connect(cfg)).rejects.toThrow('Connection refused');
+      expect(driver.isConnected()).toBe(false);
+      expect(mockPool.end).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('executeBatch (单连接执行器)', () => {
+    it('多语句文本的结果数组逐条映射; 用目标库的 pool, 连接用完销毁', async () => {
+      mockPool.connect.mockResolvedValue({ release: vi.fn() });
+      await driver.connect(cfg);
+      const client = {
+        processID: 9,
+        release: vi.fn(),
+        query: vi.fn().mockResolvedValueOnce([
+          { command: 'INSERT', rows: [], fields: [], rowCount: 2 },
+          { command: 'SELECT', rows: [[1]], fields: [{ name: 'n', tableID: 0, columnID: 0, dataTypeID: 23 }], rowCount: 1 },
+        ]),
+      };
+      mockPool.connect.mockResolvedValue(client);
+
+      const out = await driver.executeBatch(['INSERT INTO t VALUES (1), (2); SELECT 1 AS n'], 'app_staging').promise;
+
+      expect(client.query).toHaveBeenCalledWith({ text: 'INSERT INTO t VALUES (1), (2); SELECT 1 AS n', rowMode: 'array' });
+      expect(out.results.map((r) => [r.sql, r.affectedRows, r.rows])).toEqual([
+        ['INSERT INTO t VALUES (1), (2)', 2, []],
+        ['SELECT 1 AS n', 1, [{ n: 1 }]],
+      ]);
+      expect(out.error).toBeUndefined();
+      expect(dbOf(mockPool.connect).at(-1)).toBe('app_staging');
+      expect(client.release).toHaveBeenCalledWith(true);
+    });
+
+    it('readOnly: 语句之前把会话默认事务设为只读', async () => {
+      mockPool.connect.mockResolvedValue({ release: vi.fn() });
+      await driver.connect(cfg);
+      const client = { processID: 9, release: vi.fn(), query: vi.fn().mockResolvedValue({ command: 'DELETE', rows: [], fields: [], rowCount: 0 }) };
+      mockPool.connect.mockResolvedValue(client);
+
+      await driver.executeBatch(['DELETE FROM t'], undefined, { readOnly: true }).promise;
+      expect(client.query.mock.calls.map((c) => c[0])).toEqual(['SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY', { text: 'DELETE FROM t', rowMode: 'array' }]);
+    });
+
+    it('BEGIN 未提交给出提示; 出错回带输入下标, 没有部分结果', async () => {
+      mockPool.connect.mockResolvedValue({ release: vi.fn() });
+      await driver.connect(cfg);
+      const client = {
+        processID: 9,
+        release: vi.fn(),
+        query: vi.fn()
+          .mockResolvedValueOnce([{ command: 'BEGIN', rows: [], fields: [], rowCount: null }, { command: 'UPDATE', rows: [], fields: [], rowCount: 1 }])
+          .mockRejectedValueOnce(new Error('syntax error')),
+      };
+      mockPool.connect.mockResolvedValue(client);
+
+      const ok = await driver.executeBatch(['BEGIN; UPDATE t SET a = 1']).promise;
+      expect(ok.warning).toMatch(/rolled back/);
+
+      const bad = await driver.executeBatch(['SELEC 1']).promise;
+      expect(bad.results).toEqual([]);
+      expect(bad.error).toEqual({ index: 0, cause: new Error('syntax error') });
+      expect(client.release).toHaveBeenCalledTimes(2);
+      expect(client.release).toHaveBeenLastCalledWith(true);
+    });
+
+    it('事务是否收尾看服务端命令标签, 不在客户端切分文本', async () => {
+      mockPool.connect.mockResolvedValue({ release: vi.fn() });
+      await driver.connect(cfg);
+      const tag = (command: string) => ({ command, rows: [], fields: [], rowCount: 0 });
+      const client = {
+        processID: 9,
+        release: vi.fn(),
+        query: vi.fn()
+          // PG 里 'C:\' 是完整字符串, MySQL 规则的切分会把后面的 COMMIT 吞进字符串
+          .mockResolvedValueOnce([tag('BEGIN'), tag('INSERT'), tag('COMMIT')])
+          // ABORT 的标签是 ROLLBACK
+          .mockResolvedValueOnce([tag('START'), tag('ROLLBACK')])
+          .mockResolvedValueOnce([tag('START'), tag('DELETE')]),
+      };
+      mockPool.connect.mockResolvedValue(client);
+
+      expect((await driver.executeBatch(["BEGIN; INSERT INTO t VALUES ('C:\\'); COMMIT;"]).promise).warning).toBeUndefined();
+      expect((await driver.executeBatch(['START TRANSACTION; ABORT']).promise).warning).toBeUndefined();
+      expect((await driver.executeBatch(['START TRANSACTION; DELETE FROM t WHERE id = 1']).promise).warning).toMatch(/rolled back/);
+    });
+
+    it('cancel 在另开的短连接上取消本连接的 pid (不经可能被占满的池); 执行结束后 cancel 是 no-op', async () => {
+      mockPool.connect.mockResolvedValue({ release: vi.fn() });
+      await driver.connect(cfg);
+      let finish!: () => void;
+      const client = {
+        processID: 4321,
+        release: vi.fn(),
+        query: vi.fn(() => new Promise((r) => { finish = () => r({ command: 'SELECT', rows: [], fields: [], rowCount: 0 }); })),
+      };
+      mockPool.connect.mockResolvedValue(client);
+      killer.opts.length = 0;
+      killer.connect.mockResolvedValue(undefined);
+      killer.query.mockResolvedValue({ rows: [], fields: [], rowCount: 0 });
+      killer.end.mockResolvedValue(undefined);
+
+      const run = driver.executeBatch(['SELECT pg_sleep(10)'], 'app_staging');
+      await vi.waitFor(() => expect(client.query).toHaveBeenCalled());
+      run.cancel();
+      // 参数同执行所在库的 pool (SSH tunnel 时是本地转发端口)
+      expect(killer.opts).toEqual([expect.objectContaining({ host: '127.0.0.1', port: 50123, user: 'postgres', password: 'secret', database: 'app_staging' })]);
+      await vi.waitFor(() => expect(killer.end).toHaveBeenCalled());
+      expect(killer.query).toHaveBeenCalledWith('SELECT pg_cancel_backend(4321)');
+      expect(mockPool.query).not.toHaveBeenCalled();
+      finish();
+      await run.promise;
+
+      run.cancel();
+      expect(killer.opts).toHaveLength(1);
+    });
+  });
+
+  describe('executeReadOnly', () => {
+    it('目标库的只读事务里设 statement_timeout, 连接用完销毁', async () => {
+      mockPool.connect.mockResolvedValue({ release: vi.fn() });
+      await driver.connect(cfg);
+      const client = { release: vi.fn(), query: vi.fn().mockResolvedValue({ rows: [[1]], fields: [{ name: 'n', tableID: 0, columnID: 0, dataTypeID: 23 }], rowCount: 1 }) };
+      mockPool.connect.mockResolvedValue(client);
+
+      const result = await driver.executeReadOnly('SELECT 1', 'app_staging');
+
+      expect(client.query.mock.calls.map((c) => c[0])).toEqual([
+        'BEGIN READ ONLY',
+        'SET LOCAL statement_timeout = 30000',
+        { text: 'SELECT 1', queryMode: 'extended', rowMode: 'array' },
+      ]);
+      expect(result.rows).toEqual([{ n: 1 }]);
+      expect(dbOf(mockPool.connect).at(-1)).toBe('app_staging');
+      expect(client.release).toHaveBeenCalledWith(true);
+    });
+  });
+
+  describe('getTableDDL', () => {
+    it('序列默认值引用的序列先 CREATE SEQUENCE IF NOT EXISTS', async () => {
+      mockPool.connect.mockResolvedValue({ release: vi.fn() });
+      await driver.connect(cfg);
+      mockPool.query
+        .mockResolvedValueOnce({ rows: [
+          { column_name: 'id', data_type: 'integer', udt_name: 'int4', is_nullable: 'NO', column_default: "nextval('\"T_id_seq\"'::regclass)" },
+          { column_name: 'name', data_type: 'text', udt_name: 'text', is_nullable: 'YES', column_default: null },
+        ] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] });
+
+      expect(await driver.getTableDDL('app_prod', 'T')).toBe(
+        'CREATE SEQUENCE IF NOT EXISTS "T_id_seq";\n'
+        + 'CREATE TABLE "T" (\n  "id" int4 NOT NULL DEFAULT nextval(\'"T_id_seq"\'::regclass),\n  "name" text\n);',
+      );
+    });
   });
 
   describe('connect', () => {
@@ -73,10 +287,6 @@ describe('PgDriver', () => {
           database: 'testdb',
         })
       ).rejects.toThrow('Connection refused');
-
-      // 注: 当前实现在连接验证失败时没有清理 pool, 这是 bug
-      // 理想情况下应该是 false, 但当前实现会留下 pool
-      // 这个测试主要验证错误被正确抛出
     });
   });
 
@@ -316,12 +526,13 @@ describe('PgDriver', () => {
 
       const mockResult = {
         rows: [
-          { id: 1, name: 'Alice' },
-          { id: 2, name: 'Bob' },
+          [1, 'Alice', '2000-01-01'],
+          [2, 'Bob', null],
         ],
         fields: [
           { name: 'id', dataTypeID: 23 },
           { name: 'name', dataTypeID: 1043 },
+          { name: 'born', dataTypeID: 1082 },
         ],
         rowCount: 2,
       };
@@ -341,9 +552,12 @@ describe('PgDriver', () => {
 
       const result = await driver.execute('SELECT * FROM users', []);
 
-      expect(result.rows).toEqual(mockResult.rows);
-      expect(result.columns).toHaveLength(2);
+      expect(result.rows).toEqual([{ id: 1, name: 'Alice', born: '2000-01-01' }, { id: 2, name: 'Bob', born: null }]);
+      expect(result.columns).toHaveLength(3);
       expect(result.columns[0].name).toBe('id');
+      // 内置类型按 OID 反查类型名 (mock 的 builtins 只含 DATE 等), 查不到的保留 OID
+      expect(result.columns[2].dataType).toBe('date');
+      expect(result.columns[0].dataType).toBe('23');
       expect(result.affectedRows).toBe(2);
       expect(result.executionTime).toBeGreaterThanOrEqual(0);
     });
@@ -408,10 +622,7 @@ describe('PgDriver', () => {
 
       await driver.execute('SELECT * FROM users WHERE id = $1', [42]);
 
-      expect(mockPool.query).toHaveBeenCalledWith(
-        'SELECT * FROM users WHERE id = $1',
-        [42]
-      );
+      expect(mockPool.query).toHaveBeenCalledWith({ text: 'SELECT * FROM users WHERE id = $1', values: [42], rowMode: 'array' });
     });
 
     it('应该处理 null 的 fields 和 rows', async () => {
@@ -439,6 +650,91 @@ describe('PgDriver', () => {
       expect(result.rows).toEqual([]);
       expect(result.columns).toEqual([]);
       expect(result.affectedRows).toBe(0);
+    });
+  });
+
+  describe('executeBatch 结果列来源 (source)', () => {
+    it('按 tableID/columnID 查 catalog, 只给未改名的原始列挂 schema.table', async () => {
+      const client = {
+        release: vi.fn(),
+        query: vi.fn()
+          .mockResolvedValueOnce({
+            rows: [[1, 'a', 2]],
+            rowCount: 1,
+            fields: [
+              { name: 'id', tableID: 16384, columnID: 1, dataTypeID: 23 },
+              { name: 'nick', tableID: 16384, columnID: 2, dataTypeID: 25 },
+              { name: 'n', tableID: 0, columnID: 0, dataTypeID: 23 },
+            ],
+          })
+          .mockResolvedValueOnce({
+            rows: [
+              { oid: 16384, attnum: 1, attname: 'id', relname: 'users', nspname: 'public' },
+              { oid: 16384, attnum: 2, attname: 'name', relname: 'users', nspname: 'public' },
+            ],
+          }),
+      };
+      mockPool.connect.mockResolvedValue(client);
+      await driver.connect({
+        id: 'test-id', name: 'test', driverType: 'postgresql', host: 'localhost', port: 5432,
+        username: 'postgres', password: 'secret', database: 'testdb',
+      });
+
+      const result = (await driver.executeBatch(['SELECT id, name AS nick, 2 AS n FROM users']).promise).results[0];
+
+      expect(client.query).toHaveBeenLastCalledWith(expect.stringContaining('pg_attribute'), [[16384]]);
+      expect(result.columns.map((c) => c.source)).toEqual([{ schema: 'public', table: 'users' }, undefined, undefined]);
+      expect(client.release).toHaveBeenCalled();
+    });
+
+    it('catalog 查询失败时不挂 source, 查询结果照常返回', async () => {
+      const client = {
+        release: vi.fn(),
+        query: vi.fn()
+          .mockResolvedValueOnce({ rows: [[1]], rowCount: 1, fields: [{ name: 'id', tableID: 16384, columnID: 1, dataTypeID: 23 }] })
+          .mockRejectedValueOnce(new Error('permission denied')),
+      };
+      mockPool.connect.mockResolvedValue(client);
+      await driver.connect({
+        id: 'test-id', name: 'test', driverType: 'postgresql', host: 'localhost', port: 5432,
+        username: 'postgres', password: 'secret', database: 'testdb',
+      });
+
+      const result = (await driver.executeBatch(['SELECT id FROM users']).promise).results[0];
+
+      expect(result.rows).toEqual([{ id: 1 }]);
+      expect(result.columns[0].source).toBeUndefined();
+    });
+
+    it('同名列: 第二个改名为 "id (2)", 两列都保留, 改名列不挂 source', async () => {
+      const client = {
+        release: vi.fn(),
+        query: vi.fn()
+          .mockResolvedValueOnce({
+            rows: [[1, 99]],
+            rowCount: 1,
+            fields: [
+              { name: 'id', tableID: 16384, columnID: 1, dataTypeID: 23 },
+              { name: 'id', tableID: 16390, columnID: 1, dataTypeID: 23 },
+            ],
+          })
+          .mockResolvedValueOnce({
+            rows: [
+              { oid: 16384, attnum: 1, attname: 'id', relname: 't_user', nspname: 'public' },
+              { oid: 16390, attnum: 1, attname: 'id', relname: 't_order', nspname: 'public' },
+            ],
+          }),
+      };
+      mockPool.connect.mockResolvedValue(client);
+      await driver.connect({
+        id: 'test-id', name: 'test', driverType: 'postgresql', host: 'localhost', port: 5432,
+        username: 'postgres', password: 'secret', database: 'testdb',
+      });
+
+      const result = (await driver.executeBatch(['SELECT u.id, o.id FROM t_user u JOIN t_order o ON o.uid = u.id']).promise).results[0];
+
+      expect(result.rows).toEqual([{ id: 1, 'id (2)': 99 }]);
+      expect(result.columns.map((c) => [c.name, c.source])).toEqual([['id', { schema: 'public', table: 't_user' }], ['id (2)', undefined]]);
     });
   });
 

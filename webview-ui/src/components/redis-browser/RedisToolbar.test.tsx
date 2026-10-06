@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { RedisToolbar } from './RedisToolbar';
+import { RedisToolbar, isRedisCommand } from './RedisToolbar';
 
 const defaultDatabases = [
   { index: 0, keyCount: 5 },
@@ -129,5 +129,14 @@ describe('RedisToolbar', () => {
     fireEvent.click(screen.getByText('Import'));
 
     expect(defaultProps.onImport).toHaveBeenCalled();
+  });
+
+  it('含空白即命令 (不限命令名), 单 token 除无参命令外都是 pattern', () => {
+    for (const cmd of ['ZREVRANGE rank:1 0 9 WITHSCORES', 'HINCRBY h f 1', 'MEMORY USAGE k', 'UNLINK k', 'SETEX k 10 v', 'ping', 'DBSIZE']) {
+      expect(isRedisCommand(cmd)).toBe(true);
+    }
+    for (const pat of ['player:10086*', 'user:1', 'GET', 'FLUSHDB', '']) {
+      expect(isRedisCommand(pat)).toBe(false);
+    }
   });
 });

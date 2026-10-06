@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { CLAUDE_CODE_MODELS, CLAUDE_CODE_PREFIX, claudeCodeAvailable, runClaudeCode } from './claude-code.js';
+import type { SchemaColumn } from '../types/query.js';
 
 // schema 序列化上限: 大库表多时截断, 防 prompt 超出模型上下文
 const SCHEMA_CHAR_LIMIT = 30_000;
@@ -7,30 +8,47 @@ const SCHEMA_CHAR_LIMIT = 30_000;
 export interface AiAskInput {
   readonly dialect: string;
   readonly database: string;
-  readonly schema: Record<string, string[]>;
+  readonly schema: Record<string, readonly SchemaColumn[]>;
   readonly question: string;
   readonly sql: string;
   readonly selection: string;
+  // 编辑器上一次执行失败时的报错
+  readonly lastError?: string;
 }
 
-// 问题 / SQL 里提到的表排前面, 再按整行截断: 大库截断时被问的表不会恰好被切掉
+// 问题 / SQL 里提到的表排前面且逐列带类型与注释 (枚举含义常写在注释里), 其余表只列列名;
+// 再按整表装入上限: 提到的表详情放不下 (宽表) 退回只列列名, 仍放不下才跳过, 后面放得下的表照装
 function schemaLines(input: AiAskInput): string {
   const words = new Set(`${input.question}\n${input.sql}\n${input.selection}`.toLowerCase().match(/[a-z0-9_$]+/g));
   const mentioned = (t: string) => words.has(t.toLowerCase());
   const entries = Object.entries(input.schema);
-  const ordered = [...entries.filter(([t]) => mentioned(t)), ...entries.filter(([t]) => !mentioned(t))];
-  const lines: string[] = [];
+  const namesOnly = ([t, cols]: [string, readonly SchemaColumn[]]) => `${t}(${cols.map((c) => c.name).join(', ')})`;
+  const detailed = ([t, cols]: [string, readonly SchemaColumn[]]) => [
+    `${t}:`,
+    ...cols.map((c) => {
+      const comment = c.comment.replace(/\s+/g, ' ').trim();
+      return `  ${c.name} ${c.type}${comment ? ` -- ${comment}` : ''}`;
+    }),
+  ].join('\n');
+  // 每张表依次尝试的写法
+  const forms = [
+    ...entries.filter(([t]) => mentioned(t)).map((e) => [detailed(e), namesOnly(e)]),
+    ...entries.filter(([t]) => !mentioned(t)).map((e) => [namesOnly(e)]),
+  ];
+  const out: string[] = [];
   let size = 0;
-  for (const [table, cols] of ordered) {
-    const line = `${table}(${cols.join(', ')})`;
-    if (size + line.length > SCHEMA_CHAR_LIMIT) {
-      lines.push(`... (${ordered.length - lines.length} more tables truncated)`);
-      break;
+  let dropped = 0;
+  for (const tries of forms) {
+    const block = tries.find((b) => size + b.length <= SCHEMA_CHAR_LIMIT);
+    if (block === undefined) {
+      dropped++;
+      continue;
     }
-    lines.push(line);
-    size += line.length + 1;
+    out.push(block);
+    size += block.length + 1;
   }
-  return lines.join('\n');
+  if (dropped > 0) { out.push(`... (${dropped} more tables truncated)`); }
+  return out.join('\n');
 }
 
 export function buildAiPrompt(input: AiAskInput): string {
@@ -42,12 +60,13 @@ export function buildAiPrompt(input: AiAskInput): string {
     'it replaces the selected SQL if any, otherwise the whole editor content, so keep unrelated statements the user has.',
     'Only use tables/columns from the schema below (if it is truncated, other tables may exist).',
     '',
-    'Schema (table(columns)):',
+    'Schema (tables mentioned below list "column type -- comment" per line; other tables are table(columns)):',
     schemaText || '(empty)',
     '',
     'Editor content:',
     input.sql || '(empty)',
     ...(input.selection ? ['', 'Selected SQL:', input.selection] : []),
+    ...(input.lastError ? ['', 'Last error (the previous execution in this editor failed with):', input.lastError] : []),
     '',
     'Question:',
     input.question,
@@ -60,17 +79,41 @@ function configuredModelId(): string {
   return vscode.workspace.getConfiguration('sqlext').get<string>(MODEL_SETTING, '');
 }
 
-/** 可用模型: 本机已登录的 Claude Code 在前 (默认优先), Copilot 兜底; selected 为设置值 (为空即用第一个) */
-export async function listAiModels(): Promise<{ models: { id: string; name: string }[]; selected: string }> {
-  const [copilot, claudeBin] = await Promise.all([
-    vscode.lm.selectChatModels({ vendor: 'copilot' }).then(ms => ms, () => []),
-    claudeCodeAvailable(),
-  ]);
-  const models = [
+/**
+ * 实际使用的模型: 设置值在可用列表里就用它, 否则 (未设置 / Claude Code 未登录 / Copilot 模型下线) 用列表第一个.
+ * 下拉框的选中项与提问所用模型都由它决定, 两边不会不一致
+ */
+export function effectiveModelId(setting: string, models: readonly { readonly id: string }[]): string {
+  return models.some(m => m.id === setting) ? setting : (models[0]?.id ?? '');
+}
+
+const copilotModels = () => vscode.lm.selectChatModels({ vendor: 'copilot' }).then(ms => ms, () => []);
+
+// 本机已登录的 Claude Code 在前 (默认优先), Copilot 兜底
+function modelList(copilot: readonly vscode.LanguageModelChat[], claudeBin: string | null) {
+  return [
     ...(claudeBin ? CLAUDE_CODE_MODELS.map(m => ({ id: CLAUDE_CODE_PREFIX + m.alias, name: m.name })) : []),
     ...copilot.map(m => ({ id: m.id, name: m.name })),
   ];
-  return { models, selected: configuredModelId() };
+}
+
+/** 可用模型与实际会用的那个 (selected) */
+export async function listAiModels(): Promise<{ models: { id: string; name: string }[]; selected: string }> {
+  const [copilot, claudeBin] = await Promise.all([copilotModels(), claudeCodeAvailable()]);
+  const models = modelList(copilot, claudeBin);
+  return { models, selected: effectiveModelId(configuredModelId(), models) };
+}
+
+/**
+ * 提问实际用的模型, 与 listAiModels 的 selected 一致.
+ * 设置是可用的 Copilot 模型时 effectiveModelId 必然选它, 这时不起 `claude auth status` 子进程
+ */
+export async function resolveAiModel() {
+  const setting = configuredModelId();
+  const copilotP = copilotModels();
+  const copilotPick = !!setting && !setting.startsWith(CLAUDE_CODE_PREFIX) && (await copilotP).some(m => m.id === setting);
+  const [copilot, claudeBin] = await Promise.all([copilotP, copilotPick ? null : claudeCodeAvailable()]);
+  return { chosen: effectiveModelId(setting, modelList(copilot, claudeBin)), copilot, claudeBin };
 }
 
 export async function setAiModel(id: string): Promise<void> {
@@ -86,7 +129,7 @@ export function cancelAiAsk(key: object): void {
 }
 
 /**
- * 按设置 sqlext.ai.model 选模型回答 (Copilot 模型或本机 Claude Code), 流式回调 onChunk; 返回所用模型名.
+ * 按 effectiveModelId 选模型回答 (Copilot 模型或本机 Claude Code), 流式回调 onChunk; 返回所用模型名.
  * getInput 在登记取消之后才执行: 取 schema 期间的 Stop / Close 也能拦住请求.
  */
 export async function runAiAsk(
@@ -101,28 +144,20 @@ export async function runAiAsk(
     const input = await getInput();
     if (cts.token.isCancellationRequested) { throw new vscode.CancellationError(); }
     const prompt = buildAiPrompt(input);
-    // 未设置时优先本机 Claude Code (与下拉框首项一致), 未登录才回落 Copilot
-    const setting = configuredModelId();
-    const bin = !setting || setting.startsWith(CLAUDE_CODE_PREFIX) ? await claudeCodeAvailable() : null;
-    const chosen = setting || (bin ? CLAUDE_CODE_PREFIX + CLAUDE_CODE_MODELS[0].alias : '');
+    const { chosen, copilot, claudeBin } = await resolveAiModel();
+    if (!chosen) {
+      throw new Error('No AI model available: log in to Claude Code (run `claude auth login`), or install / sign in to GitHub Copilot.');
+    }
     let used: string;
     if (chosen.startsWith(CLAUDE_CODE_PREFIX)) {
-      if (!bin) {
-        throw new Error('Claude Code is not installed or not logged in (run `claude auth login`), or pick another model.');
-      }
       const ac = new AbortController();
       cts.token.onCancellationRequested(() => ac.abort());
-      used = await runClaudeCode(bin, chosen.slice(CLAUDE_CODE_PREFIX.length), prompt, ac.signal, onChunk);
+      used = await runClaudeCode(claudeBin!, chosen.slice(CLAUDE_CODE_PREFIX.length), prompt, ac.signal, onChunk);
     } else {
-      const models = await vscode.lm.selectChatModels({ vendor: 'copilot' });
-      // 设置里的模型已不可用 (换了订阅 / 下线) 时回落到第一个, 实际所用模型名随 aiDone 回传
-      const model = models.find(m => m.id === chosen) ?? models[0];
-      if (!model) {
-        throw new Error('No Copilot language model available. Install/sign in to GitHub Copilot, or log in to Claude Code.');
-      }
+      const model = copilot.find(m => m.id === chosen)!;
       const res = await model.sendRequest(
         [vscode.LanguageModelChatMessage.User(prompt)],
-        { justification: 'Database Explorer sends your question, editor SQL and table/column names (no row data) to answer it.' },
+        { justification: 'Database Explorer sends your question, editor SQL, its last error and table/column names, types and comments (no row data) to answer it.' },
         cts.token,
       );
       for await (const text of res.text) {

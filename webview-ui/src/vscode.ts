@@ -1,4 +1,4 @@
-import type { WebviewMessage } from './types/messages';
+import type { WebviewMessage } from '../../src/types/messages';
 
 interface VSCodeApi {
   postMessage(message: WebviewMessage): void;

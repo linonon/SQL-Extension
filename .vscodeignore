@@ -1,20 +1,9 @@
-.vscode/**
-.claude/**
-.serena/**
-.worktrees/**
-src/**
-webview-ui/src/**
-webview-ui/node_modules/**
-node_modules/**
-*.ts
-!dist/**
+# 白名单: 先排除一切, 再放回运行时要加载的文件
+**
+!dist/extension.js
+!dist/mcp-server.js
 !webview-ui/dist/**
-!resources/**
-.gitignore
-tsconfig.json
-esbuild.js
-Makefile
-docker-compose.yml
-lock.txt
-**/*.md
+!resources/*.svg
+!package.json
+!LICENSE
 !README.md

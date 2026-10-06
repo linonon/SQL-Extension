@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
+import { RedisLoadMore } from './RedisLoadMore';
+import { useReadOnly } from '../../hooks/useReadOnly';
 
 interface RedisSetEditorProps {
   readonly members: readonly string[];
@@ -17,6 +19,7 @@ export function RedisSetEditor({
   onBatchEdit,
   onLoadMore,
 }: RedisSetEditorProps) {
+  const readOnly = useReadOnly();
   const [newMember, setNewMember] = useState('');
   // editMap: original member -> current edited value (只追踪被修改过的 member)
   const [editMap, setEditMap] = useState<Record<string, string>>({});
@@ -74,31 +77,28 @@ export function RedisSetEditor({
               className={`value${isDirty ? ' editing-dirty' : ''}`}
               value={currentValue}
               onChange={(e) => handleEditChange(member, e.target.value)}
+              readOnly={readOnly}
             />
-            <button
-              className="btn-icon"
-              onClick={() => onRemove(member)}
-              title="Remove member"
-            >
-              x
-            </button>
+            {!readOnly && (
+              <button
+                className="btn-icon"
+                onClick={() => onRemove(member)}
+                title="Remove member"
+              >
+                x
+              </button>
+            )}
           </div>
         );
       })}
-      {hasMore && (
-        <div className="redis-load-more">
-          <button className="secondary" onClick={onLoadMore}>
-            Load More
-          </button>
-        </div>
-      )}
+      {hasMore && <RedisLoadMore pendingEdits={dirtyEdits.length} onLoadMore={onLoadMore} />}
       {hasDirty && (
         <div className="batch-actions">
           <button onClick={handleSaveAll}>Save All ({dirtyEdits.length})</button>
           <button className="secondary" onClick={handleDiscardAll}>Discard</button>
         </div>
       )}
-      <div className="add-form">
+      {!readOnly && <div className="add-form">
         <input
           placeholder="Member"
           value={newMember}
@@ -108,7 +108,7 @@ export function RedisSetEditor({
         <button onClick={handleAdd} disabled={!newMember.trim()}>
           Add Member
         </button>
-      </div>
+      </div>}
     </div>
   );
 }

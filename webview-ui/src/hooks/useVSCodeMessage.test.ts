@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { renderHook } from '@testing-library/react';
 import { useVSCodeMessage } from './useVSCodeMessage';
-import type { ExtensionMessage } from '../types/messages';
+import type { ExtensionMessage } from '../../../src/types/messages';
 
 describe('useVSCodeMessage', () => {
   it('应该在组件挂载时注册 message listener', () => {
@@ -20,7 +20,7 @@ describe('useVSCodeMessage', () => {
 
     const message: ExtensionMessage = {
       type: 'viewInit',
-      view: 'table',
+      view: 'query',
       context: { connectionId: 'test-conn' },
     };
 
@@ -48,6 +48,7 @@ describe('useVSCodeMessage', () => {
     const message1: ExtensionMessage = { type: 'error', message: 'Test error' };
     const message2: ExtensionMessage = {
       type: 'queryResult',
+      requestId: 1,
       columns: [],
       rows: [],
       affectedRows: 0,

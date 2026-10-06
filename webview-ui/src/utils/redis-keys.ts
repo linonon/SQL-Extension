@@ -1,4 +1,4 @@
-import type { RedisKeyInfo } from '../types/redis';
+import type { RedisKeyInfo } from '../../../src/types/redis';
 
 export interface KeyTreeNode {
   readonly segment: string;

@@ -1,4 +1,4 @@
-import type { MongoExplainSummary } from '../../types/messages';
+import type { MongoExplainSummary } from '../../../../src/types/messages';
 
 interface MongoExplainPanelProps {
   readonly summary?: MongoExplainSummary;
@@ -29,15 +29,9 @@ export function MongoExplainPanel({ summary, error, loading, onClose }: MongoExp
             </div>
             {summary.isCollScan && (
               <div className="mongo-explain-warn">
-                ⚠ 全表扫描 (无索引) — 扫描 {summary.docsExamined} 文档返回 {summary.nReturned}, 建议对查询字段加索引.
+                Warning: 全表扫描 (无索引), 建议对查询字段加索引.
               </div>
             )}
-            <div className="mongo-explain-stats">
-              <span>docs examined: {summary.docsExamined}</span>
-              <span>keys examined: {summary.keysExamined}</span>
-              <span>returned: {summary.nReturned}</span>
-              <span>{summary.executionTimeMillis} ms</span>
-            </div>
           </>
         )}
       </div>

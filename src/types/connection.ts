@@ -22,6 +22,8 @@ export interface ConnectionConfig {
   readonly authSource?: string;
   readonly separator?: string;
   readonly ssh?: SSHTunnelConfig;
+  // 只读连接: UI 与 agent 的写入一律在宿主拒绝, 编辑器 SQL 跑在数据库强制的只读会话里
+  readonly readOnly?: boolean;
 }
 
 export type ConnectionState = 'connected' | 'disconnected' | 'connecting';

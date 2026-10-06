@@ -137,7 +137,7 @@ export function KafkaProduceForm({
           <button className="btn-small" onClick={onClose}>Cancel</button>
         </div>
 
-        {produceResult && (
+        {produceResult && (produceResult.success || produceResult.error) && (
           <div className={`kafka-produce-result ${produceResult.success ? 'success' : 'error'}`}>
             {produceResult.success
               ? `Sent to partition ${produceResult.partition}, offset ${produceResult.offset}`

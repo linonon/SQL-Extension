@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { useVSCodeMessage } from '../../hooks/useVSCodeMessage';
 import { usePostMessage } from '../../hooks/usePostMessage';
-import type { ExtensionMessage } from '../../types/messages';
+import type { ExtensionMessage } from '../../../../src/types/messages';
 
 interface AiAskBarProps {
   readonly database: string;
   readonly sql: string;
   readonly selection: string;
   readonly selectionStart: number;
+  // 编辑器上一次执行失败时的报错, 随提问发出
+  readonly lastError?: string;
   readonly onApply: (sql: string) => void;
   readonly onClose: () => void;
 }
@@ -42,10 +44,10 @@ export function applySql(current: string, snap: SelectionSnapshot, generated: st
 // 同一 webview 内唯一即可: 扩展回执带回 id, 旧提问的残余 chunk 不会串进新回答
 let askSeq = 0;
 
-// 编辑器内联提问: 问题 + 当前 SQL + 表结构交给 Copilot 模型, 回答里的 ```sql 块可一键套用
-export function AiAskBar({ database, sql, selection, selectionStart, onApply, onClose }: AiAskBarProps) {
+// 编辑器内联提问: 问题 + 当前 SQL + 上次报错 + 表结构交给 AI 模型, 回答里的 ```sql 块可一键套用
+export function AiAskBar({ database, sql, selection, selectionStart, lastError, onApply, onClose }: AiAskBarProps) {
   const postMessage = usePostMessage();
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const reqId = useRef('');
   const busyRef = useRef(false);
   const [question, setQuestion] = useState('');
@@ -72,8 +74,14 @@ export function AiAskBar({ database, sql, selection, selectionStart, onApply, on
   const handleMessage = useCallback((message: ExtensionMessage) => {
     if (message.type === 'aiModels') {
       setModels(message.models);
-      // 设置为空或已下线时显示第一个 (与扩展侧回落一致)
-      setModelId(message.models.some(m => m.id === message.selected) ? message.selected : (message.models[0]?.id ?? ''));
+      // selected 是扩展侧实际会用的模型 (设置不可用时已回落到第一个)
+      setModelId(message.selected);
+      return;
+    }
+    // 笼统失败 (如按需重连失败, 提问没送到) 由 App 显示, 这里只结束 busy
+    if (message.type === 'error') {
+      busyRef.current = false;
+      setBusy(false);
       return;
     }
     if ((message.type !== 'aiChunk' && message.type !== 'aiDone') || message.id !== reqId.current) return;
@@ -100,13 +108,14 @@ export function AiAskBar({ database, sql, selection, selectionStart, onApply, on
     setModel('');
     setBeforeApply(null);
     setBusy(true);
-    postMessage({ type: 'aiAsk', id: reqId.current, database, question: q, sql, selection: s.selection });
-  }, [question, busy, selection, selectionStart, database, sql, postMessage]);
+    postMessage({ type: 'aiAsk', id: reqId.current, database, question: q, sql, selection: s.selection, ...(lastError ? { lastError } : {}) });
+  }, [question, busy, selection, selectionStart, database, sql, lastError, postMessage]);
 
-  const handleKeyDown = useCallback((e: KeyboardEvent<HTMLInputElement>) => {
+  const handleKeyDown = useCallback((e: KeyboardEvent<HTMLTextAreaElement>) => {
     // 输入法组字中的 Enter / Esc 属于输入法, 不提交也不关闭
     if (e.nativeEvent.isComposing || e.keyCode === 229) return;
-    if (e.key === 'Enter') { e.preventDefault(); ask(); }
+    // Enter 提交, Shift+Enter 换行
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ask(); }
     if (e.key === 'Escape') { e.preventDefault(); onClose(); }
   }, [ask, onClose]);
 
@@ -116,9 +125,10 @@ export function AiAskBar({ database, sql, selection, selectionStart, onApply, on
   return (
     <div className="ai-ask-bar">
       <div className="ai-ask-row">
-        <input
+        <textarea
           ref={inputRef}
           className="ai-ask-input"
+          rows={1}
           value={question}
           onChange={(e) => setQuestion(e.target.value)}
           onKeyDown={handleKeyDown}
@@ -129,7 +139,7 @@ export function AiAskBar({ database, sql, selection, selectionStart, onApply, on
           <select
             className="ai-ask-model"
             value={modelId}
-            title="Copilot model (saved to setting sqlext.ai.model)"
+            title="AI model (saved to setting sqlext.ai.model)"
             onChange={(e) => { setModelId(e.target.value); postMessage({ type: 'aiSetModel', id: e.target.value }); }}
           >
             {models.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}

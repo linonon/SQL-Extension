@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import type { KafkaMessage, KafkaPartitionInfo } from '../../types/kafka';
+import type { KafkaMessage, KafkaPartitionInfo } from '../../../../src/types/kafka';
 import { KafkaMessageDetail } from './KafkaMessageDetail';
 import { KafkaProduceForm } from './KafkaProduceForm';
+import { useReadOnly } from '../../hooks/useReadOnly';
 
 interface KafkaMessageTableProps {
   readonly topic: string;
@@ -9,8 +10,11 @@ interface KafkaMessageTableProps {
   readonly messages: readonly KafkaMessage[];
   readonly selectedPartition: number;
   readonly loading: boolean;
+  readonly timedOut: boolean;
   readonly onPartitionChange: (partition: number) => void;
+  readonly onRefreshPartitions: () => void;
   readonly onFetch: (offset: string) => void;
+  readonly onFetchLatest: () => void;
   readonly onFetchByTimestamp: (timestamp: number) => void;
   readonly onProduce: (key: string | null, value: string, headers: Record<string, string>, partition?: number) => void;
   readonly produceResult: { readonly success: boolean; readonly partition?: number; readonly offset?: string; readonly error?: string } | null;
@@ -29,24 +33,20 @@ export function KafkaMessageTable({
   messages,
   selectedPartition,
   loading,
+  timedOut,
   onPartitionChange,
+  onRefreshPartitions,
   onFetch,
+  onFetchLatest,
   onFetchByTimestamp,
   onProduce,
   produceResult,
 }: KafkaMessageTableProps) {
+  const readOnly = useReadOnly();
   const [subView, setSubView] = useState<SubView>('list');
   const [detailMsg, setDetailMsg] = useState<KafkaMessage | null>(null);
   const [offsetInput, setOffsetInput] = useState('');
   const [timestampInput, setTimestampInput] = useState('');
-
-  const currentPartition = partitions.find((p) => p.partitionId === selectedPartition);
-  const highWatermark = currentPartition?.offset ?? '0';
-
-  const handleFetchLatest = () => {
-    const start = Math.max(0, Number(highWatermark) - 50);
-    onFetch(String(start));
-  };
 
   const handleFetchOffset = () => {
     if (offsetInput.trim()) {
@@ -100,6 +100,9 @@ export function KafkaMessageTable({
               ))}
             </select>
           </label>
+          <button className="btn-small" onClick={onRefreshPartitions} title="Refresh partition offsets">
+            Refresh
+          </button>
           <div className="kafka-offset-controls">
             <input
               type="text"
@@ -111,7 +114,7 @@ export function KafkaMessageTable({
             <button className="btn-small" onClick={handleFetchOffset} disabled={loading}>
               Fetch
             </button>
-            <button className="btn-small" onClick={handleFetchLatest} disabled={loading}>
+            <button className="btn-small" onClick={onFetchLatest} disabled={loading}>
               Latest
             </button>
           </div>
@@ -126,15 +129,19 @@ export function KafkaMessageTable({
               By Time
             </button>
           </div>
-          <button className="btn-small" onClick={() => setSubView('produce')}>
-            Produce
-          </button>
+          {!readOnly && (
+            <button className="btn-small" onClick={() => setSubView('produce')}>
+              Produce
+            </button>
+          )}
         </div>
       </div>
       <div className="kafka-message-body">
         {loading && <div className="kafka-empty">Loading...</div>}
         {!loading && messages.length === 0 && (
-          <div className="kafka-empty">No messages. Click "Latest" to fetch.</div>
+          <div className="kafka-empty">
+            {timedOut ? 'No messages within 3s.' : 'No messages. Click "Latest" to fetch.'}
+          </div>
         )}
         {!loading && messages.length > 0 && (
           <table className="kafka-table">

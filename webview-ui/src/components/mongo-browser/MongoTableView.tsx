@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import type { ColumnInfo } from '../../types/database';
+import type { ColumnInfo } from '../../../../src/types/query';
 import { buildDisplayColumns, getByPath } from './mongo-table-columns';
 import { coerceToType, isEditableLeaf } from './mongo-field-editor';
 import { idToShell } from './mongo-id';
@@ -7,9 +7,10 @@ import { idToShell } from './mongo-id';
 interface MongoTableViewProps {
   readonly columns: readonly ColumnInfo[];
   readonly rows: readonly Record<string, unknown>[];
-  readonly onRowClick: (row: Record<string, unknown>) => void;
-  // 单元格原地编辑提交: id 为 _id 的 shell 形式, path 为 dotted 字段路径, value 保留原类型
-  readonly onCellEdit?: (id: string, path: string, value: unknown) => void;
+  // 点 _id 单元格 (复合 _id 展开后为首个 _id.* 列) 打开该文档; 其余单元格的单击不做任何事, 双击留给原地编辑
+  readonly onOpen?: (row: Record<string, unknown>) => void;
+  // 单元格原地编辑提交: id 为行的 _id, path 为 dotted 字段路径, original 为编辑前的值, value 按原类型转换后的新值
+  readonly onCellEdit?: (id: unknown, path: string, original: unknown, value: unknown) => void;
 }
 
 // 将 cell 值转换为显示字符串, 对象类型 JSON.stringify 以避免 [object Object]
@@ -19,14 +20,16 @@ function cellText(value: unknown, max: number): string {
   return s.length > max ? s.slice(0, max) + '...' : s;
 }
 
-// 仅标量叶子可原地编辑, 且非 _id (改 _id 用 Clone). 可编辑性与类型转换复用 mongo-field-editor 的单一实现.
+const isIdPath = (path: string): boolean => path === '_id' || path.startsWith('_id.');
+
+// 仅标量叶子可原地编辑, 且不在 _id 内 (_id 不可变, 改 _id 用 Clone). 可编辑性与类型转换复用 mongo-field-editor 的单一实现.
 function isEditableCell(path: string, value: unknown): boolean {
-  return path !== '_id' && isEditableLeaf(value);
+  return !isIdPath(path) && isEditableLeaf(value);
 }
 
-export function MongoTableView({ columns, rows, onRowClick, onCellEdit }: MongoTableViewProps) {
+export function MongoTableView({ columns, rows, onOpen, onCellEdit }: MongoTableViewProps) {
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
-  const [editing, setEditing] = useState<{ rowId: string; path: string; original: unknown } | null>(null);
+  const [editing, setEditing] = useState<{ rowId: string; id: unknown; path: string; original: unknown } | null>(null);
   const [draft, setDraft] = useState('');
 
   const topLevel = useMemo(() => columns.map((c) => c.name), [columns]);
@@ -43,6 +46,7 @@ export function MongoTableView({ columns, rows, onRowClick, onCellEdit }: MongoT
     });
     return m;
   }, [displayCols]);
+  const openIdx = useMemo(() => displayCols.findIndex((c) => isIdPath(c.path)), [displayCols]);
 
   const expand = (path: string) =>
     setExpanded((prev) => new Set(prev).add(path));
@@ -55,14 +59,16 @@ export function MongoTableView({ columns, rows, onRowClick, onCellEdit }: MongoT
       return next;
     });
 
-  const startEdit = (rowId: string, path: string, value: unknown) => {
-    setEditing({ rowId, path, original: value });
+  const startEdit = (rowId: string, id: unknown, path: string, value: unknown) => {
+    setEditing({ rowId, id, path, original: value });
     setDraft(typeof value === 'object' ? '' : String(value));
   };
   const cancelEdit = () => setEditing(null);
   const commitEdit = () => {
     if (editing && onCellEdit) {
-      onCellEdit(editing.rowId, editing.path, coerceToType(editing.original, draft));
+      const value = coerceToType(editing.original, draft);
+      // 值没变 (含非法输入回退原值) 不发写请求
+      if (value !== editing.original) { onCellEdit(editing.id, editing.path, editing.original, value); }
     }
     setEditing(null);
   };
@@ -102,13 +108,13 @@ export function MongoTableView({ columns, rows, onRowClick, onCellEdit }: MongoT
         {rows.map((row, idx) => {
           const rowId = idToShell(row._id);
           return (
-            <tr key={String(row._id ?? idx)} className="mongo-document-row" onClick={() => onRowClick(row)}>
-              {displayCols.map((col) => {
+            <tr key={rowId || idx} className="mongo-document-row">
+              {displayCols.map((col, colIdx) => {
                 const v = getByPath(row, col.path);
                 const editingThis = editing?.rowId === rowId && editing?.path === col.path;
                 if (editingThis) {
                   return (
-                    <td key={col.path} onClick={(e) => e.stopPropagation()}>
+                    <td key={col.path}>
                       <input
                         className="mongo-cell-input"
                         autoFocus
@@ -126,12 +132,19 @@ export function MongoTableView({ columns, rows, onRowClick, onCellEdit }: MongoT
                 // rowId 为空 = _id 被投影排除, 无法定位文档 -> 不可原地编辑 (否则发 id='' 必然失败)
                 const editable = onCellEdit != null && rowId !== '' && isEditableCell(col.path, v);
                 const full = typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v ?? '');
+                if (colIdx === openIdx && onOpen && rowId !== '') {
+                  return (
+                    <td key={col.path} title={`${full}\n(点击打开编辑)`}>
+                      <button type="button" className="mongo-id-open" onClick={() => onOpen(row)}>{cellText(v, 80)}</button>
+                    </td>
+                  );
+                }
                 return (
                   <td
                     key={col.path}
                     title={editable ? `${full}\n(双击编辑)` : full}
                     className={editable ? 'mongo-cell-editable' : undefined}
-                    onDoubleClick={editable ? (e) => { e.stopPropagation(); startEdit(rowId, col.path, v); } : undefined}
+                    onDoubleClick={editable ? () => startEdit(rowId, row._id, col.path, v) : undefined}
                   >
                     {cellText(v, 80)}
                   </td>

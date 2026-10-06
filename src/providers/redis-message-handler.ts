@@ -1,18 +1,31 @@
+import * as vscode from 'vscode';
+import { isUtf8 } from 'node:buffer';
 import type { IRedisDriver } from '../types/redis-driver.js';
-import type { RedisValue, RedisExportKeyEntry, RedisExportData } from '../types/redis.js';
-import type { WebviewMessage } from '../types/messages.js';
+import type { RedisValue, RedisExportBytes, RedisExportData, RedisExportKeyEntry, RedisExportType, RedisRawKey } from '../types/redis.js';
+import type { ExtensionMessage, WebviewMessage } from '../types/messages.js';
 
 const HASH_SCAN_COUNT = 100;
 const SET_SCAN_COUNT = 100;
 
+// Set TTL 输入框校验: 只收 -1 (移除 TTL) 或 >= 1 的整数; EXPIRE 0 会直接删 key, 不放行
+export function validateTtlInput(v: string): string | undefined {
+  if (v.trim() === '') { return 'TTL is required'; }
+  const n = Number(v);
+  if (!Number.isInteger(n) || (n !== -1 && n < 1)) { return 'Must be -1 (remove TTL) or an integer >= 1'; }
+  return undefined;
+}
+
 /**
  * 解析命令字符串, 支持双引号和单引号包裹的参数.
- * 例: SET key "hello world" -> ['SET', 'key', 'hello world']
+ * 双引号内 \" 和 \\ 转义为 " 和 \, 其余反斜杠原样保留; 引号包裹的空串 ("") 是一个空参数.
+ * 例: SET k "{\"open\":true}" -> ['SET', 'k', '{"open":true}']
  */
 export function parseCommandArgs(command: string): string[] {
   const args: string[] = [];
   let current = '';
   let inQuote: '"' | "'" | null = null;
+  // 当前 token 出现过引号: 即使内容为空也要作为参数保留
+  let quoted = false;
 
   for (let i = 0; i < command.length; i++) {
     const ch = command[i];
@@ -20,96 +33,162 @@ export function parseCommandArgs(command: string): string[] {
     if (inQuote) {
       if (ch === inQuote) {
         inQuote = null;
+      } else if (inQuote === '"' && ch === '\\' && (command[i + 1] === '"' || command[i + 1] === '\\')) {
+        current += command[++i];
       } else {
         current += ch;
       }
     } else if (ch === '"' || ch === "'") {
       inQuote = ch;
+      quoted = true;
     } else if (/\s/.test(ch)) {
-      if (current.length > 0) {
+      if (current.length > 0 || quoted) {
         args.push(current);
         current = '';
+        quoted = false;
       }
     } else {
       current += ch;
     }
   }
 
-  if (current.length > 0) {
+  if (current.length > 0 || quoted) {
     args.push(current);
   }
 
   return args;
 }
 
+// 宿主侧模态确认: 用户点了 action 才返回 true
+async function confirmed(prompt: string, action = 'Delete'): Promise<boolean> {
+  return (await vscode.window.showWarningMessage(prompt, { modal: true }, action)) === action;
+}
+
 /**
  * 处理 redis 相关的 webview message.
  * 返回 true 表示已处理, false 表示不是 redis 消息.
+ * 删除类消息与清库命令的确认在执行它的 case 里; 弹文件框 / 输入框的消息在 try 之外处理,
+ * 它们没接住的错误抛给调用方 (provider 回通用 error).
  */
 export async function handleRedisMessage(
   message: WebviewMessage,
   driver: IRedisDriver,
-  postMessage: (msg: unknown) => void
+  postMessage: (msg: ExtensionMessage) => void
 ): Promise<boolean> {
+  switch (message.type) {
+    case 'redisExportPattern':
+    case 'redisExportKey':
+      await exportToFile(driver, message.database, message.type === 'redisExportKey' ? { key: message.key } : { pattern: message.pattern });
+      return true;
+
+    case 'redisImport':
+      await importFromFile(driver, message.database, postMessage);
+      return true;
+
+    case 'redisAddKeyPrompt': {
+      const key = await vscode.window.showInputBox({
+        prompt: 'Enter new key name',
+        placeHolder: 'e.g. user:1234',
+        validateInput: (v) => v.trim() ? undefined : 'Key name is required',
+      });
+      const name = key?.trim();
+      if (!name) { return true; }
+      if (!(await driver.createStringKey(message.database, name))) {
+        vscode.window.showErrorMessage(`Key already exists: ${name}`);
+        return true;
+      }
+      postMessage({ type: 'redisAddKeyResult', key: name });
+      return true;
+    }
+
+    case 'redisSetTTLPrompt': {
+      const input = await vscode.window.showInputBox({
+        prompt: 'Enter TTL in seconds (-1 to remove)',
+        validateInput: validateTtlInput,
+      });
+      if (input === undefined) { return true; }
+      const ttl = Number(input);
+      const { key, database } = message;
+      try {
+        await (ttl === -1 ? driver.removeTTL(database, key) : driver.setTTL(database, key, ttl));
+        postMessage({ type: 'redisOperationResult', success: true });
+      } catch (err) {
+        postMessage({ type: 'redisOperationResult', success: false, error: err instanceof Error ? err.message : String(err) });
+      }
+      return true;
+    }
+  }
+
   try {
     switch (message.type) {
       case 'redisScan': {
-        await driver.selectDatabase(message.database);
-        const result = await driver.scan(message.pattern, message.cursor, message.count);
-        postMessage({
-          type: 'redisScanResult',
-          keys: result.keys,
-          cursor: result.cursor,
-          done: result.cursor === '0',
-        });
+        // 失败也回 redisScanResult 带 requestId: webview 只让当前这次扫描的失败结束 Scanning
+        const { requestId } = message;
+        try {
+          const result = await driver.scan(message.database, message.pattern, message.cursor, message.count);
+          postMessage({
+            type: 'redisScanResult',
+            requestId,
+            keys: result.keys,
+            cursor: result.cursor,
+            done: result.cursor === '0',
+            scanned: result.scanned,
+          });
+        } catch (err) {
+          postMessage({
+            type: 'redisScanResult', requestId, keys: [], cursor: message.cursor, done: false, scanned: 0,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
         return true;
       }
 
       case 'redisGetValue': {
-        await driver.selectDatabase(message.database);
-        const keyType = await driver.getKeyType(message.key);
-        const ttl = await driver.getTTL(message.key);
+        const rawType = await driver.getKeyType(message.database, message.key);
+        const ttl = await driver.getTTL(message.database, message.key);
         let value: RedisValue;
-        switch (keyType) {
+        switch (rawType) {
           case 'string': {
-            const strVal = await driver.getString(message.key);
+            const strVal = await driver.getString(message.database, message.key);
             value = { type: 'string', value: strVal ?? '' };
             break;
           }
           case 'hash': {
-            const hashResult = await driver.hashScan(message.key, '0', HASH_SCAN_COUNT);
+            const hashResult = await driver.hashScan(message.database, message.key, '0', HASH_SCAN_COUNT);
             value = { type: 'hash', value: hashResult.fields, cursor: hashResult.cursor };
             break;
           }
           case 'list': {
-            const total = await driver.getListLength(message.key);
+            const total = await driver.getListLength(message.database, message.key);
             const listStart = message.listStart ?? 0;
-            const listVal = await driver.getList(message.key, listStart, listStart + 99);
-            value = { type: 'list', value: listVal, total };
+            const listVal = await driver.getList(message.database, message.key, listStart, listStart + 99);
+            value = { type: 'list', value: listVal, total, start: listStart };
             break;
           }
           case 'set': {
             const setCursor = message.setCursor ?? '0';
-            const setResult = await driver.getSet(message.key, setCursor, SET_SCAN_COUNT);
+            const setResult = await driver.getSet(message.database, message.key, setCursor, SET_SCAN_COUNT);
             value = { type: 'set', value: setResult.members, cursor: setResult.cursor };
             break;
           }
           case 'zset': {
-            const total = await driver.getZSetLength(message.key);
+            const total = await driver.getZSetLength(message.database, message.key);
             const zsetStart = message.zsetStart ?? 0;
-            const zsetVal = await driver.getZSet(message.key, zsetStart, zsetStart + 99);
-            value = { type: 'zset', value: zsetVal, total };
+            const zsetVal = await driver.getZSet(message.database, message.key, zsetStart, zsetStart + 99);
+            value = { type: 'zset', value: zsetVal, total, start: zsetStart };
             break;
           }
           default: {
-            value = { type: 'string', value: `[Unsupported type: ${keyType}]` };
+            // stream / 模块类型 / 已不存在 ('none'): 不读值, webview 只读显示类型名
+            value = { type: 'unsupported', typeName: rawType };
             break;
           }
         }
         postMessage({
           type: 'redisValueResult',
           key: message.key,
-          keyType,
+          database: message.database,
+          keyType: value.type !== 'unsupported' ? value.type : rawType === 'stream' ? 'stream' : 'unknown',
           value,
           ttl,
         });
@@ -117,11 +196,11 @@ export async function handleRedisMessage(
       }
 
       case 'redisHashScan': {
-        await driver.selectDatabase(message.database);
-        const hashScanResult = await driver.hashScan(message.key, message.cursor, message.count);
+        const hashScanResult = await driver.hashScan(message.database, message.key, message.cursor, message.count);
         postMessage({
           type: 'redisHashScanResult',
           key: message.key,
+          database: message.database,
           cursor: hashScanResult.cursor,
           fields: hashScanResult.fields,
           done: hashScanResult.cursor === '0',
@@ -130,53 +209,36 @@ export async function handleRedisMessage(
       }
 
       case 'redisSetString': {
-        await driver.selectDatabase(message.database);
-        await driver.setString(message.key, message.value, message.ttl);
-        postMessage({ type: 'redisOperationResult', success: true });
-        return true;
-      }
-
-      case 'redisHashSet': {
-        await driver.selectDatabase(message.database);
-        await driver.setHashField(message.key, message.field, message.value);
+        await driver.setString(message.database, message.key, message.value, message.ttl);
         postMessage({ type: 'redisOperationResult', success: true });
         return true;
       }
 
       case 'redisHashDelete': {
-        await driver.selectDatabase(message.database);
-        await driver.deleteHashField(message.key, message.field);
+        if (!(await confirmed(`Delete field "${message.field}"?`))) { return true; }
+        await driver.deleteHashField(message.database, message.key, message.field);
         postMessage({ type: 'redisOperationResult', success: true });
         return true;
       }
 
       case 'redisListPush': {
-        await driver.selectDatabase(message.database);
-        await driver.listPush(message.key, message.value, message.position);
-        postMessage({ type: 'redisOperationResult', success: true });
-        return true;
-      }
-
-      case 'redisListSet': {
-        await driver.selectDatabase(message.database);
-        await driver.listSet(message.key, message.index, message.value);
+        await driver.listPush(message.database, message.key, message.value, message.position);
         postMessage({ type: 'redisOperationResult', success: true });
         return true;
       }
 
       case 'redisListRemove': {
-        await driver.selectDatabase(message.database);
-        await driver.listRemove(message.key, message.index);
+        if (!(await confirmed(`Delete list item at index ${message.index}?`))) { return true; }
+        await driver.listRemove(message.database, message.key, message.index);
         postMessage({ type: 'redisOperationResult', success: true });
         return true;
       }
 
       case 'redisListBatchSet': {
-        await driver.selectDatabase(message.database);
         const listErrors: string[] = [];
         for (const entry of message.entries) {
           try {
-            await driver.listSet(message.key, entry.index, entry.value);
+            await driver.listSet(message.database, message.key, entry.index, entry.value);
           } catch (e) {
             listErrors.push(`[${entry.index}]: ${e instanceof Error ? e.message : String(e)}`);
           }
@@ -190,67 +252,38 @@ export async function handleRedisMessage(
       }
 
       case 'redisSetAdd': {
-        await driver.selectDatabase(message.database);
-        await driver.setAdd(message.key, message.member);
+        await driver.setAdd(message.database, message.key, message.member);
         postMessage({ type: 'redisOperationResult', success: true });
         return true;
       }
 
       case 'redisSetRemove': {
-        await driver.selectDatabase(message.database);
-        await driver.setRemove(message.key, message.member);
+        if (!(await confirmed(`Remove member "${message.member}"?`))) { return true; }
+        await driver.setRemove(message.database, message.key, message.member);
         postMessage({ type: 'redisOperationResult', success: true });
         return true;
       }
 
       case 'redisZSetAdd': {
-        await driver.selectDatabase(message.database);
-        await driver.zsetAdd(message.key, message.member, message.score);
+        await driver.zsetAdd(message.database, message.key, message.member, message.score);
         postMessage({ type: 'redisOperationResult', success: true });
         return true;
       }
 
       case 'redisZSetRemove': {
-        await driver.selectDatabase(message.database);
-        await driver.zsetRemove(message.key, message.member);
+        if (!(await confirmed(`Remove member "${message.member}"?`))) { return true; }
+        await driver.zsetRemove(message.database, message.key, message.member);
         postMessage({ type: 'redisOperationResult', success: true });
-        return true;
-      }
-
-      case 'redisSetEdit': {
-        await driver.selectDatabase(message.database);
-        await driver.setRemove(message.key, message.oldMember);
-        await driver.setAdd(message.key, message.newMember);
-        postMessage({ type: 'redisOperationResult', success: true });
-        return true;
-      }
-
-      case 'redisHashBatchSet': {
-        await driver.selectDatabase(message.database);
-        const errors: string[] = [];
-        for (const entry of message.entries) {
-          try {
-            await driver.setHashField(message.key, entry.field, entry.value);
-          } catch (e) {
-            errors.push(`${entry.field}: ${e instanceof Error ? e.message : String(e)}`);
-          }
-        }
-        if (errors.length > 0) {
-          postMessage({ type: 'redisOperationResult', success: false, error: `Failed fields: ${errors.join('; ')}` });
-        } else {
-          postMessage({ type: 'redisOperationResult', success: true });
-        }
         return true;
       }
 
       case 'redisHashBatchEdit': {
-        await driver.selectDatabase(message.database);
         const hashEditErrors: string[] = [];
         for (const edit of message.edits) {
           try {
-            await driver.setHashField(message.key, edit.newField, edit.value);
+            await driver.setHashField(message.database, message.key, edit.newField, edit.value);
             if (edit.oldField !== edit.newField) {
-              await driver.deleteHashField(message.key, edit.oldField);
+              await driver.deleteHashField(message.database, message.key, edit.oldField);
             }
           } catch (e) {
             hashEditErrors.push(`${edit.oldField}: ${e instanceof Error ? e.message : String(e)}`);
@@ -265,13 +298,12 @@ export async function handleRedisMessage(
       }
 
       case 'redisZSetBatchEdit': {
-        await driver.selectDatabase(message.database);
         const zsetEditErrors: string[] = [];
         for (const edit of message.edits) {
           try {
-            await driver.zsetAdd(message.key, edit.newMember, edit.score);
+            await driver.zsetAdd(message.database, message.key, edit.newMember, edit.score);
             if (edit.oldMember !== edit.newMember) {
-              await driver.zsetRemove(message.key, edit.oldMember);
+              await driver.zsetRemove(message.database, message.key, edit.oldMember);
             }
           } catch (e) {
             zsetEditErrors.push(`${edit.oldMember}: ${e instanceof Error ? e.message : String(e)}`);
@@ -286,12 +318,11 @@ export async function handleRedisMessage(
       }
 
       case 'redisSetBatchEdit': {
-        await driver.selectDatabase(message.database);
         const editErrors: string[] = [];
         for (const edit of message.edits) {
           try {
-            await driver.setRemove(message.key, edit.oldMember);
-            await driver.setAdd(message.key, edit.newMember);
+            await driver.setRemove(message.database, message.key, edit.oldMember);
+            await driver.setAdd(message.database, message.key, edit.newMember);
           } catch (e) {
             editErrors.push(`${edit.oldMember}->${edit.newMember}: ${e instanceof Error ? e.message : String(e)}`);
           }
@@ -305,32 +336,27 @@ export async function handleRedisMessage(
       }
 
       case 'redisDeleteKeys': {
-        await driver.selectDatabase(message.database);
+        const label = message.keys.length === 1 ? `Delete key "${message.keys[0]}"?` : `Delete ${message.keys.length} keys?`;
+        if (!(await confirmed(label))) { return true; }
         for (const key of message.keys) {
-          await driver.deleteKey(key);
+          await driver.deleteKey(message.database, key);
         }
         postMessage({ type: 'redisDeleteKeysResult', success: true, deletedKeys: message.keys });
         return true;
       }
 
-      case 'redisSetTTL': {
-        await driver.selectDatabase(message.database);
-        await driver.setTTL(message.key, message.ttl);
-        postMessage({ type: 'redisOperationResult', success: true });
-        return true;
-      }
-
-      case 'redisRemoveTTL': {
-        await driver.selectDatabase(message.database);
-        await driver.removeTTL(message.key);
-        postMessage({ type: 'redisOperationResult', success: true });
-        return true;
-      }
-
       case 'redisExecuteCommand': {
-        await driver.selectDatabase(message.database);
         const args = parseCommandArgs(message.command);
-        const result = await driver.executeCommand(args);
+        // 命令栏可执行任意命令; 清库命令 (带不带 ASYNC / SYNC 参数) 先确认
+        const cmd = args[0]?.toUpperCase();
+        if (cmd === 'FLUSHDB' || cmd === 'FLUSHALL') {
+          const scope = cmd === 'FLUSHALL' ? 'EVERY database' : `db ${message.database}`;
+          if (!(await confirmed(`${cmd} deletes all keys in ${scope}. Continue?`, cmd))) {
+            postMessage({ type: 'redisCommandResult', output: `${cmd} cancelled` });
+            return true;
+          }
+        }
+        const result = await driver.executeCommandInDb(message.database, args);
         postMessage({
           type: 'redisCommandResult',
           output: typeof result === 'string' ? result : JSON.stringify(result, null, 2),
@@ -354,149 +380,217 @@ export async function handleRedisMessage(
   }
 }
 
-const EXPORT_SET_SCAN_COUNT = 1000;
-
-async function collectAllSetMembers(driver: IRedisDriver, key: string): Promise<readonly string[]> {
-  const members: string[] = [];
-  let cursor = '0';
-  do {
-    const result = await driver.getSet(key, cursor, EXPORT_SET_SCAN_COUNT);
-    members.push(...result.members);
-    cursor = result.cursor;
-  } while (cursor !== '0');
-  return members;
-}
-
-async function readFullKeyValue(
+// Export JSON: 选保存位置, 带可取消的进度条导出, 结果与跳过 / 出错的 key 用通知报告
+async function exportToFile(
   driver: IRedisDriver,
-  key: string
-): Promise<RedisExportKeyEntry | null> {
-  const type = await driver.getKeyType(key);
-  const ttl = await driver.getTTL(key);
-
-  switch (type) {
-    case 'string': {
-      const val = await driver.getString(key);
-      return { key, type, ttl, value: val ?? '' };
+  database: number,
+  target: { readonly pattern: string } | { readonly key: string }
+): Promise<void> {
+  try {
+    const uri = await vscode.window.showSaveDialog({
+      filters: { 'JSON Files': ['json'] },
+      defaultUri: vscode.Uri.file(`redis-export-db${database}.json`),
+    });
+    if (!uri) { return; }
+    // 用户取消时 result 为 null: 不写文件, 只给一条普通提示
+    const result = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: `Exporting Redis db ${database}`, cancellable: true },
+      (progress, token) => exportRedisKeys(driver, database, target, (done, total) => {
+        if (token.isCancellationRequested) { throw new Error('Export cancelled'); }
+        if (done % 100 === 0 || done === total) { progress.report({ message: `${done}/${total} keys` }); }
+      }).catch((err: unknown) => {
+        if (token.isCancellationRequested) { return null; }
+        throw err;
+      })
+    );
+    if (!result) {
+      vscode.window.showInformationMessage('Export cancelled');
+      return;
     }
-    case 'hash': {
-      const val = await driver.getHash(key);
-      return { key, type, ttl, value: val };
+    await vscode.workspace.fs.writeFile(uri, Buffer.from(result.json, 'utf-8'));
+    const summary = `Exported ${result.keyCount} key(s) from db ${database} to ${uri.fsPath}`;
+    if (result.skipped) {
+      vscode.window.showWarningMessage(`${summary}; ${result.skipped}`);
+    } else {
+      vscode.window.showInformationMessage(summary);
     }
-    case 'list': {
-      const val = await driver.getList(key, 0, -1);
-      return { key, type, ttl, value: val };
+    if (result.errors.length > 0) {
+      vscode.window.showWarningMessage(`Export completed with errors: ${result.errors.join('; ')}`);
     }
-    case 'set': {
-      const val = await collectAllSetMembers(driver, key);
-      return { key, type, ttl, value: val };
-    }
-    case 'zset': {
-      const val = await driver.getZSet(key, 0, -1);
-      return { key, type, ttl, value: val };
-    }
-    default:
-      return null;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    vscode.window.showErrorMessage(`Export failed: ${msg}`);
   }
 }
 
+// Import JSON: 选文件导入到 database, 有同名 key 时先确认替换
+async function importFromFile(
+  driver: IRedisDriver,
+  database: number,
+  postMessage: (msg: ExtensionMessage) => void
+): Promise<void> {
+  try {
+    const fileUris = await vscode.window.showOpenDialog({
+      filters: { 'JSON Files': ['json'] },
+      canSelectMany: false,
+    });
+    if (!fileUris || fileUris.length === 0) { return; }
+    const content = Buffer.from(await vscode.workspace.fs.readFile(fileUris[0])).toString('utf-8');
+    // 导入会先删后写同名 key: 有已存在的就在这里确认
+    const result = await importRedisKeys(driver, database, content, (existing) =>
+      confirmed(`${existing} key(s) already exist in db ${database} and will be replaced. Continue?`, 'Replace'));
+    if (!result) { return; }
+    if (result.errors.length > 0) {
+      vscode.window.showWarningMessage(`Import completed with errors: ${result.errors.join('; ')}`);
+    }
+    vscode.window.showInformationMessage(`Imported ${result.importedCount} key(s) into db ${database}`);
+    postMessage({ type: 'redisImportResult', success: true, importedCount: result.importedCount });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    vscode.window.showErrorMessage(`Import failed: ${msg}`);
+    postMessage({ type: 'redisImportResult', success: false, error: msg });
+  }
+}
+
+const EXPORT_TYPES: ReadonlySet<string> = new Set<RedisExportType>(['string', 'hash', 'list', 'set', 'zset']);
+
+export function encodeBytes(buf: Buffer): RedisExportBytes {
+  return isUtf8(buf) ? buf.toString('utf8') : { encoding: 'base64', data: buf.toString('base64') };
+}
+
+export function decodeBytes(value: unknown): Buffer {
+  if (typeof value === 'string') {
+    return Buffer.from(value, 'utf8');
+  }
+  const marked = value as { encoding?: unknown; data?: unknown } | null;
+  if (marked?.encoding === 'base64' && typeof marked.data === 'string') {
+    return Buffer.from(marked.data, 'base64');
+  }
+  throw new Error('Invalid encoded value: expected a string or {"encoding":"base64","data":"..."}');
+}
+
+function mapPairs<T>(items: readonly Buffer[], fn: (a: Buffer, b: Buffer) => T): T[] {
+  const out: T[] = [];
+  for (let i = 0; i + 1 < items.length; i += 2) {
+    out.push(fn(items[i], items[i + 1]));
+  }
+  return out;
+}
+
+function toExportValue(raw: RedisRawKey): RedisExportKeyEntry['value'] {
+  switch (raw.type) {
+    case 'string':
+      return encodeBytes(raw.items[0]);
+    case 'hash':
+      return mapPairs(raw.items, (field, value) => ({ field: encodeBytes(field), value: encodeBytes(value) }));
+    case 'zset':
+      return mapPairs(raw.items, (member, score) => {
+        const n = Number(score.toString());
+        return { member: encodeBytes(member), score: Number.isFinite(n) ? n : score.toString() };
+      });
+    default:
+      return raw.items.map(encodeBytes);
+  }
+}
+
+// 导出文件的 value 还原成 driver 的 items; hash 兼容 version 1 的 { field: value } 对象
+function toRawItems(entry: { readonly type: string; readonly value: unknown }): Buffer[] {
+  const value = entry.value as never;
+  switch (entry.type) {
+    case 'string':
+      return [decodeBytes(value)];
+    case 'hash':
+      return Array.isArray(value)
+        ? (value as { field: unknown; value: unknown }[]).flatMap((p) => [decodeBytes(p.field), decodeBytes(p.value)])
+        : Object.entries(value as Record<string, unknown>).flatMap(([field, v]) => [Buffer.from(field, 'utf8'), decodeBytes(v)]);
+    case 'list':
+    case 'set':
+      return (value as unknown[]).map(decodeBytes);
+    case 'zset':
+      return (value as { member: unknown; score: unknown }[]).flatMap((m) => [decodeBytes(m.member), Buffer.from(String(m.score))]);
+    default:
+      throw new Error(`Unsupported type: ${entry.type}`);
+  }
+}
+
+/**
+ * 导出一个库里匹配 pattern 的全部 key (服务端 SCAN 跑完整轮), 或单个 key.
+ * 不支持的类型和 SCAN 之后消失的 key 不写进文件, 按类型计数放进 skipped (如 "stream x2, vanished x1").
+ * onProgress 抛错会中止整个导出 (调用方借此实现取消).
+ */
 export async function exportRedisKeys(
   driver: IRedisDriver,
   database: number,
-  keys: readonly string[]
-): Promise<{ readonly json: string; readonly keyCount: number; readonly errors: readonly string[] }> {
-  await driver.selectDatabase(database);
+  target: { readonly pattern: string } | { readonly key: string },
+  onProgress?: (done: number, total: number) => void
+): Promise<{ readonly json: string; readonly keyCount: number; readonly skipped: string; readonly errors: readonly string[] }> {
+  const keys = 'key' in target ? [Buffer.from(target.key, 'utf8')] : await driver.scanAllKeys(database, target.pattern);
   const entries: RedisExportKeyEntry[] = [];
+  const skipped = new Map<string, number>();
   const errors: string[] = [];
 
-  for (const key of keys) {
+  for (const [i, key] of keys.entries()) {
     try {
-      const entry = await readFullKeyValue(driver, key);
-      if (entry) {
-        entries.push(entry);
+      const raw = await driver.readKeyRaw(database, key);
+      if (EXPORT_TYPES.has(raw.type)) {
+        entries.push({ key: encodeBytes(key), type: raw.type as RedisExportType, ttl: raw.ttl, value: toExportValue(raw) });
+      } else {
+        const label = raw.type === 'none' ? 'vanished' : raw.type;
+        skipped.set(label, (skipped.get(label) ?? 0) + 1);
       }
     } catch (e) {
-      errors.push(`${key}: ${e instanceof Error ? e.message : String(e)}`);
+      errors.push(`${key.toString()}: ${e instanceof Error ? e.message : String(e)}`);
     }
+    onProgress?.(i + 1, keys.length);
   }
 
   const data: RedisExportData = {
-    version: 1,
+    version: 2,
     exportedAt: new Date().toISOString(),
     database,
     keys: entries,
   };
+  const skippedTotal = [...skipped.values()].reduce((a, b) => a + b, 0);
+  const skippedText = skippedTotal === 0 ? ''
+    : `skipped ${skippedTotal} key(s): ${[...skipped].map(([type, n]) => `${type} x${n}`).join(', ')}`;
 
-  return { json: JSON.stringify(data, null, 2), keyCount: entries.length, errors };
+  return { json: JSON.stringify(data, null, 2), keyCount: entries.length, skipped: skippedText, errors };
 }
 
+/**
+ * 导入导出文件: 同名 key 先删后写 (保留文件里的 TTL), 全部在 database 这个库的 client 上执行.
+ * 写之前统计已存在的同名 key, 有则交给 confirmReplace 确认; 用户拒绝返回 null, 一个 key 也不写.
+ */
 export async function importRedisKeys(
   driver: IRedisDriver,
   database: number,
-  jsonContent: string
-): Promise<{ readonly importedCount: number; readonly errors: readonly string[] }> {
+  jsonContent: string,
+  confirmReplace: (existing: number) => Promise<boolean>
+): Promise<{ readonly importedCount: number; readonly errors: readonly string[] } | null> {
   const data = JSON.parse(jsonContent) as Record<string, unknown>;
 
-  if (data.version !== 1) {
+  if (data.version !== 1 && data.version !== 2) {
     throw new Error(`Unsupported export version: ${data.version}`);
   }
   if (!Array.isArray(data.keys)) {
     throw new Error('Invalid export file: missing keys array');
   }
 
-  await driver.selectDatabase(database);
-  const entries = data.keys as readonly RedisExportKeyEntry[];
+  const entries = data.keys as readonly { readonly key: unknown; readonly type: string; readonly ttl: number; readonly value: unknown }[];
+  const keys = entries.map((entry) => decodeBytes(entry.key));
+  const existing = await driver.countExistingKeys(database, keys);
+  if (existing > 0 && !(await confirmReplace(existing))) {
+    return null;
+  }
+
   const errors: string[] = [];
   let importedCount = 0;
-
-  for (const entry of entries) {
+  for (const [i, entry] of entries.entries()) {
     try {
-      switch (entry.type) {
-        case 'string': {
-          await driver.setString(entry.key, entry.value as string);
-          break;
-        }
-        case 'hash': {
-          await driver.deleteKey(entry.key);
-          const fields = entry.value as Record<string, string>;
-          for (const [field, val] of Object.entries(fields)) {
-            await driver.setHashField(entry.key, field, val);
-          }
-          break;
-        }
-        case 'list': {
-          await driver.deleteKey(entry.key);
-          const items = entry.value as readonly string[];
-          for (const item of items) {
-            await driver.listPush(entry.key, item, 'tail');
-          }
-          break;
-        }
-        case 'set': {
-          await driver.deleteKey(entry.key);
-          const members = entry.value as readonly string[];
-          for (const member of members) {
-            await driver.setAdd(entry.key, member);
-          }
-          break;
-        }
-        case 'zset': {
-          await driver.deleteKey(entry.key);
-          const zMembers = entry.value as readonly { readonly member: string; readonly score: number }[];
-          for (const m of zMembers) {
-            await driver.zsetAdd(entry.key, m.member, m.score);
-          }
-          break;
-        }
-        default:
-          continue;
-      }
-      if (entry.ttl > 0) {
-        await driver.setTTL(entry.key, entry.ttl);
-      }
+      await driver.writeKeyRaw(database, keys[i], { type: entry.type, ttl: entry.ttl, items: toRawItems(entry) });
       importedCount++;
     } catch (e) {
-      errors.push(`${entry.key}: ${e instanceof Error ? e.message : String(e)}`);
+      errors.push(`${keys[i].toString()}: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 

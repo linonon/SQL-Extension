@@ -1,30 +1,3 @@
-.data-grid-container {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  overflow: hidden;
-}
-
-.data-grid-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px;
-  border-bottom: 1px solid var(--vscode-panel-border);
-  flex-shrink: 0;
-}
-
-.data-grid-toolbar .table-name {
-  font-weight: bold;
-  margin-right: auto;
-}
-
-.data-grid-wrapper {
-  flex: 1;
-  overflow: auto;
-  position: relative;
-}
-
 .data-grid-table {
   width: 100%;
   border-collapse: collapse;
@@ -86,11 +59,17 @@
   padding: 0;
 }
 
-.data-grid-table td.editing input {
+/* 单元格编辑器: 占满格子, 多行内容在框内滚动, 不撑高行 (虚拟滚动按固定行高算) */
+.data-grid-table td.editing textarea {
+  display: block;
   width: 100%;
-  height: 100%;
+  height: 31px;
+  resize: none;
   border: 1px solid var(--vscode-focusBorder);
-  padding: 2px 8px;
+  padding: 6px 8px;
+  font: inherit;
+  line-height: 17px;
+  white-space: pre;
 }
 
 .data-grid-table td.null-value {
@@ -100,48 +79,6 @@
 
 .data-grid-table td.pk-column {
   font-weight: 600;
-}
-
-.data-grid-pagination {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px;
-  border-top: 1px solid var(--vscode-panel-border);
-  flex-shrink: 0;
-  font-size: 12px;
-}
-
-.data-grid-pagination .page-info {
-  color: var(--vscode-descriptionForeground);
-}
-
-.data-grid-pagination .page-controls {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.data-grid-pagination button {
-  padding: 2px 8px;
-  font-size: 12px;
-}
-
-.data-grid-loading {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  color: var(--vscode-descriptionForeground);
-}
-
-.data-grid-error {
-  padding: 16px;
-  color: var(--vscode-errorForeground);
-  background-color: var(--vscode-inputValidation-errorBackground);
-  border: 1px solid var(--vscode-inputValidation-errorBorder);
-  border-radius: 4px;
-  margin: 8px;
 }
 
 /* 写操作失败的非致命行内提示 (保留网格, 不整屏替换) */
@@ -166,6 +103,29 @@
   cursor: pointer;
   font-size: 14px;
   line-height: 1;
+}
+
+/* 会丢弃未保存编辑的动作前的行内确认 (ConfirmBar) */
+.confirm-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  margin: 4px 8px;
+  background-color: var(--vscode-inputValidation-warningBackground);
+  border: 1px solid var(--vscode-inputValidation-warningBorder);
+  border-radius: 4px;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.confirm-bar span {
+  flex: 1;
+}
+
+.confirm-bar-confirm {
+  background-color: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
 }
 
 /* --- QueryResultsGrid: Excel-like styles --- */
@@ -480,8 +440,13 @@
   gap: 8px;
 }
 
-.clone-row-field-input input[type="text"] {
+/* 多行值原样编辑: 随内容长高, 最多 10 行后出滚动条 */
+.clone-row-field-input textarea {
   flex: 1;
+  field-sizing: content;
+  min-height: calc(1lh + 10px);
+  max-height: calc(10lh + 10px);
+  resize: vertical;
   padding: 4px 8px;
   font-size: 13px;
   background-color: var(--vscode-input-background);
@@ -491,12 +456,12 @@
   font-family: var(--vscode-editor-font-family);
 }
 
-.clone-row-field-input input[type="text"]:focus {
+.clone-row-field-input textarea:focus {
   outline: none;
   border-color: var(--vscode-focusBorder);
 }
 
-.clone-row-field-input input[type="text"]:disabled {
+.clone-row-field-input textarea:disabled {
   opacity: 0.5;
 }
 
@@ -544,4 +509,35 @@
 
 .clone-row-btn-insert:hover {
   background-color: var(--vscode-button-hoverBackground);
+}
+
+/* --- Cell Value Modal (复用 Clone Row Modal 的弹层) --- */
+
+.cell-value-modal {
+  width: min(760px, 90vw);
+}
+
+.cell-value-modal .clone-row-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.cell-value-text {
+  width: 100%;
+  min-height: 280px;
+  resize: vertical;
+  padding: 6px 8px;
+  font-family: var(--vscode-editor-font-family);
+  font-size: var(--vscode-editor-font-size, 13px);
+  white-space: pre;
+  background-color: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+}
+
+.cell-value-tools {
+  display: flex;
+  gap: 8px;
+  margin-right: auto;
 }

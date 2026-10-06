@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
+import { RedisLoadMore } from './RedisLoadMore';
+import { useReadOnly } from '../../hooks/useReadOnly';
 
 interface ZSetEntry {
   readonly member: string;
@@ -24,6 +26,7 @@ export function RedisSortedSetEditor({
   onBatchEdit,
   onLoadMore,
 }: RedisSortedSetEditorProps) {
+  const readOnly = useReadOnly();
   const [newMember, setNewMember] = useState('');
   const [newScore, setNewScore] = useState('0');
   // editMap: key = 原始 member, value = { member: 当前 member, score: 当前 score (string 允许中间状态) }
@@ -102,36 +105,34 @@ export function RedisSortedSetEditor({
               className={`score${isDirty ? ' editing-dirty' : ''}`}
               value={currentScore}
               onChange={(e) => handleScoreChange(entry.member, entry.score, e.target.value)}
+              readOnly={readOnly}
             />
             <input
               className={`member${isDirty ? ' editing-dirty' : ''}`}
               value={currentMember}
               onChange={(e) => handleMemberChange(entry.member, entry.score, e.target.value)}
+              readOnly={readOnly}
             />
-            <button
-              className="btn-icon"
-              onClick={() => onRemove(entry.member)}
-              title="Remove member"
-            >
-              x
-            </button>
+            {!readOnly && (
+              <button
+                className="btn-icon"
+                onClick={() => onRemove(entry.member)}
+                title="Remove member"
+              >
+                x
+              </button>
+            )}
           </div>
         );
       })}
-      {hasMore && (
-        <div className="redis-load-more">
-          <button className="secondary" onClick={onLoadMore}>
-            Load More
-          </button>
-        </div>
-      )}
+      {hasMore && <RedisLoadMore pendingEdits={dirtyEntries.length} onLoadMore={onLoadMore} />}
       {hasDirty && (
         <div className="batch-actions">
           <button onClick={handleSaveAll}>Save All ({dirtyEntries.length})</button>
           <button className="secondary" onClick={handleDiscardAll}>Discard</button>
         </div>
       )}
-      <div className="add-form">
+      {!readOnly && <div className="add-form">
         <input
           placeholder="Member"
           value={newMember}
@@ -146,7 +147,7 @@ export function RedisSortedSetEditor({
         <button onClick={handleAdd} disabled={!newMember.trim()}>
           Add
         </button>
-      </div>
+      </div>}
     </div>
   );
 }

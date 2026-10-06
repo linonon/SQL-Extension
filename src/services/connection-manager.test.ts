@@ -1,6 +1,14 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
 import type { ConnectionConfig } from '../types/connection';
 import type { IDatabaseDriver } from '../types/driver';
+
+// pendingConnects: 依次交给新建 driver 的 connect, 用来让某次连接挂起
+const { mysqlInstances, pendingConnects, createTunnel } = vi.hoisted(() => ({
+  mysqlInstances: [] as Array<{ connect: Mock; disconnect: Mock; ping: Mock }>,
+  pendingConnects: [] as Array<Promise<void>>,
+  createTunnel: vi.fn(),
+}));
+vi.mock('./ssh-tunnel', () => ({ createTunnel, KNOWN_HOSTS_PATH: '/tmp/known_hosts' }));
 
 // Mock vscode manually
 vi.mock('vscode', async () => {
@@ -28,20 +36,22 @@ vi.mock('vscode', async () => {
 });
 
 // 在 mock 之后导入
-import { ConnectionManager } from './connection-manager';
+import { ConnectionManager, openDriver, prependQueryHistory } from './connection-manager';
 import { CredentialStore } from './credential-store';
 
 // Mock drivers
 vi.mock('../drivers/mysql-driver', () => ({
   MySQLDriver: class MockMySQLDriver {
     driverType = 'mysql';
-    connect = vi.fn().mockResolvedValue(undefined);
+    connect = vi.fn(() => pendingConnects.shift() ?? Promise.resolve());
     disconnect = vi.fn().mockResolvedValue(undefined);
+    ping = vi.fn().mockResolvedValue(undefined);
     isConnected = vi.fn(() => true);
     listDatabases = vi.fn();
     listTables = vi.fn();
     listColumns = vi.fn();
     execute = vi.fn();
+    constructor() { mysqlInstances.push(this); }
   },
 }));
 
@@ -89,9 +99,9 @@ describe('ConnectionManager', () => {
         id: 'c1', name: 'x', driverType: 'mysql', host: 'h', port: 3306, username: 'u', database: '',
       }]);
       mockSecrets.get.mockImplementation(async () => { await new Promise(r => setTimeout(r, 10)); return 'pw'; });
-      const created = vi.spyOn(manager as any, 'createDriver');
+      mysqlInstances.length = 0;
       await Promise.all([manager.connect('c1'), manager.connect('c1'), manager.connect('c1')]);
-      expect(created).toHaveBeenCalledTimes(1);
+      expect(mysqlInstances).toHaveLength(1);
       expect(manager.getState('c1')).toBe('connected');
       expect(() => manager.getDriver('c1')).not.toThrow();
     });
@@ -207,6 +217,95 @@ describe('ConnectionManager', () => {
         existing,
         newConn,
       ]);
+    });
+  });
+
+  describe('duplicateConnection', () => {
+    it('配置换新 id 和名字, DB / SSH 密码拷到新 id, 源连接不动', async () => {
+      const source: ConnectionConfig = {
+        id: 'src',
+        name: 'Prod',
+        driverType: 'mysql',
+        host: 'db.internal',
+        port: 3306,
+        username: 'root',
+        database: 'app',
+        ssh: { enabled: true, host: 'jump', port: 22, username: 'ops', authType: 'password' },
+        readOnly: true,
+      };
+      const snapshot = structuredClone(source);
+      const secrets: Record<string, string> = {
+        'sqlext.password.src': 'db-pw',
+        'sqlext.sshPassword.src': 'ssh-pw',
+      };
+      mockGlobalState.get.mockReturnValue([source]);
+      mockSecrets.get.mockImplementation(async (k: string) => secrets[k]);
+
+      const newId = await manager.duplicateConnection('src');
+
+      expect(newId).not.toBe('src');
+      expect(mockGlobalState.update).toHaveBeenCalledWith('sqlext.connections', [
+        source,
+        { ...snapshot, id: newId, name: 'Prod (copy)' },
+      ]);
+      expect(mockSecrets.store).toHaveBeenCalledWith(`sqlext.password.${newId}`, 'db-pw');
+      expect(mockSecrets.store).toHaveBeenCalledWith(`sqlext.sshPassword.${newId}`, 'ssh-pw');
+      expect(mockSecrets.store).toHaveBeenCalledTimes(2);
+      expect(mockSecrets.delete).not.toHaveBeenCalled();
+      expect(source).toEqual(snapshot);
+    });
+  });
+
+  describe('updateConnection', () => {
+    const base: ConnectionConfig = {
+      id: 'c1', name: 'Release', driverType: 'mysql', host: 'db', port: 3306, username: 'root', database: 'app',
+      ssh: { enabled: true, host: 'jump', port: 22, username: 'ops', authType: 'password' },
+    };
+
+    it('密码为 undefined 时保留已存的 DB / SSH 密码', async () => {
+      mockGlobalState.get.mockReturnValue([base]);
+      await manager.updateConnection('c1', { ...base, readOnly: true });
+      expect(mockGlobalState.update).toHaveBeenCalledWith('sqlext.connections', [{ ...base, readOnly: true }]);
+      expect(mockSecrets.store).not.toHaveBeenCalled();
+      expect(mockSecrets.delete).not.toHaveBeenCalled();
+    });
+
+    it('给了新值就替换', async () => {
+      mockGlobalState.get.mockReturnValue([base]);
+      await manager.updateConnection('c1', base, 'new-db', 'new-ssh');
+      expect(mockSecrets.store).toHaveBeenCalledWith('sqlext.password.c1', 'new-db');
+      expect(mockSecrets.store).toHaveBeenCalledWith('sqlext.sshPassword.c1', 'new-ssh');
+    });
+
+    it('关掉 SSH 时删除已存的 SSH 密码, DB 密码不动', async () => {
+      mockGlobalState.get.mockReturnValue([base]);
+      await manager.updateConnection('c1', { ...base, ssh: undefined }, undefined, 'ignored');
+      expect(mockSecrets.delete).toHaveBeenCalledWith('sqlext.sshPassword.c1');
+      expect(mockSecrets.store).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('query history', () => {
+    const entry = (sql: string, ts: number) => ({ sql, database: 'db', ts, ok: true });
+
+    it('新的在前, 连续相同 SQL 只留最新一条, 最多 200 条', () => {
+      let list = prependQueryHistory([], entry('a', 1));
+      list = prependQueryHistory(list, entry('b', 2));
+      list = prependQueryHistory(list, entry('b', 3));
+      list = prependQueryHistory(list, entry('a', 4));
+      expect(list.map((e) => [e.sql, e.ts])).toEqual([['a', 4], ['b', 3], ['a', 1]]);
+      for (let i = 0; i < 300; i++) { list = prependQueryHistory(list, entry(`q${i}`, i)); }
+      expect(list).toHaveLength(200);
+      expect(list[0].sql).toBe('q299');
+    });
+
+    it('按连接分 key 存, 删连接时一并删掉; 超长 SQL 不记', async () => {
+      await manager.addQueryHistory('conn1', entry('x'.repeat(100_001), 0));
+      expect(mockGlobalState.update).not.toHaveBeenCalled();
+      await manager.addQueryHistory('conn1', entry('a', 1));
+      expect(mockGlobalState.update).toHaveBeenCalledWith('sqlext.queryHistory.conn1', [entry('a', 1)]);
+      await manager.removeConnection('conn1');
+      expect(mockGlobalState.update).toHaveBeenCalledWith('sqlext.queryHistory.conn1', undefined);
     });
   });
 
@@ -342,7 +441,7 @@ describe('ConnectionManager', () => {
 
       // 重新导入以使用新 mock
       const { ConnectionManager: TestConnectionManager } = await import(
-        './connection-manager'
+        './connection-manager.js'
       );
       const testManager = new TestConnectionManager(
         mockGlobalState,
@@ -660,7 +759,7 @@ describe('ConnectionManager', () => {
       const driver1 = manager.getDriver('conn1');
       const driver2 = manager.getDriver('conn2');
 
-      manager.dispose();
+      await manager.dispose();
 
       // 验证每个已连接 driver 的 disconnect 被调用
       expect(driver1.disconnect).toHaveBeenCalledOnce();
@@ -669,6 +768,121 @@ describe('ConnectionManager', () => {
       // dispose 后所有连接状态应为 disconnected
       expect(manager.getState('conn1')).toBe('disconnected');
       expect(manager.getState('conn2')).toBe('disconnected');
+    });
+  });
+
+  describe('连接生命周期 (openDriver / teardown)', () => {
+    const sshConfig: ConnectionConfig = {
+      id: 'c1', name: 'release', driverType: 'mysql', host: 'db.internal', port: 3306, username: 'root', database: 'app',
+      ssh: { enabled: true, host: 'jump', port: 22, username: 'ops', authType: 'password' },
+    };
+    let tunnelClose: Mock;
+    let onTunnelClose: (() => void) | undefined;
+
+    beforeEach(() => {
+      mysqlInstances.length = 0;
+      tunnelClose = vi.fn();
+      createTunnel.mockReset();
+      createTunnel.mockImplementation(async (_ssh, _pw, _host, _port, opts: { onClose?: () => void }) => {
+        onTunnelClose = opts.onClose;
+        return { localPort: 4000, close: tunnelClose };
+      });
+    });
+
+    it('openDriver: 经 tunnel 连 127.0.0.1:<本地端口>; DB 失败时关掉 tunnel, 错误点名是哪一跳', async () => {
+      const handle = await openDriver(sshConfig, 'pw', 'ssh-pw');
+      expect(createTunnel).toHaveBeenCalledWith(sshConfig.ssh, 'ssh-pw', 'db.internal', 3306, expect.anything());
+      expect(mysqlInstances[0].connect).toHaveBeenCalledWith(expect.objectContaining({ host: '127.0.0.1', port: 4000, password: 'pw' }));
+      await handle.close();
+      expect(mysqlInstances[0].disconnect).toHaveBeenCalled();
+      expect(tunnelClose).toHaveBeenCalledTimes(1);
+
+      tunnelClose.mockClear();
+      const failing = openDriver(sshConfig, 'pw', 'ssh-pw');
+      mysqlInstances[1].connect.mockRejectedValueOnce(new Error('Access denied for user root'));
+      await expect(failing).rejects.toThrow('mysql db.internal:3306 (via SSH) failed: Access denied for user root');
+      expect(tunnelClose).toHaveBeenCalledTimes(1);
+
+      createTunnel.mockRejectedValueOnce(new Error('All configured authentication methods failed'));
+      await expect(openDriver(sshConfig, 'pw', 'bad')).rejects.toThrow(
+        'SSH tunnel ops@jump:22 failed: All configured authentication methods failed'
+      );
+    });
+
+    it('取消后马上再连: 另起一次连接; 被取消的那次结束时关掉自己的连接, 不动新连接', async () => {
+      mockGlobalState.get.mockReturnValue([{ ...sshConfig, ssh: undefined }]);
+      mockSecrets.get.mockResolvedValue('pw');
+      let release!: () => void;
+      pendingConnects.push(new Promise<void>((r) => { release = r; }));
+      const first = manager.connect('c1');
+      await vi.waitFor(() => expect(manager.getState('c1')).toBe('connecting'));
+      await manager.disconnect('c1');
+
+      const second = manager.connect('c1');
+      expect(second).not.toBe(first);
+      await second;
+      release();
+      await first;
+
+      expect(manager.getState('c1')).toBe('connected');
+      expect(manager.getDriver('c1')).toBe(mysqlInstances[1]);
+      expect(mysqlInstances[0].disconnect).toHaveBeenCalled();
+      expect(mysqlInstances[1].disconnect).not.toHaveBeenCalled();
+    });
+
+    it('心跳失败只拆被 ping 的那个连接, 不拆其间重连上的新连接', async () => {
+      mockGlobalState.get.mockReturnValue([{ ...sshConfig, ssh: undefined }]);
+      mockSecrets.get.mockResolvedValue('pw');
+      await manager.connect('c1');
+      let failPing!: (err: Error) => void;
+      mysqlInstances[0].ping.mockReturnValueOnce(new Promise((_, reject) => { failPing = reject; }));
+
+      const heartbeat = (manager as unknown as { checkConnections(): Promise<void> }).checkConnections();
+      await manager.disconnect('c1');
+      await manager.connect('c1');
+      failPing(new Error('ECONNRESET'));
+      await heartbeat;
+
+      expect(manager.getState('c1')).toBe('connected');
+      expect(manager.getDriver('c1')).toBe(mysqlInstances[1]);
+
+      mysqlInstances[1].ping.mockRejectedValueOnce(new Error('ECONNRESET'));
+      await (manager as unknown as { checkConnections(): Promise<void> }).checkConnections();
+      expect(manager.getState('c1')).toBe('disconnected');
+      expect(mysqlInstances[1].disconnect).toHaveBeenCalled();
+    });
+
+    it('心跳 ping 卡住时 10s 超时拆掉, 卡住期间的下一轮心跳跳过', async () => {
+      mockGlobalState.get.mockReturnValue([{ ...sshConfig, ssh: undefined }]);
+      mockSecrets.get.mockResolvedValue('pw');
+      await manager.connect('c1');
+      vi.useFakeTimers();
+      try {
+        mysqlInstances[0].ping.mockReturnValue(new Promise(() => {}));
+        const check = () => (manager as unknown as { checkConnections(): Promise<void> }).checkConnections();
+        const first = check();
+        await check();
+        expect(mysqlInstances[0].ping).toHaveBeenCalledTimes(1);
+
+        await vi.advanceTimersByTimeAsync(10_000);
+        await first;
+        expect(manager.getState('c1')).toBe('disconnected');
+        expect(mysqlInstances[0].disconnect).toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('SSH 连接断开即拆掉连接, 不等心跳', async () => {
+      mockGlobalState.get.mockReturnValue([sshConfig]);
+      mockSecrets.get.mockResolvedValue('pw');
+      await manager.connect('c1');
+      expect(manager.getState('c1')).toBe('connected');
+
+      onTunnelClose!();
+      expect(manager.getState('c1')).toBe('disconnected');
+      await vi.waitFor(() => expect(tunnelClose).toHaveBeenCalled());
+      expect(() => manager.getDriver('c1')).toThrow('No active connection');
     });
   });
 });

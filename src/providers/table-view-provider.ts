@@ -1,23 +1,25 @@
 import * as vscode from 'vscode';
-import type { ConnectionManager } from '../services/connection-manager.js';
+import { newConnectionId, openDriver, writeBlockedReason, type ConnectionManager } from '../services/connection-manager.js';
 import { QueryService } from '../services/query-service.js';
 import { CredentialStore } from '../services/credential-store.js';
-// driver 按需动态加载, 避免 main bundle 包含所有 driver 依赖
-import type { MongoDriver } from '../drivers/mongo-driver.js';
-import { createTunnel } from '../services/ssh-tunnel.js';
-import type { WebviewMessage, ViewType, SaveConnectionConfig, UpdateConnectionConfig } from '../types/messages.js';
+import type { ExtensionMessage, WebviewMessage, ViewType, SaveConnectionConfig, UpdateConnectionConfig } from '../types/messages.js';
 import type { ConnectionFormSSH } from '../types/messages.js';
-import type { DriverType, SSHTunnelConfig } from '../types/connection.js';
-import type { AlterTableChanges } from '../types/query.js';
-import { handleRedisMessage, exportRedisKeys, importRedisKeys } from './redis-message-handler.js';
+import type { ConnectionConfig, DriverType, SSHTunnelConfig } from '../types/connection.js';
+import type { SchemaColumn } from '../types/query.js';
+import type { IDatabaseDriver } from '../types/driver.js';
+import { handleRedisMessage } from './redis-message-handler.js';
 import { handleKafkaMessage } from './kafka-message-handler.js';
-import { handleRabbitMQMessage } from './rabbitmq-message-handler.js';
-import { handleMongoMessage, buildExportPipeline } from './mongo-message-handler.js';
+import { handleMongoMessage } from './mongo-message-handler.js';
 import { getWebviewContent, getWebviewOptions } from './webview-helper.js';
-import { buildDefaultSelectSql } from '../utils/sql-builder.js';
 import { handleSqlMessage, type SqlMessageContext } from './sql-message-handler.js';
+import { readOnlyRejection } from './read-only-gate.js';
 import { cancelAiAsk } from '../services/ai-assist.js';
 import { sanitizeErrorMessage } from '../utils/sanitize-error.js';
+
+// 不碰数据库的消息: 连接掉线时不为它们重连
+const OFFLINE_MESSAGES: ReadonlySet<WebviewMessage['type']> = new Set([
+  'cancelQuery', 'aiCancel', 'aiListModels', 'aiSetModel', 'exportCsv', 'listQueryHistory',
+]);
 
 function buildSSHConfig(msg: ConnectionFormSSH): SSHTunnelConfig | undefined {
   if (!msg.sshEnabled) { return undefined; }
@@ -33,11 +35,13 @@ function buildSSHConfig(msg: ConnectionFormSSH): SSHTunnelConfig | undefined {
 
 export class TableViewProvider implements vscode.Disposable {
   private readonly panels = new Map<string, vscode.WebviewPanel>();
+  // Query panel 可同库多开, key 用递增序号区分
+  private queryPanelSeq = 0;
   private readonly pendingCancels = new Map<vscode.WebviewPanel, () => void>();
   private readonly queryService = new QueryService();
-  private readonly disposables: vscode.Disposable[] = [];
-  // schema 缓存: key = "connectionId:database"
-  private readonly schemaCache = new Map<string, { schema: Record<string, string[]>; ts: number }>();
+  // schema 缓存挂在 driver 实例上, 按库存进行中的 promise: 同时打开的多个 panel 共用一次查询.
+  // 每次连接都新建 driver, 断开 / 重连 / 改连接配置后旧缓存随之作废
+  private readonly schemaCache = new WeakMap<IDatabaseDriver, Map<string, { schema: Promise<Record<string, SchemaColumn[]>>; ts: number }>>();
   private readonly SCHEMA_CACHE_TTL = 5 * 60 * 1000; // 5 分钟
 
   constructor(
@@ -46,43 +50,24 @@ export class TableViewProvider implements vscode.Disposable {
     private readonly credentialStore: CredentialStore
   ) {}
 
-  openTableView(connectionId: string, database: string, table: string): void {
-    const panelKey = `table:${connectionId}:${database}:${table}`;
-    const existing = this.panels.get(panelKey);
-    if (existing) {
-      existing.reveal();
-      return;
-    }
+  private connectionConfig(connectionId: string): ConnectionConfig | undefined {
+    return this.connectionManager.getConnections().find((c) => c.id === connectionId);
+  }
 
-    const driver = this.connectionManager.getDriver(connectionId);
-    const initialSql = buildDefaultSelectSql(driver.driverType, table);
-
-    this.createPanel(panelKey, `${table} - ${database}`, 'query', {
-      connectionId,
-      database,
-      table,
-      initialSql,
-      autoExecute: true,
-      driverType: driver.driverType,
-    });
+  // 独立 panel 的标题与 badge 带连接名: 不同环境的同名库 (test / release 的 game) 要能一眼分开
+  private connectionName(connectionId: string): string {
+    return this.connectionConfig(connectionId)?.name ?? connectionId;
   }
 
   openQueryEditor(connectionId: string, database: string): void {
-    const panelKey = `query:${connectionId}:${database}:${Date.now()}`;
+    const panelKey = `query:${connectionId}:${database}:${++this.queryPanelSeq}`;
     const driver = this.connectionManager.getDriver(connectionId);
-    this.createPanel(panelKey, `Query - ${database}`, 'query', {
+    const connectionName = this.connectionName(connectionId);
+    this.createPanel(panelKey, `Query - ${connectionName}/${database}`, 'query', {
       connectionId,
+      connectionName,
       database,
       driverType: driver.driverType,
-    });
-  }
-
-  openMongoQueryEditor(connectionId: string, database: string, connectionName: string): void {
-    const panelKey = `mongo-query:${connectionId}:${database}:${Date.now()}`;
-    this.createPanel(panelKey, `Query - ${connectionName}/${database}`, 'mongo-query', {
-      connectionId,
-      database,
-      connectionName,
     });
   }
 
@@ -95,7 +80,7 @@ export class TableViewProvider implements vscode.Disposable {
     }
 
     const driver = this.connectionManager.getDriver(connectionId);
-    this.createPanel(panelKey, `Edit - ${table}`, 'edit-table', {
+    this.createPanel(panelKey, `Edit - ${this.connectionName(connectionId)}/${database}.${table}`, 'edit-table', {
       connectionId,
       database,
       table,
@@ -113,8 +98,10 @@ export class TableViewProvider implements vscode.Disposable {
 
     const driver = this.connectionManager.getDriver(connectionId);
     driver.getTableDDL(database, table).then((ddl) => {
-      this.createPanel(panelKey, `DDL - ${table}`, 'query', {
+      const connectionName = this.connectionName(connectionId);
+      this.createPanel(panelKey, `DDL - ${connectionName}/${database}.${table}`, 'query', {
         connectionId,
+        connectionName,
         database,
         driverType: driver.driverType,
         initialSql: ddl,
@@ -141,26 +128,19 @@ export class TableViewProvider implements vscode.Disposable {
     }
   }
 
-  openRedisBrowser(connectionId: string, database: number): void {
+  // 打开时落在连接配置的 DB index 上
+  openRedisBrowser(connectionId: string): void {
     const config = this.connectionManager.getConnections().find((c) => c.id === connectionId);
     this.openBrowser(`redis-browser:${connectionId}`, `Redis - ${config?.name ?? connectionId}`, 'redis-browser', {
       connectionId,
-      database,
+      database: Number(config?.database) || 0,
       separator: config?.separator ?? ':',
     });
   }
 
-  openKafkaBrowser(connectionId: string, topic?: string): void {
-    this.openBrowser(`kafka:${connectionId}`, 'Kafka Browser', 'kafka-browser', {
+  openKafkaBrowser(connectionId: string): void {
+    this.openBrowser(`kafka:${connectionId}`, `Kafka - ${this.connectionName(connectionId)}`, 'kafka-browser', {
       connectionId,
-      topic,
-    });
-  }
-
-  openRabbitMQBrowser(connectionId: string, queue?: string): void {
-    this.openBrowser(`rabbitmq:${connectionId}`, 'RabbitMQ Browser', 'rmq-browser', {
-      connectionId,
-      queue,
     });
   }
 
@@ -179,9 +159,11 @@ export class TableViewProvider implements vscode.Disposable {
       light: vscode.Uri.joinPath(this.extensionUri, 'resources', `${driverType}-connected-light.svg`),
       dark: vscode.Uri.joinPath(this.extensionUri, 'resources', `${driverType}-connected-dark.svg`),
     };
+    // defaultDatabase: 连接表单里填的 Database, 浏览器默认只列这个库
     this.openBrowser(`db-browser:${connectionId}`, `[${driverType.toUpperCase()}]${connectionName}`, 'db-browser', {
       connectionId,
       driverType,
+      defaultDatabase: this.connectionConfig(connectionId)?.database || undefined,
     }, iconPath);
   }
 
@@ -204,8 +186,9 @@ export class TableViewProvider implements vscode.Disposable {
     const config = this.connectionManager.getConnections().find((c) => c.id === connectionId);
     if (!config) { return; }
 
-    const password = (await this.credentialStore.getPassword(connectionId)) ?? '';
-    const sshPassword = (await this.credentialStore.getSSHPassword(connectionId)) ?? '';
+    // 已存的密码不进 webview, 只告诉表单有没有; 表单里留空即沿用已存的值
+    const hasPassword = !!(await this.credentialStore.getPassword(connectionId));
+    const hasSshPassword = !!(await this.credentialStore.getSSHPassword(connectionId));
 
     this.createPanel(panelKey, 'Edit Connection', 'connection-form', {
       editConnection: {
@@ -215,7 +198,7 @@ export class TableViewProvider implements vscode.Disposable {
         host: config.host,
         port: config.port,
         username: config.username,
-        password,
+        hasPassword,
         database: config.database,
         authSource: config.authSource,
         separator: config.separator ?? ':',
@@ -224,8 +207,9 @@ export class TableViewProvider implements vscode.Disposable {
         sshPort: config.ssh?.port ?? 22,
         sshUsername: config.ssh?.username ?? '',
         sshAuthType: config.ssh?.authType ?? 'password',
-        sshPassword,
+        hasSshPassword,
         sshPrivateKeyPath: config.ssh?.privateKeyPath ?? '',
+        readOnly: config.readOnly ?? false,
       },
     });
   }
@@ -237,9 +221,13 @@ export class TableViewProvider implements vscode.Disposable {
     context: Record<string, unknown>,
     iconPath?: { light: vscode.Uri; dark: vscode.Uri }
   ): void {
+    // 只读连接: 标题带标记, webview 据 context.readOnly 隐藏写控件 (拦截在 handleMessage)
+    const connectionId = context.connectionId as string | undefined;
+    const readOnly = connectionId !== undefined && this.connectionConfig(connectionId)?.readOnly === true;
+    const viewContext = readOnly ? { ...context, readOnly: true } : context;
     const panel = vscode.window.createWebviewPanel(
       'sqlext.webview',
-      title,
+      readOnly ? `${title} (read-only)` : title,
       vscode.ViewColumn.One,
       getWebviewOptions(this.extensionUri)
     );
@@ -249,27 +237,25 @@ export class TableViewProvider implements vscode.Disposable {
 
     panel.webview.html = getWebviewContent(panel.webview, this.extensionUri);
 
-    panel.webview.onDidReceiveMessage(
-      (message: WebviewMessage) => this.handleMessage(panel, message, context),
-      undefined,
-      this.disposables
-    );
+    // 每次 ready 都回 viewInit: Developer: Reload Webviews 后页面重新加载, 会再发一次 ready
+    const viewInit: ExtensionMessage = { type: 'viewInit', view: viewType, context: viewContext };
+    const listener = panel.webview.onDidReceiveMessage((message: WebviewMessage) => {
+      if (message.type === 'ready') {
+        return panel.webview.postMessage(viewInit);
+      }
+      return this.handleMessage(panel, message, context);
+    });
 
     panel.onDidDispose(() => {
+      listener.dispose();
+      // 关 panel 时 webview 直接销毁, 卸载 effect 不跑, 由这里取消仍在执行的查询 (已结束时 cancel 为 no-op)
+      this.pendingCancels.get(panel)?.();
       this.pendingCancels.delete(panel);
       this.panels.delete(panelKey);
       cancelAiAsk(panel);
     });
 
     this.panels.set(panelKey, panel);
-
-    // webview ready 后发送初始化消息
-    const readyHandler = panel.webview.onDidReceiveMessage((msg: WebviewMessage) => {
-      if (msg.type === 'ready') {
-        panel.webview.postMessage({ type: 'viewInit', view: viewType, context });
-        readyHandler.dispose();
-      }
-    });
   }
 
   private async handleMessage(
@@ -278,23 +264,50 @@ export class TableViewProvider implements vscode.Disposable {
     context: Record<string, unknown>
   ): Promise<void> {
     const connectionId = context.connectionId as string | undefined;
+    const post = (msg: ExtensionMessage) => panel.webview.postMessage(msg);
+
+    // 只读连接的写消息统一在这里拒绝 (每条消息现读配置): 宿主是边界, webview 只是隐藏写控件
+    const blocked = connectionId ? writeBlockedReason(this.connectionConfig(connectionId)) : undefined;
+    const rejection = blocked ? readOnlyRejection(message, blocked) : undefined;
+    if (rejection !== undefined) {
+      // 有回执的由 webview 就地显示 (命令输出 / 表单错误), 没有回执的弹提示: 每次拒绝只报一处
+      if (rejection) { post(rejection); } else { void vscode.window.showErrorMessage(blocked!); }
+      return;
+    }
+
+    // panel 的连接被心跳拆掉 (睡眠 / VPN) 或因 Edit Connection 断开后, 下一条消息先按需重连再处理;
+    // 只连接, 不打开 browser (browser 只由 UI 的 connect 命令打开)
+    if (connectionId && !OFFLINE_MESSAGES.has(message.type) && this.connectionManager.getState(connectionId) !== 'connected') {
+      try {
+        await this.connectionManager.connect(connectionId);
+      } catch (err) {
+        post({ type: 'error', message: `Failed to connect: ${sanitizeErrorMessage(err)}` });
+        return;
+      }
+    }
 
     // SQL (MySQL/PostgreSQL) CRUD + db-browser 导航 + dump/import 由 sql-message-handler 处理
     const sqlCtx: SqlMessageContext = {
       getDriver: () => this.connectionManager.getDriver(connectionId!),
       queryService: this.queryService,
-      post: (msg) => panel.webview.postMessage(msg),
+      post,
       panel,
       pendingCancels: this.pendingCancels,
       database: context.database as string | undefined,
       getSchema: (database, forceRefresh) => this.getCachedSchema(connectionId!, database, forceRefresh),
+      readOnly: blocked !== undefined,
+      queryHistory: {
+        list: () => this.connectionManager.getQueryHistory(connectionId!),
+        add: (entry) => this.connectionManager.addQueryHistory(connectionId!, entry),
+      },
     };
     if (await handleSqlMessage(message, sqlCtx)) { return; }
 
     try {
       switch (message.type) {
         case 'testConnection': {
-          await this.testConnection(panel, message.config);
+          // 编辑表单的 panel context 带被编辑连接的 id: 表单里留空的密码用它的已存值
+          await this.testConnection(post, message.config, (context.editConnection as { id: string } | undefined)?.id);
           break;
         }
 
@@ -304,7 +317,9 @@ export class TableViewProvider implements vscode.Disposable {
         }
 
         case 'updateConnection': {
-          await this.updateExistingConnection(panel, message.config);
+          // 被改的连接只认编辑表单 panel 的 context, 不信消息里的 id: 其他 panel 不能把已存密码指向别的 host
+          const editId = (context.editConnection as { id: string } | undefined)?.id;
+          if (editId) { await this.updateExistingConnection(panel, editId, message.config); }
           break;
         }
 
@@ -327,288 +342,18 @@ export class TableViewProvider implements vscode.Disposable {
             return;
           }
 
-          if (message.type.startsWith('rmq')) {
-            const rmqDriver = this.connectionManager.getRabbitMQDriver(connectionId!);
-            const post = (msg: unknown) => panel.webview.postMessage(msg);
-            await handleRabbitMQMessage(message, rmqDriver, post);
-            return;
-          }
-
           if (message.type.startsWith('kafka')) {
-            const kafkaDriver = this.connectionManager.getKafkaDriver(connectionId!);
-            const post = (msg: unknown) => panel.webview.postMessage(msg);
-            await handleKafkaMessage(message, kafkaDriver, post);
+            await handleKafkaMessage(message, this.connectionManager.getKafkaDriver(connectionId!), post);
             return;
           }
 
           if (message.type.startsWith('mongo')) {
-            if (message.type === 'mongoCreateCollection') {
-              const { database } = message as { database: string; collection: string };
-              const input = await vscode.window.showInputBox({
-                prompt: `New collection in "${database}"`,
-                placeHolder: 'collection_name',
-                validateInput: (v) => {
-                  if (!v.trim()) { return 'Collection name is required'; }
-                  if (/[.$]/.test(v)) { return 'Cannot contain . or $'; }
-                  return undefined;
-                },
-              });
-              if (!input) { return; }
-              const mongoDriver = this.connectionManager.getDriver(connectionId!);
-              const post = (msg: unknown) => panel.webview.postMessage(msg);
-              await handleMongoMessage({ ...message, collection: input.trim() } as WebviewMessage, mongoDriver, post);
-              return;
-            }
-
-            if (message.type === 'mongoDropCollection') {
-              const { collection } = message as { database: string; collection: string };
-              const confirm = await vscode.window.showWarningMessage(
-                `Drop collection "${collection}"? This cannot be undone.`,
-                { modal: true },
-                'Drop'
-              );
-              if (confirm !== 'Drop') { return; }
-              // fall through to handleMongoMessage
-            }
-
-            if (message.type === 'mongoRunQuery') {
-              const { database, query } = message as { database: string; query: string };
-              const mongoDriver = this.connectionManager.getDriver(connectionId!);
-              const { promise, cancel } = mongoDriver.executeCancellable(query, undefined, database);
-              this.pendingCancels.set(panel, cancel);
-              try {
-                const result = await promise;
-                const ROW_LIMIT = 500;
-                const truncated = (result.rows?.length ?? 0) > ROW_LIMIT;
-                panel.webview.postMessage({
-                  type: 'mongoQueryResult',
-                  columns: result.columns ?? [],
-                  rows: truncated ? result.rows.slice(0, ROW_LIMIT) : (result.rows ?? []),
-                  affectedRows: result.affectedRows ?? 0,
-                  executionTime: result.executionTime ?? 0,
-                  truncated,
-                });
-              } catch (err) {
-                panel.webview.postMessage({
-                  type: 'mongoQueryResult',
-                  columns: [], rows: [], affectedRows: 0,
-                  executionTime: 0, truncated: false,
-                  error: err instanceof Error ? err.message : String(err),
-                });
-              } finally {
-                this.pendingCancels.delete(panel);
-              }
-              return;
-            }
-
-            if (message.type === 'mongoCancelQuery') {
-              const cancel = this.pendingCancels.get(panel);
-              if (cancel) { cancel(); this.pendingCancels.delete(panel); }
-              return;
-            }
-
-            if (message.type === 'mongoDeleteDocument') {
-              const confirmDelete = await vscode.window.showWarningMessage(
-                'Delete this document?', { modal: true }, 'Delete'
-              );
-              if (confirmDelete !== 'Delete') { return; }
-            }
-
-            if (message.type === 'mongoExportCollection') {
-              const exportMsg = message as { database: string; collection: string; filter: string; sort: string; projection?: string };
-              const post = (msg: unknown) => panel.webview.postMessage(msg);
-              try {
-                const uri = await vscode.window.showSaveDialog({
-                  filters: { 'JSON Files': ['json'], 'JSONL Files': ['jsonl'] },
-                  defaultUri: vscode.Uri.file(`${exportMsg.collection}.json`),
-                });
-                if (!uri) { return; }
-                const mongoDriver = this.connectionManager.getDriver(connectionId!) as unknown as MongoDriver;
-                const pipeline = buildExportPipeline(exportMsg.filter, exportMsg.sort, exportMsg.projection);
-                const { json, count } = await mongoDriver.exportDocuments(exportMsg.database, exportMsg.collection, pipeline);
-                await vscode.workspace.fs.writeFile(uri, Buffer.from(json, 'utf-8'));
-                vscode.window.showInformationMessage(`Exported ${count} document(s) to ${uri.fsPath}`);
-                post({ type: 'mongoExportResult', success: true, count });
-              } catch (e) {
-                const errMsg = e instanceof Error ? e.message : String(e);
-                vscode.window.showErrorMessage(`Export failed: ${errMsg}`);
-                panel.webview.postMessage({ type: 'mongoExportResult', success: false, error: errMsg });
-              }
-              return;
-            }
-
-            if (message.type === 'mongoImportCollection') {
-              const importMsg = message as { database: string; collection: string };
-              const post = (msg: unknown) => panel.webview.postMessage(msg);
-              try {
-                const fileUris = await vscode.window.showOpenDialog({
-                  filters: { 'JSON/JSONL Files': ['json', 'jsonl'] },
-                  canSelectMany: false,
-                });
-                if (!fileUris || fileUris.length === 0) { return; }
-                const content = Buffer.from(await vscode.workspace.fs.readFile(fileUris[0])).toString('utf-8');
-                const lineCount = content.trim().startsWith('[')
-                  ? (JSON.parse(content.trim()) as unknown[]).length
-                  : content.trim().split('\n').filter((l) => l.trim()).length;
-                const confirm = await vscode.window.showWarningMessage(
-                  `Import will insert ${lineCount} document(s) into "${importMsg.collection}". Continue?`,
-                  { modal: true },
-                  'Insert'
-                );
-                if (confirm !== 'Insert') { return; }
-                const mongoDriver = this.connectionManager.getDriver(connectionId!) as unknown as MongoDriver;
-                const inserted = await mongoDriver.importDocuments(importMsg.database, importMsg.collection, content);
-                vscode.window.showInformationMessage(`Imported ${inserted} document(s) into "${importMsg.collection}"`);
-                post({ type: 'mongoImportResult', success: true, inserted });
-              } catch (e) {
-                const errMsg = e instanceof Error ? e.message : String(e);
-                vscode.window.showErrorMessage(`Import failed: ${errMsg}`);
-                panel.webview.postMessage({ type: 'mongoImportResult', success: false, error: errMsg });
-              }
-              return;
-            }
-
-            const mongoDriver = this.connectionManager.getDriver(connectionId!);
-            const post = (msg: unknown) => panel.webview.postMessage(msg);
-            await handleMongoMessage(message, mongoDriver, post);
+            await handleMongoMessage(message, this.connectionManager.getMongoDriver(connectionId!), post);
             return;
           }
 
           if (message.type.startsWith('redis')) {
-            const redisDriver = this.connectionManager.getRedisDriver(connectionId!);
-            const post = (msg: unknown) => panel.webview.postMessage(msg);
-
-            if (message.type === 'redisExportKeys') {
-              const exportMsg = message as { keys: readonly string[]; database: number };
-              try {
-                const result = await exportRedisKeys(redisDriver, exportMsg.database, exportMsg.keys);
-                if (result.errors.length > 0) {
-                  vscode.window.showWarningMessage(`Export completed with errors: ${result.errors.join('; ')}`);
-                }
-                const uri = await vscode.window.showSaveDialog({
-                  filters: { 'JSON Files': ['json'] },
-                  defaultUri: vscode.Uri.file(`redis-export-db${exportMsg.database}.json`),
-                });
-                if (uri) {
-                  await vscode.workspace.fs.writeFile(uri, Buffer.from(result.json, 'utf-8'));
-                  vscode.window.showInformationMessage(`Exported ${result.keyCount} key(s) to ${uri.fsPath}`);
-                }
-              } catch (e) {
-                const msg = e instanceof Error ? e.message : String(e);
-                vscode.window.showErrorMessage(`Export failed: ${msg}`);
-              }
-              return;
-            }
-
-            if (message.type === 'redisImport') {
-              const importMsg = message as { database: number };
-              try {
-                const fileUris = await vscode.window.showOpenDialog({
-                  filters: { 'JSON Files': ['json'] },
-                  canSelectMany: false,
-                });
-                if (!fileUris || fileUris.length === 0) { return; }
-                const content = Buffer.from(await vscode.workspace.fs.readFile(fileUris[0])).toString('utf-8');
-                const parsed = JSON.parse(content) as { keys?: unknown[] };
-                const keyCount = Array.isArray(parsed.keys) ? parsed.keys.length : 0;
-                const confirm = await vscode.window.showWarningMessage(
-                  `Import ${keyCount} key(s)? Existing keys will be overwritten.`,
-                  { modal: true },
-                  'Import'
-                );
-                if (confirm !== 'Import') { return; }
-                const result = await importRedisKeys(redisDriver, importMsg.database, content);
-                if (result.errors.length > 0) {
-                  vscode.window.showWarningMessage(`Import completed with errors: ${result.errors.join('; ')}`);
-                }
-                vscode.window.showInformationMessage(`Imported ${result.importedCount} key(s)`);
-                post({ type: 'redisImportResult', success: true, importedCount: result.importedCount });
-              } catch (e) {
-                const msg = e instanceof Error ? e.message : String(e);
-                vscode.window.showErrorMessage(`Import failed: ${msg}`);
-                post({ type: 'redisImportResult', success: false, error: msg });
-              }
-              return;
-            }
-
-            if (message.type === 'redisAddKeyPrompt') {
-              const addMsg = message as { database: number };
-              const key = await vscode.window.showInputBox({
-                prompt: 'Enter new key name',
-                placeHolder: 'e.g. user:1234',
-                validateInput: (v) => v.trim() ? undefined : 'Key name is required',
-              });
-              if (!key?.trim()) { return; }
-              await handleRedisMessage({ type: 'redisSetString', key: key.trim(), value: '', database: addMsg.database }, redisDriver, post);
-              post({ type: 'redisAddKeyResult', key: key.trim() });
-              return;
-            }
-
-            if (message.type === 'redisSetTTLPrompt') {
-              const ttlMsg = message as { key: string; database: number };
-              const input = await vscode.window.showInputBox({
-                prompt: 'Enter TTL in seconds (-1 to remove)',
-                validateInput: (v) => {
-                  if (v.trim() === '') { return 'TTL is required'; }
-                  const n = Number(v);
-                  if (isNaN(n) || !Number.isInteger(n)) { return 'Must be an integer'; }
-                  if (n < -1) { return 'Must be -1 (remove) or >= 0'; }
-                  return undefined;
-                },
-              });
-              if (input === undefined) { return; }
-              const ttl = Number(input);
-              if (ttl === -1) {
-                await handleRedisMessage({ type: 'redisRemoveTTL', key: ttlMsg.key, database: ttlMsg.database }, redisDriver, post);
-              } else {
-                await handleRedisMessage({ type: 'redisSetTTL', key: ttlMsg.key, ttl, database: ttlMsg.database }, redisDriver, post);
-              }
-              return;
-            }
-
-            if (message.type === 'redisDeleteKeys') {
-              const keyList = (message as { keys: string[] }).keys;
-              const label = keyList.length === 1
-                ? `Delete key "${keyList[0]}"?`
-                : `Delete ${keyList.length} keys?`;
-              const confirm = await vscode.window.showWarningMessage(label, { modal: true }, 'Delete');
-              if (confirm !== 'Delete') { return; }
-            }
-
-            if (message.type === 'redisHashDelete') {
-              const field = (message as { field: string }).field;
-              const confirm = await vscode.window.showWarningMessage(
-                `Delete field "${field}"?`, { modal: true }, 'Delete'
-              );
-              if (confirm !== 'Delete') { return; }
-            }
-
-            if (message.type === 'redisSetRemove') {
-              const member = (message as { member: string }).member;
-              const confirm = await vscode.window.showWarningMessage(
-                `Remove member "${member}"?`, { modal: true }, 'Delete'
-              );
-              if (confirm !== 'Delete') { return; }
-            }
-
-            if (message.type === 'redisListRemove') {
-              const idx = (message as { index: number }).index;
-              const confirm = await vscode.window.showWarningMessage(
-                `Delete list item at index ${idx}?`,
-                { modal: true }, 'Delete'
-              );
-              if (confirm !== 'Delete') { return; }
-            }
-
-            if (message.type === 'redisZSetRemove') {
-              const member = (message as { member: string }).member;
-              const confirm = await vscode.window.showWarningMessage(
-                `Remove member "${member}"?`, { modal: true }, 'Delete'
-              );
-              if (confirm !== 'Delete') { return; }
-            }
-
-            await handleRedisMessage(message, redisDriver, post);
+            await handleRedisMessage(message, this.connectionManager.getRedisDriver(connectionId!), post);
             return;
           }
           break;
@@ -617,98 +362,56 @@ export class TableViewProvider implements vscode.Disposable {
     } catch (err) {
       // 脱敏: 过滤可能包含凭证的 URL 格式错误消息 (单一实现见 utils/sanitize-error)
       // (SQL 路径的特定回执 queryResult/batchUpdateResult 已在 sql-message-handler 内自管)
-      panel.webview.postMessage({ type: 'error', message: sanitizeErrorMessage(err) });
+      post({ type: 'error', message: sanitizeErrorMessage(err) });
     }
   }
 
-  // schema 读取 + 缓存 (供 sql-message-handler 的 requestSchema/refreshSchema 调用)
-  private async getCachedSchema(
+  // 库结构 (表名 -> 列) 读取 + 缓存, 供自动补全与 Ask AI; forceRefresh 对应 Refresh Schema. 查询失败不缓存
+  private getCachedSchema(
     connectionId: string,
     database: string,
     forceRefresh: boolean
-  ): Promise<Record<string, string[]>> {
-    const key = `${connectionId}:${database}`;
-    if (forceRefresh) {
-      this.schemaCache.delete(key);
-    }
-    const cached = this.schemaCache.get(key);
-    if (cached && Date.now() - cached.ts < this.SCHEMA_CACHE_TTL) {
+  ): Promise<Record<string, SchemaColumn[]>> {
+    const driver = this.connectionManager.getDriver(connectionId);
+    const byDatabase = this.schemaCache.get(driver) ?? new Map();
+    this.schemaCache.set(driver, byDatabase);
+    const cached = byDatabase.get(database);
+    if (cached && !forceRefresh && Date.now() - cached.ts < this.SCHEMA_CACHE_TTL) {
       return cached.schema;
     }
-    const schema = await this.fetchSchema(connectionId, database);
-    this.schemaCache.set(key, { schema, ts: Date.now() });
-    return schema;
-  }
-
-  private async fetchSchema(connectionId: string, database: string): Promise<Record<string, string[]>> {
-    const driver = this.connectionManager.getDriver(connectionId);
-    const tables = await driver.listTables(database);
-    const schema: Record<string, string[]> = {};
-    // 并行获取列信息, 每批 10 个避免连接池压力
-    const CHUNK_SIZE = 10;
-    for (let i = 0; i < tables.length; i += CHUNK_SIZE) {
-      const chunk = tables.slice(i, i + CHUNK_SIZE);
-      const results = await Promise.all(
-        chunk.map((t) => driver.listColumns(database, t.name))
-      );
-      for (let j = 0; j < chunk.length; j++) {
-        schema[chunk[j].name] = results[j].map((c) => c.name);
-      }
-    }
-    return schema;
+    const entry = { schema: fetchSchema(driver, database), ts: Date.now() };
+    byDatabase.set(database, entry);
+    entry.schema.catch(() => { if (byDatabase.get(database) === entry) { byDatabase.delete(database); } });
+    return entry.schema;
   }
 
   private async testConnection(
-    panel: vscode.WebviewPanel,
-    config: { driverType: DriverType; host: string; port: number; username: string; password: string; database: string; authSource?: string } & ConnectionFormSSH
+    post: (msg: ExtensionMessage) => void,
+    config: { driverType: DriverType; host: string; port: number; username: string; password: string; database: string; authSource?: string } & ConnectionFormSSH,
+    editId?: string
   ): Promise<void> {
-    type TestableDriver = { connect(config: import('../types/connection.js').ConnectionConfig & { readonly password: string }): Promise<void>; disconnect(): Promise<void> };
-    const DRIVER_FACTORIES: Record<string, () => Promise<TestableDriver>> = {
-      mysql: async () => { const { MySQLDriver } = await import('../drivers/mysql-driver.js'); return new MySQLDriver(); },
-      postgresql: async () => { const { PgDriver } = await import('../drivers/pg-driver.js'); return new PgDriver(); },
-      redis: async () => { const { RedisDriver } = await import('../drivers/redis-driver.js'); return new RedisDriver(); },
-      kafka: async () => { const { KafkaDriver } = await import('../drivers/kafka-driver.js'); return new KafkaDriver(); },
-      mongodb: async () => { const { MongoDriver } = await import('../drivers/mongo-driver.js'); return new MongoDriver(); },
-      rabbitmq: async () => { const { RabbitMQDriver } = await import('../drivers/rabbitmq-driver.js'); return new RabbitMQDriver(); },
-    };
-    const factory = DRIVER_FACTORIES[config.driverType];
-    if (!factory) { throw new Error(`Unsupported driver type: ${config.driverType}`); }
-    const driver = await factory();
-    let tunnelClose: (() => void) | undefined;
+    let { password, sshPassword } = config;
+    if (editId) {
+      if (!password) { password = (await this.credentialStore.getPassword(editId)) ?? ''; }
+      if (!sshPassword) { sshPassword = (await this.credentialStore.getSSHPassword(editId)) ?? ''; }
+    }
 
     try {
-      let connectHost = config.host;
-      let connectPort = config.port;
-
-      if (config.sshEnabled) {
-        const sshConfig = buildSSHConfig(config)!;
-        const tunnel = await createTunnel(sshConfig, config.sshPassword, config.host, config.port);
-        tunnelClose = tunnel.close;
-        connectHost = '127.0.0.1';
-        connectPort = tunnel.localPort;
-      }
-
-      await driver.connect({
+      const handle = await openDriver({
         id: '__test__',
         name: '__test__',
         driverType: config.driverType,
-        host: connectHost,
-        port: connectPort,
+        host: config.host,
+        port: config.port,
         username: config.username,
-        password: config.password,
         database: config.database,
         authSource: config.authSource,
-      });
-      await driver.disconnect();
-      panel.webview.postMessage({ type: 'connectionTestResult', success: true });
+        ssh: buildSSHConfig(config),
+      }, password, sshPassword);
+      await handle.close();
+      post({ type: 'connectionTestResult', success: true });
     } catch (err) {
-      panel.webview.postMessage({
-        type: 'connectionTestResult',
-        success: false,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    } finally {
-      if (tunnelClose) { tunnelClose(); }
+      post({ type: 'connectionTestResult', success: false, error: sanitizeErrorMessage(err) });
     }
   }
 
@@ -716,8 +419,35 @@ export class TableViewProvider implements vscode.Disposable {
     panel: vscode.WebviewPanel,
     config: SaveConnectionConfig
   ): Promise<void> {
-    const id = `${config.driverType}-${config.host}-${config.port}-${Date.now()}`;
     await this.connectionManager.addConnection(
+      {
+        id: newConnectionId(config),
+        name: config.name,
+        driverType: config.driverType,
+        host: config.host,
+        port: config.port,
+        username: config.username,
+        database: config.database,
+        authSource: config.authSource,
+        separator: config.separator,
+        ssh: buildSSHConfig(config),
+        readOnly: config.readOnly,
+      },
+      config.password,
+      config.sshEnabled ? config.sshPassword : undefined
+    );
+    panel.dispose();
+    vscode.window.showInformationMessage(`Connection "${config.name}" saved`);
+  }
+
+  private async updateExistingConnection(
+    panel: vscode.WebviewPanel,
+    id: string,
+    config: UpdateConnectionConfig
+  ): Promise<void> {
+    const readOnlyChanged = (this.connectionConfig(id)?.readOnly ?? false) !== (config.readOnly ?? false);
+    await this.connectionManager.updateConnection(
+      id,
       {
         id,
         name: config.name,
@@ -729,37 +459,24 @@ export class TableViewProvider implements vscode.Disposable {
         authSource: config.authSource,
         separator: config.separator,
         ssh: buildSSHConfig(config),
+        readOnly: config.readOnly,
       },
-      config.password,
-      config.sshEnabled ? config.sshPassword : undefined
+      // 空串 = 表单没改, 保留已存的值; 关掉 SSH 时 updateConnection 删掉已存的 SSH 密码
+      config.password || undefined,
+      config.sshPassword || undefined
     );
     panel.dispose();
-    vscode.window.showInformationMessage(`Connection "${config.name}" saved`);
+    if (readOnlyChanged) { this.disposeConnectionPanels(id); }
+    vscode.window.showInformationMessage(`Connection "${config.name}" updated`);
   }
 
-  private async updateExistingConnection(
-    panel: vscode.WebviewPanel,
-    config: UpdateConnectionConfig
-  ): Promise<void> {
-    await this.connectionManager.updateConnection(
-      config.id,
-      {
-        id: config.id,
-        name: config.name,
-        driverType: config.driverType,
-        host: config.host,
-        port: config.port,
-        username: config.username,
-        database: config.database,
-        authSource: config.authSource,
-        separator: config.separator,
-        ssh: buildSSHConfig(config),
-      },
-      config.password,
-      config.sshEnabled ? config.sshPassword : undefined
-    );
-    panel.dispose();
-    vscode.window.showInformationMessage(`Connection "${config.name}" updated`);
+  // 只读标题与 webview 的写控件在建 panel 时定下, 切换只读后关掉该连接已开的 panel, 重开时按新配置生成.
+  // panel key 形如 `<kind>:<connectionId>` 或 `<kind>:<connectionId>:...`
+  private disposeConnectionPanels(connectionId: string): void {
+    for (const [key, panel] of [...this.panels]) {
+      const rest = key.slice(key.indexOf(':') + 1);
+      if (rest === connectionId || rest.startsWith(`${connectionId}:`)) { panel.dispose(); }
+    }
   }
 
   dispose(): void {
@@ -767,9 +484,14 @@ export class TableViewProvider implements vscode.Disposable {
       panel.dispose();
     }
     this.panels.clear();
-    this.schemaCache.clear();
-    for (const d of this.disposables) {
-      d.dispose();
-    }
   }
+}
+
+// 一条 information_schema 查询取完整个库的列, 按表分组 (保持表内顺序)
+async function fetchSchema(driver: IDatabaseDriver, database: string): Promise<Record<string, SchemaColumn[]>> {
+  const schema: Record<string, SchemaColumn[]> = {};
+  for (const col of await driver.listSchemaColumns(database)) {
+    (schema[col.table] ??= []).push(col);
+  }
+  return schema;
 }

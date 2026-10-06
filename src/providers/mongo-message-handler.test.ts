@@ -1,704 +1,247 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import * as vscode from 'vscode';
+import { BSON, EJSON, Double, Long } from 'bson';
+// instanceof 断言用 mongodb 包里的类: 被测代码经 mongodb 构造 BSON 值 (vitest 下与直接 import 的 bson 是两份模块)
+import { ObjectId } from 'mongodb';
 import { handleMongoMessage } from './mongo-message-handler';
-import type { IDatabaseDriver } from '../types/driver';
+import type { MongoDriver } from '../drivers/mongo-driver';
 import type { WebviewMessage } from '../types/messages';
 
-function createMockDriver(): IDatabaseDriver {
+const NOT_FOUND = 'document not found (deleted or _id changed)';
+const OID = 'aaaaaaaaaaaaaaaaaaaaaaaa';
+const canonical = (v: unknown): unknown => JSON.parse(EJSON.stringify(v, { relaxed: false }));
+
+function mockMongo() {
   return {
-    driverType: 'mongodb',
-    connect: vi.fn(),
-    disconnect: vi.fn(),
-    isConnected: vi.fn().mockReturnValue(true),
     listDatabases: vi.fn().mockResolvedValue([]),
     listTables: vi.fn().mockResolvedValue([]),
-    listColumns: vi.fn().mockResolvedValue([]),
-    getTableDDL: vi.fn().mockResolvedValue(''),
-    getDetailedColumns: vi.fn().mockResolvedValue([]),
-    execute: vi.fn().mockResolvedValue({ columns: [], rows: [], affectedRows: 0, executionTime: 0 }),
-    executeCancellable: vi.fn().mockReturnValue({
-      promise: Promise.resolve({ columns: [], rows: [], affectedRows: 0, executionTime: 0 }),
-      cancel: vi.fn(),
-    }),
+    findDocumentsForBrowser: vi.fn().mockResolvedValue({ rows: [], columns: [] }),
+    count: vi.fn().mockResolvedValue(0),
+    estimatedCount: vi.fn().mockResolvedValue(0),
+    explainFind: vi.fn(),
+    findOneTyped: vi.fn().mockResolvedValue(null),
+    insertOne: vi.fn().mockResolvedValue(undefined),
+    updateOne: vi.fn().mockResolvedValue(1),
+    deleteOne: vi.fn().mockResolvedValue(1),
+    createCollection: vi.fn(),
+    dropCollection: vi.fn(),
   };
 }
 
 describe('handleMongoMessage', () => {
-  let driver: IDatabaseDriver;
-  let postMessage: ReturnType<typeof vi.fn>;
+  // 各用例自己 spy 的确认框 (showWarningMessage 等) 不带到下一个用例
+  afterEach(() => { vi.restoreAllMocks(); });
+  let mongo: ReturnType<typeof mockMongo>;
+  let post: ReturnType<typeof vi.fn<(msg: unknown) => void>>;
+  const send = (msg: Record<string, unknown>) => handleMongoMessage(msg as unknown as WebviewMessage, mongo as unknown as MongoDriver, post);
 
   beforeEach(() => {
-    driver = createMockDriver();
-    postMessage = vi.fn();
+    mongo = mockMongo();
+    post = vi.fn();
   });
 
   it('非 mongo 消息返回 false', async () => {
-    const msg = { type: 'executeQuery', database: 'test', sql: 'SELECT 1' } as WebviewMessage;
-    const handled = await handleMongoMessage(msg, driver, postMessage);
-    expect(handled).toBe(false);
-    expect(postMessage).not.toHaveBeenCalled();
+    expect(await send({ type: 'executeQuery', database: 'test', sql: 'SELECT 1' })).toBe(false);
+    expect(post).not.toHaveBeenCalled();
   });
 
-  describe('mongoListDatabases', () => {
-    it('调用 driver.listDatabases, 返回 mongoDatabaseList', async () => {
-      const databases = ['admin', 'test', 'mydb'];
-      (driver.listDatabases as any).mockResolvedValue(databases);
-
-      const msg = { type: 'mongoListDatabases' } as WebviewMessage;
-      const handled = await handleMongoMessage(msg, driver, postMessage);
-
-      expect(handled).toBe(true);
-      expect(driver.listDatabases).toHaveBeenCalledTimes(1);
-      expect(postMessage).toHaveBeenCalledWith({
-        type: 'mongoDatabaseList',
-        databases,
-      });
-    });
-  });
-
-  describe('mongoListAllCollections', () => {
-    it('遍历所有 database 获取 collections', async () => {
-      (driver.listDatabases as any).mockResolvedValue(['db1', 'db2']);
-      (driver.listTables as any)
-        .mockResolvedValueOnce([{ name: 'users', schema: '', rowCount: 100 }])
-        .mockResolvedValueOnce([
-          { name: 'orders', schema: '', rowCount: 50 },
-          { name: 'products', schema: '', rowCount: 0 },
-        ]);
-
-      const msg = { type: 'mongoListAllCollections' } as WebviewMessage;
-      const handled = await handleMongoMessage(msg, driver, postMessage);
-
-      expect(handled).toBe(true);
-      expect(driver.listTables).toHaveBeenCalledWith('db1');
-      expect(driver.listTables).toHaveBeenCalledWith('db2');
-      expect(postMessage).toHaveBeenCalledWith({
-        type: 'mongoAllCollectionList',
-        collections: [
-          { database: 'db1', name: 'users', count: 100 },
-          { database: 'db2', name: 'orders', count: 50 },
-          { database: 'db2', name: 'products', count: 0 },
-        ],
-      });
-    });
-
-    it('rowCount 为 undefined 时用 0', async () => {
-      (driver.listDatabases as any).mockResolvedValue(['db1']);
-      (driver.listTables as any).mockResolvedValue([
-        { name: 'col1', schema: '', rowCount: undefined },
-      ]);
-
-      const msg = { type: 'mongoListAllCollections' } as WebviewMessage;
-      await handleMongoMessage(msg, driver, postMessage);
-
-      expect(postMessage).toHaveBeenCalledWith({
-        type: 'mongoAllCollectionList',
-        collections: [{ database: 'db1', name: 'col1', count: 0 }],
-      });
-    });
-  });
-
-  describe('mongoListCollections', () => {
-    it('调用 driver.listTables, 返回 mongoCollectionList', async () => {
-      (driver.listTables as any).mockResolvedValue([
-        { name: 'users', schema: '', rowCount: 42 },
-        { name: 'posts', schema: '', rowCount: 0 },
-      ]);
-
-      const msg = { type: 'mongoListCollections', database: 'mydb' } as WebviewMessage;
-      const handled = await handleMongoMessage(msg, driver, postMessage);
-
-      expect(handled).toBe(true);
-      expect(driver.listTables).toHaveBeenCalledWith('mydb');
-      expect(postMessage).toHaveBeenCalledWith({
-        type: 'mongoCollectionList',
-        collections: [
-          { name: 'users', count: 42 },
-          { name: 'posts', count: 0 },
-        ],
-      });
+  it('mongoListAllCollections: 遍历所有 database 汇总 collections', async () => {
+    mongo.listDatabases.mockResolvedValue(['db1', 'db2']);
+    mongo.listTables
+      .mockResolvedValueOnce([{ name: 'users', schema: '', rowCount: 100 }])
+      .mockResolvedValueOnce([{ name: 'orders', schema: '', rowCount: undefined }]);
+    await send({ type: 'mongoListAllCollections' });
+    expect(post).toHaveBeenCalledWith({
+      type: 'mongoAllCollectionList',
+      collections: [
+        { database: 'db1', name: 'users', count: 100 },
+        { database: 'db2', name: 'orders', count: 0 },
+      ],
     });
   });
 
   describe('mongoFindDocuments', () => {
-    it('正常路径: 构建 aggregate pipeline 并返回结果', async () => {
-      const docsResult = {
-        columns: [{ name: '_id', dataType: 'string', nullable: false, isPrimaryKey: true, defaultValue: null, extra: '' }],
-        rows: [{ _id: '1', name: 'Alice' }],
-      };
-      const countResult = {
-        columns: [],
-        rows: [{ count: 1 }],
-        affectedRows: 0,
-        executionTime: 5,
-      };
+    const find = { type: 'mongoFindDocuments', requestId: 3, database: 'db', sort: '', projection: '', skip: 0, limit: 20, count: true };
 
-      // 文档通过 findDocumentsForBrowser 获取, count 仍走 executeCancellable
-      (driver as any).findDocumentsForBrowser = vi.fn().mockResolvedValue(docsResult);
-      (driver.executeCancellable as any).mockReturnValue({
-        promise: Promise.resolve(countResult),
-        cancel: vi.fn(),
-      });
-
-      const msg = {
-        type: 'mongoFindDocuments',
-        database: 'mydb',
-        collection: 'users',
-        filter: '',
-        sort: '',
-        projection: undefined,
-        skip: 0,
-        limit: 20,
-      } as WebviewMessage;
-
-      const handled = await handleMongoMessage(msg, driver, postMessage);
-
-      expect(handled).toBe(true);
-      expect(postMessage).toHaveBeenCalledWith({
-        type: 'mongoDocumentList',
-        columns: docsResult.columns,
-        rows: docsResult.rows,
-        total: 1,
-      });
+    it('集合名与 filter 作为数据传给 driver: 数字开头 / 中文集合名也能浏览; 总数另发一条回执', async () => {
+      mongo.findDocumentsForBrowser.mockResolvedValue({ rows: [{ _id: 'x' }], columns: [] });
+      mongo.count.mockResolvedValue(7);
+      await send({ ...find, collection: '2024日志', filter: `{"_id": "${OID}", "uid": 9007199254740993}` });
+      expect(mongo.findDocumentsForBrowser).toHaveBeenCalledWith('db', '2024日志', expect.any(Array));
+      const [, coll, filter, options] = mongo.count.mock.calls[0];
+      expect(coll).toBe('2024日志');
+      expect(options).toEqual({ maxTimeMS: 15000 });
+      // 手写 filter 的裸 24-hex _id 自动转 ObjectId; 超过 2^53 的整数按 Long, 不被舍入
+      expect(filter._id).toBeInstanceOf(ObjectId);
+      expect(String(filter.uid)).toBe('9007199254740993');
+      expect(post.mock.calls).toEqual([
+        [{ type: 'mongoDocumentList', requestId: 3, columns: [], rows: [{ _id: 'x' }] }],
+        [{ type: 'mongoDocumentCount', requestId: 3, total: 7 }],
+      ]);
     });
 
-    it('driver 抛错时返回 error', async () => {
-      // findDocumentsForBrowser 抛错时 catch 块捕获并返回 error
-      (driver as any).findDocumentsForBrowser = vi.fn().mockRejectedValue(new Error('aggregation failed'));
-
-      const msg = {
-        type: 'mongoFindDocuments',
-        database: 'mydb',
-        collection: 'users',
-        filter: '',
-        sort: '',
-        skip: 0,
-        limit: 20,
-      } as WebviewMessage;
-
-      const handled = await handleMongoMessage(msg, driver, postMessage);
-
-      expect(handled).toBe(true);
-      expect(postMessage).toHaveBeenCalledWith({
-        type: 'mongoDocumentList',
-        columns: [],
-        rows: [],
-        total: 0,
-        error: 'aggregation failed',
-      });
+    it('空 filter 用 estimatedDocumentCount, 不跑 countDocuments', async () => {
+      mongo.estimatedCount.mockResolvedValue(1000000);
+      await send({ ...find, collection: 'users', filter: ' {} ' });
+      expect(mongo.count).not.toHaveBeenCalled();
+      expect(mongo.estimatedCount).toHaveBeenCalledWith('db', 'users', { maxTimeMS: 15000 });
+      expect(post).toHaveBeenLastCalledWith({ type: 'mongoDocumentCount', requestId: 3, total: 1000000 });
     });
 
-    it('countResult 为空 rows 时 total = 0', async () => {
-      // findDocumentsForBrowser 返回空 rows, executeCancellable 处理 count 返回空
-      (driver as any).findDocumentsForBrowser = vi.fn().mockResolvedValue({ columns: [], rows: [] });
-      (driver.executeCancellable as any).mockReturnValue({
-        promise: Promise.resolve({ columns: [], rows: [], affectedRows: 0, executionTime: 0 }),
-        cancel: vi.fn(),
-      });
-
-      const msg = {
-        type: 'mongoFindDocuments',
-        database: 'mydb',
-        collection: 'users',
-        filter: '',
-        sort: '',
-        skip: 0,
-        limit: 20,
-      } as WebviewMessage;
-
-      await handleMongoMessage(msg, driver, postMessage);
-
-      expect(postMessage).toHaveBeenCalledWith(
-        expect.objectContaining({ total: 0 })
-      );
-    });
-  });
-
-  describe('mongoInsertDocument', () => {
-    it('正常路径: 调用 executeCancellable 返回 success', async () => {
-      const msg = {
-        type: 'mongoInsertDocument',
-        database: 'mydb',
-        collection: 'users',
-        document: { name: 'Bob', age: 25 },
-      } as WebviewMessage;
-
-      const handled = await handleMongoMessage(msg, driver, postMessage);
-
-      expect(handled).toBe(true);
-      expect(driver.executeCancellable).toHaveBeenCalled();
-      expect(postMessage).toHaveBeenCalledWith({
-        type: 'mongoOperationResult',
-        success: true,
-      });
+    it('count=false (翻页 / 刷新) 不计数', async () => {
+      await send({ ...find, collection: 'users', filter: '{"a": 1}', count: false });
+      expect(mongo.count).not.toHaveBeenCalled();
+      expect(mongo.estimatedCount).not.toHaveBeenCalled();
+      expect(post.mock.calls.map(([m]) => (m as { type: string }).type)).toEqual(['mongoDocumentList']);
     });
 
-    it('driver 抛错时返回 success: false + error', async () => {
-      (driver.executeCancellable as any).mockReturnValue({
-        promise: Promise.reject(new Error('insert failed')),
-        cancel: vi.fn(),
-      });
+    it('慢 count 不拖住文档; count 失败或超时回 total=null, 文档照常', async () => {
+      let rejectCount!: (e: Error) => void;
+      mongo.count.mockReturnValue(new Promise((_, reject) => { rejectCount = reject; }));
+      const done = send({ ...find, collection: 'users', filter: '{"a": 1}' });
+      await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ type: 'mongoDocumentList', requestId: 3, columns: [], rows: [] }));
+      expect(post).toHaveBeenCalledTimes(1);
+      rejectCount(Object.assign(new Error('operation exceeded time limit'), { code: 50 }));
+      await done;
+      expect(post).toHaveBeenLastCalledWith({ type: 'mongoDocumentCount', requestId: 3, total: null });
+    });
 
-      const msg = {
-        type: 'mongoInsertDocument',
-        database: 'mydb',
-        collection: 'users',
-        document: { name: 'Bob' },
-      } as WebviewMessage;
-
-      await handleMongoMessage(msg, driver, postMessage);
-
-      expect(postMessage).toHaveBeenCalledWith({
-        type: 'mongoOperationResult',
-        success: false,
-        error: 'insert failed',
-      });
+    it('driver 抛错时回带 requestId 与 error, 不发总数', async () => {
+      mongo.findDocumentsForBrowser.mockRejectedValue(new Error('aggregation failed'));
+      await send({ ...find, collection: 'users', filter: '{"a": 1}' });
+      expect(post.mock.calls).toEqual([[{ type: 'mongoDocumentList', requestId: 3, columns: [], rows: [], error: 'aggregation failed' }]]);
     });
   });
 
   describe('mongoUpdateDocument', () => {
-    // id 字段携带 _id 的 shell 形式 (idToShell 产出), 经 convertShellToJson 还原类型
+    const base = { type: 'mongoUpdateDocument', database: 'db', collection: 'users', id: { $oid: OID } };
+    // 浏览时 Long / Double 已被 promote 成 JS number
+    const shown = { gold: 1000, rate: 2, name: 'a' };
+    const stored = BSON.deserialize(BSON.serialize({
+      _id: new ObjectId(OID), gold: Long.fromNumber(1000), rate: new Double(2), name: 'a',
+    }), { promoteValues: false });
 
-    function mockAffected(n: number) {
-      (driver.executeCancellable as any).mockReturnValue({
-        promise: Promise.resolve({ columns: [], rows: [], affectedRows: n, executionTime: 0 }),
-        cancel: vi.fn(),
-      });
-    }
-
-    it('用 replaceOne 整文档替换 (删字段生效), 命中返回 success + affectedRows', async () => {
-      mockAffected(1);
-      const msg = {
-        type: 'mongoUpdateDocument',
-        database: 'mydb',
-        collection: 'users',
-        id: '"abc123"',
-        document: { name: 'Updated' },
-      } as WebviewMessage;
-
-      const handled = await handleMongoMessage(msg, driver, postMessage);
-
-      expect(handled).toBe(true);
-      expect(driver.executeCancellable).toHaveBeenCalledWith(
-        expect.stringContaining('replaceOne'),
-        undefined,
-        'mydb',
-        { autoConvertIds: false },
-      );
-      expect(postMessage).toHaveBeenCalledWith({
-        type: 'mongoOperationResult',
-        success: true,
-        affectedRows: 1,
-      });
+    it('没有改动: 不读不写, 回 No changes', async () => {
+      await send({ ...base, original: shown, document: { ...shown } });
+      expect(mongo.findOneTyped).not.toHaveBeenCalled();
+      expect(mongo.updateOne).not.toHaveBeenCalled();
+      expect(post).toHaveBeenCalledWith({ type: 'mongoOperationResult', success: true, affectedRows: 0, message: 'No changes' });
     });
 
-    it('ObjectId shell _id 还原为 EJSON $oid (保留类型)', async () => {
-      mockAffected(1);
-      const msg = {
-        type: 'mongoUpdateDocument',
-        database: 'mydb',
-        collection: 'users',
-        id: 'ObjectId("507f1f77bcf86cd799439011")',
-        document: { name: 'X' },
-      } as WebviewMessage;
-
-      await handleMongoMessage(msg, driver, postMessage);
-
-      const query = (driver.executeCancellable as any).mock.calls[0][0] as string;
-      expect(query).toContain('{"_id":{"$oid":"507f1f77bcf86cd799439011"}}');
+    it('updateOne 只 $set 改过的字段, 数值沿用库内原类型; _id 按 EJSON 还原', async () => {
+      mongo.findOneTyped.mockResolvedValue(stored);
+      await send({ ...base, original: shown, document: { ...shown, gold: 2000 } });
+      const [db, coll, filter, update] = mongo.updateOne.mock.calls[0];
+      expect([db, coll]).toEqual(['db', 'users']);
+      expect(canonical(filter)).toEqual({ _id: { $oid: OID } });
+      expect(canonical(update)).toEqual({ $set: { gold: { $numberLong: '2000' } } });
+      expect(post).toHaveBeenCalledWith({ type: 'mongoOperationResult', success: true, affectedRows: 1 });
     });
 
-    it('数字 _id 不被当字符串 (保留数值类型)', async () => {
-      mockAffected(1);
-      const msg = {
-        type: 'mongoUpdateDocument',
-        database: 'mydb',
-        collection: 'users',
-        id: '1102025811',
-        document: { name: 'X' },
-      } as WebviewMessage;
+    it('projection 下编辑: 只 $set 改过的 path, 没投影出来的字段不 $unset', async () => {
+      // Projection {"name": 1, "bag": 1}: 编辑器只看到 name 与整个 bag, 库里还有 rate / gold
+      mongo.findOneTyped.mockResolvedValue(BSON.deserialize(BSON.serialize({
+        _id: new ObjectId(OID), name: 'a', rate: new Double(2), gold: Long.fromNumber(1000), bag: { gold: 5, items: [1, 2] },
+      }), { promoteValues: false }));
+      const projected = { name: 'a', bag: { gold: 5, items: [1, 2] } };
+      await send({ ...base, original: projected, document: { name: 'b', bag: { gold: 5, items: [1, 2] } } });
+      expect(canonical(mongo.updateOne.mock.calls[0][3])).toEqual({ $set: { name: 'b' } });
 
-      await handleMongoMessage(msg, driver, postMessage);
-
-      const query = (driver.executeCancellable as any).mock.calls[0][0] as string;
-      expect(query).toContain('{"_id":1102025811}');
-      expect(query).not.toContain('{"_id":"1102025811"}');
+      await send({ ...base, original: projected, document: { name: 'a', bag: { gold: 6, items: [1, 2] } } });
+      expect(canonical(mongo.updateOne.mock.calls[1][3])).toEqual({ $set: { 'bag.gold': { $numberInt: '6' } } });
     });
 
-    it('未匹配 (affectedRows=0) -> success:false + 提示, 不静默成功', async () => {
-      mockAffected(0);
-      const msg = {
-        type: 'mongoUpdateDocument',
-        database: 'mydb',
-        collection: 'users',
-        id: '999',
-        document: { name: 'X' },
-      } as WebviewMessage;
+    it('复合 _id 内的 ObjectId / Date 按真实类型进 filter; 24-hex 字符串 _id 不被转成 ObjectId', async () => {
+      mongo.findOneTyped.mockResolvedValue(stored);
+      await send({ ...base, id: { uid: { $oid: OID }, day: { $date: '2024-01-15T00:00:00.000Z' } }, original: shown, document: { ...shown, name: 'b' } });
+      const filter = mongo.findOneTyped.mock.calls[0][2];
+      expect(filter._id.uid).toBeInstanceOf(ObjectId);
+      expect(filter._id.day).toBeInstanceOf(Date);
 
-      await handleMongoMessage(msg, driver, postMessage);
-
-      const posted = postMessage.mock.calls[0][0];
-      expect(posted.type).toBe('mongoOperationResult');
-      expect(posted.success).toBe(false);
-      expect(posted.error).toMatch(/_id/);
+      await send({ ...base, id: OID, original: shown, document: { ...shown, name: 'c' } });
+      expect(mongo.updateOne.mock.calls[1][2]).toEqual({ _id: OID });
     });
 
-    it('driver 抛错时返回 error', async () => {
-      (driver.executeCancellable as any).mockReturnValue({
-        promise: Promise.reject(new Error('update failed')),
-        cancel: vi.fn(),
-      });
+    it('文档已不存在 (重读为空或 matchedCount 0) -> 报 not found', async () => {
+      await send({ ...base, original: shown, document: { ...shown, name: 'b' } });
+      expect(mongo.updateOne).not.toHaveBeenCalled();
+      mongo.findOneTyped.mockResolvedValue(stored);
+      mongo.updateOne.mockResolvedValue(0);
+      await send({ ...base, original: shown, document: { ...shown, name: 'b' } });
+      expect(post).toHaveBeenNthCalledWith(1, { type: 'mongoOperationResult', success: false, error: NOT_FOUND });
+      expect(post).toHaveBeenNthCalledWith(2, { type: 'mongoOperationResult', success: false, error: NOT_FOUND });
+    });
 
-      const msg = {
-        type: 'mongoUpdateDocument',
-        database: 'mydb',
-        collection: 'users',
-        id: '"abc123"',
-        document: { name: 'Bad' },
-      } as WebviewMessage;
-
-      await handleMongoMessage(msg, driver, postMessage);
-
-      expect(postMessage).toHaveBeenCalledWith({
-        type: 'mongoOperationResult',
-        success: false,
-        error: 'update failed',
-      });
+    it('改到不能按 path 写的字段名 -> 报错, 不写库', async () => {
+      await send({ ...base, original: { 'a.b': 1 }, document: { 'a.b': 2 } });
+      expect(mongo.updateOne).not.toHaveBeenCalled();
+      expect(post).toHaveBeenCalledWith(expect.objectContaining({ success: false, error: expect.stringMatching(/cannot be updated by path/) }));
     });
   });
 
-  describe('mongoUpdateField (单元格原地编辑, 局部 $set)', () => {
-    function mockAffected(n: number) {
-      (driver.executeCancellable as any).mockReturnValue({
-        promise: Promise.resolve({ columns: [], rows: [], affectedRows: n, executionTime: 0 }),
-        cancel: vi.fn(),
-      });
-    }
+  describe('mongoCloneDocument', () => {
+    const seed = { _id: { $oid: OID }, gold: 1000, name: 'a' };
+    const base = { type: 'mongoCloneDocument', database: 'db', collection: 'users', sourceId: { $oid: OID }, original: seed };
 
-    it('构建 updateOne + $set dotted path, _id 走 EJSON 保留类型', async () => {
-      mockAffected(1);
-      const msg = {
-        type: 'mongoUpdateField',
-        database: 'mydb',
-        collection: 'users',
-        id: 'ObjectId("507f1f77bcf86cd799439011")',
-        path: 'bind.aid',
-        value: 'w-9',
-      } as WebviewMessage;
-
-      await handleMongoMessage(msg, driver, postMessage);
-
-      const query = (driver.executeCancellable as any).mock.calls[0][0] as string;
-      expect(query).toContain('updateOne');
-      expect(query).toContain('{"_id":{"$oid":"507f1f77bcf86cd799439011"}}');
-      expect(query).toContain('{"$set":{"bind.aid":"w-9"}}');
-      // CRUD filter 已显式带类型, 须跳过 24-hex autoConvert (review GAP2)
-      expect((driver.executeCancellable as any).mock.calls[0][3]).toEqual({ autoConvertIds: false });
-      expect(postMessage).toHaveBeenCalledWith({
-        type: 'mongoOperationResult',
-        success: true,
-        affectedRows: 1,
-      });
+    it('按 sourceId 重读源文档, 套用改动, 换新 _id 后插入', async () => {
+      mongo.findOneTyped.mockResolvedValue(BSON.deserialize(BSON.serialize({ _id: new ObjectId(OID), gold: Long.fromNumber(1000), name: 'a' }), { promoteValues: false }));
+      await send({ ...base, document: { ...seed, name: 'copy' } });
+      const inserted = canonical(mongo.insertOne.mock.calls[0][2]) as Record<string, unknown>;
+      expect(inserted._id).not.toEqual({ $oid: OID });
+      expect(inserted).toEqual({ _id: inserted._id, gold: { $numberLong: '1000' }, name: 'copy' });
+      expect(post).toHaveBeenCalledWith({ type: 'mongoOperationResult', success: true, affectedRows: 1 });
     });
 
-    it('数字值不加引号 (保留类型)', async () => {
-      mockAffected(1);
-      const msg = {
-        type: 'mongoUpdateField',
-        database: 'd',
-        collection: 'c',
-        id: '1',
-        path: 'age',
-        value: 30,
-      } as WebviewMessage;
-
-      await handleMongoMessage(msg, driver, postMessage);
-
-      const query = (driver.executeCancellable as any).mock.calls[0][0] as string;
-      expect(query).toContain('{"$set":{"age":30}}');
+    it('projection 下 Clone: 没投影出来的字段取自重读的源文档, 不丢', async () => {
+      mongo.findOneTyped.mockResolvedValue(BSON.deserialize(BSON.serialize({ _id: new ObjectId(OID), gold: Long.fromNumber(1000), name: 'a' }), { promoteValues: false }));
+      const projectedSeed = { _id: { $oid: OID }, name: 'a' };
+      await send({ ...base, original: projectedSeed, document: { ...projectedSeed, name: 'copy' } });
+      const inserted = canonical(mongo.insertOne.mock.calls[0][2]) as Record<string, unknown>;
+      expect(inserted).toEqual({ _id: inserted._id, gold: { $numberLong: '1000' }, name: 'copy' });
     });
 
-    it('未匹配 (affectedRows=0) -> success:false', async () => {
-      mockAffected(0);
-      const msg = {
-        type: 'mongoUpdateField',
-        database: 'd',
-        collection: 'c',
-        id: '"abc"',
-        path: 'name',
-        value: 'x',
-      } as WebviewMessage;
-
-      await handleMongoMessage(msg, driver, postMessage);
-      const posted = postMessage.mock.calls[0][0];
-      expect(posted.success).toBe(false);
-    });
-
-    it('拒绝 $ 前缀 / __proto__ 等危险 path, 不执行更新 — L2', async () => {
-      mockAffected(1);
-      for (const path of ['$where', '__proto__', 'a.__proto__.b', 'constructor', '$set']) {
-        (driver.executeCancellable as any).mockClear();
-        postMessage.mockClear();
-        const msg = {
-          type: 'mongoUpdateField', database: 'd', collection: 'c', id: '"a"', path, value: 1,
-        } as WebviewMessage;
-        await handleMongoMessage(msg, driver, postMessage);
-        expect(driver.executeCancellable).not.toHaveBeenCalled();
-        expect(postMessage.mock.calls[0][0].success).toBe(false);
-      }
+    it('源文档已不存在 -> 报 not found, 不插入', async () => {
+      await send({ ...base, document: seed });
+      expect(mongo.insertOne).not.toHaveBeenCalled();
+      expect(post).toHaveBeenCalledWith({ type: 'mongoOperationResult', success: false, error: NOT_FOUND });
     });
   });
 
-  describe('mongoDeleteDocument', () => {
-    function mockAffected(n: number) {
-      (driver.executeCancellable as any).mockReturnValue({
-        promise: Promise.resolve({ columns: [], rows: [], affectedRows: n, executionTime: 0 }),
-        cancel: vi.fn(),
-      });
-    }
-
-    it('用 deleteOne, 命中返回 success', async () => {
-      mockAffected(1);
-      const msg = {
-        type: 'mongoDeleteDocument',
-        database: 'mydb',
-        collection: 'users',
-        id: 'ObjectId("507f1f77bcf86cd799439011")',
-      } as WebviewMessage;
-
-      const handled = await handleMongoMessage(msg, driver, postMessage);
-
-      expect(handled).toBe(true);
-      const query = (driver.executeCancellable as any).mock.calls[0][0] as string;
-      expect(query).toContain('deleteOne');
-      expect(query).toContain('{"_id":{"$oid":"507f1f77bcf86cd799439011"}}');
-      expect((driver.executeCancellable as any).mock.calls[0][3]).toEqual({ autoConvertIds: false });
-      expect(postMessage).toHaveBeenCalledWith({
-        type: 'mongoOperationResult',
-        success: true,
-        affectedRows: 1,
-      });
-    });
-
-    it('未匹配 (affectedRows=0) -> success:false', async () => {
-      mockAffected(0);
-      const msg = {
-        type: 'mongoDeleteDocument',
-        database: 'mydb',
-        collection: 'users',
-        id: '999',
-      } as WebviewMessage;
-
-      await handleMongoMessage(msg, driver, postMessage);
-
-      const posted = postMessage.mock.calls[0][0];
-      expect(posted.success).toBe(false);
-      expect(posted.error).toMatch(/_id/);
-    });
-
-    it('driver 抛错时返回 error', async () => {
-      (driver.executeCancellable as any).mockReturnValue({
-        promise: Promise.reject(new Error('delete failed')),
-        cancel: vi.fn(),
-      });
-
-      const msg = {
-        type: 'mongoDeleteDocument',
-        database: 'mydb',
-        collection: 'users',
-        id: '"abc123"',
-      } as WebviewMessage;
-
-      await handleMongoMessage(msg, driver, postMessage);
-
-      expect(postMessage).toHaveBeenCalledWith({
-        type: 'mongoOperationResult',
-        success: false,
-        error: 'delete failed',
-      });
-    });
+  it('mongoInsertDocument: EJSON 还原成 BSON 后插入', async () => {
+    await send({ type: 'mongoInsertDocument', database: 'db', collection: 'users', document: { n: { $numberLong: '5' } } });
+    expect(canonical(mongo.insertOne.mock.calls[0][2])).toEqual({ n: { $numberLong: '5' } });
+    expect(post).toHaveBeenCalledWith({ type: 'mongoOperationResult', success: true, affectedRows: 1 });
   });
 
-  describe('mongoFindDocuments 深取数', () => {
-    it('用 findDocumentsForBrowser 的嵌套 rows 发 mongoDocumentList', async () => {
-      const posted: any[] = [];
-      const driver: any = {
-        findDocumentsForBrowser: vi.fn().mockResolvedValue({
-          rows: [{ _id: 'ObjectId("c")', bind: { aid: 'w-1' } }],
-          columns: [{ name: '_id', dataType: 'ObjectId', nullable: false, isPrimaryKey: true, defaultValue: null, extra: '' }],
-        }),
-        executeCancellable: vi.fn().mockReturnValue({
-          promise: Promise.resolve({ columns: [], rows: [{ count: 1 }], affectedRows: 0, executionTime: 0 }),
-          cancel: vi.fn(),
-        }),
-      };
+  it('mongoDeleteDocument: 先在宿主确认, 取消不删; 按 EJSON _id 删除, 没删到报 not found', async () => {
+    const warn = vi.spyOn(vscode.window, 'showWarningMessage').mockResolvedValue(undefined as never);
+    await send({ type: 'mongoDeleteDocument', database: 'db', collection: 'users', id: 'x' });
+    expect(mongo.deleteOne).not.toHaveBeenCalled();
+    expect(post).not.toHaveBeenCalled();
 
-      await handleMongoMessage(
-        { type: 'mongoFindDocuments', database: 'db', collection: 'coll', filter: '', sort: '', projection: '', skip: 0, limit: 50 } as any,
-        driver,
-        (m) => posted.push(m),
-      );
-
-      expect(driver.findDocumentsForBrowser).toHaveBeenCalledWith('db', 'coll', expect.any(Array));
-      const list = posted.find((m) => m.type === 'mongoDocumentList');
-      expect(list.rows[0].bind).toEqual({ aid: 'w-1' });
-      expect(list.total).toBe(1);
-    });
+    warn.mockResolvedValue('Delete' as never);
+    await send({ type: 'mongoDeleteDocument', database: 'db', collection: 'users', id: { $numberLong: '42' } });
+    expect(canonical(mongo.deleteOne.mock.calls[0][2])).toEqual({ _id: { $numberLong: '42' } });
+    mongo.deleteOne.mockResolvedValue(0);
+    await send({ type: 'mongoDeleteDocument', database: 'db', collection: 'users', id: 'x' });
+    expect(post).toHaveBeenLastCalledWith({ type: 'mongoOperationResult', success: false, error: NOT_FOUND });
   });
 
   describe('mongoExplainQuery', () => {
-    it('调用 driver.explainFind 并返回 mongoExplainResult', async () => {
-      const summary = { stage: 'COLLSCAN', docsExamined: 100, keysExamined: 0, nReturned: 3, executionTimeMillis: 5, isCollScan: true };
-      (driver as any).explainFind = vi.fn().mockResolvedValue(summary);
-
-      const msg = {
-        type: 'mongoExplainQuery',
-        database: 'mydb',
-        collection: 'users',
-        filter: '{"age": {"$gt": 18}}',
-        sort: '',
-      } as WebviewMessage;
-
-      const handled = await handleMongoMessage(msg, driver, postMessage);
-
-      expect(handled).toBe(true);
-      expect((driver as any).explainFind).toHaveBeenCalledWith('mydb', 'users', { age: { $gt: 18 } }, undefined);
-      expect(postMessage).toHaveBeenCalledWith({ type: 'mongoExplainResult', summary });
-    });
-
-    it('sort 非空时解析后传给 explainFind (第四参非 undefined) — M8', async () => {
-      const summary = { stage: 'IXSCAN', indexName: 'age_-1', docsExamined: 1, keysExamined: 1, nReturned: 1, executionTimeMillis: 0, isCollScan: false };
-      (driver as any).explainFind = vi.fn().mockResolvedValue(summary);
-
-      const msg = {
-        type: 'mongoExplainQuery',
-        database: 'mydb',
-        collection: 'users',
-        filter: '',
-        sort: '{"age": -1}',
-      } as WebviewMessage;
-
-      await handleMongoMessage(msg, driver, postMessage);
-      expect((driver as any).explainFind).toHaveBeenCalledWith('mydb', 'users', {}, { age: -1 });
+    it('filter / sort 解析后传给 explainFind', async () => {
+      const summary = { stage: 'IXSCAN' };
+      mongo.explainFind.mockResolvedValue(summary);
+      await send({ type: 'mongoExplainQuery', database: 'db', collection: 'users', filter: '{"age": {"$gt": 18}}', sort: '' });
+      expect(mongo.explainFind).toHaveBeenCalledWith('db', 'users', { age: { $gt: 18 } }, undefined);
+      await send({ type: 'mongoExplainQuery', database: 'db', collection: 'users', filter: '', sort: '{"age": -1}' });
+      expect(mongo.explainFind).toHaveBeenLastCalledWith('db', 'users', {}, { age: -1 });
+      expect(post).toHaveBeenCalledWith({ type: 'mongoExplainResult', summary });
     });
 
     it('explainFind 抛错时返回 error', async () => {
-      (driver as any).explainFind = vi.fn().mockRejectedValue(new Error('explain failed'));
-
-      const msg = {
-        type: 'mongoExplainQuery',
-        database: 'mydb',
-        collection: 'users',
-        filter: '',
-        sort: '',
-      } as WebviewMessage;
-
-      await handleMongoMessage(msg, driver, postMessage);
-      expect(postMessage).toHaveBeenCalledWith({ type: 'mongoExplainResult', error: 'explain failed' });
-    });
-  });
-
-  describe('mongoCountDocuments', () => {
-    it('正常路径: 返回 total', async () => {
-      (driver.executeCancellable as any).mockReturnValue({
-        promise: Promise.resolve({
-          columns: [],
-          rows: [{ count: 42 }],
-          affectedRows: 0,
-          executionTime: 5,
-        }),
-        cancel: vi.fn(),
-      });
-
-      const msg = {
-        type: 'mongoCountDocuments',
-        database: 'mydb',
-        collection: 'users',
-        filter: '',
-      } as WebviewMessage;
-
-      const handled = await handleMongoMessage(msg, driver, postMessage);
-
-      expect(handled).toBe(true);
-      expect(postMessage).toHaveBeenCalledWith({
-        type: 'mongoDocumentList',
-        columns: [],
-        rows: [],
-        total: 42,
-      });
-    });
-
-    it('空 rows 时 total = 0', async () => {
-      (driver.executeCancellable as any).mockReturnValue({
-        promise: Promise.resolve({
-          columns: [],
-          rows: [],
-          affectedRows: 0,
-          executionTime: 5,
-        }),
-        cancel: vi.fn(),
-      });
-
-      const msg = {
-        type: 'mongoCountDocuments',
-        database: 'mydb',
-        collection: 'users',
-        filter: '',
-      } as WebviewMessage;
-
-      await handleMongoMessage(msg, driver, postMessage);
-
-      expect(postMessage).toHaveBeenCalledWith({
-        type: 'mongoDocumentList',
-        columns: [],
-        rows: [],
-        total: 0,
-      });
-    });
-
-    it('driver 抛错时返回 error', async () => {
-      (driver.executeCancellable as any).mockReturnValue({
-        promise: Promise.reject(new Error('count failed')),
-        cancel: vi.fn(),
-      });
-
-      const msg = {
-        type: 'mongoCountDocuments',
-        database: 'mydb',
-        collection: 'users',
-        filter: '{ invalid }',
-      } as WebviewMessage;
-
-      await handleMongoMessage(msg, driver, postMessage);
-
-      expect(postMessage).toHaveBeenCalledWith({
-        type: 'mongoDocumentList',
-        columns: [],
-        rows: [],
-        total: 0,
-        error: 'count failed',
-      });
-    });
-
-    it('带 filter 时构建 countDocuments query', async () => {
-      (driver.executeCancellable as any).mockReturnValue({
-        promise: Promise.resolve({ columns: [], rows: [{ count: 5 }], affectedRows: 0, executionTime: 0 }),
-        cancel: vi.fn(),
-      });
-
-      const msg = {
-        type: 'mongoCountDocuments',
-        database: 'mydb',
-        collection: 'users',
-        filter: '{"age": 25}',
-      } as WebviewMessage;
-
-      await handleMongoMessage(msg, driver, postMessage);
-
-      expect(driver.executeCancellable).toHaveBeenCalledWith(
-        expect.stringContaining('countDocuments'),
-        undefined,
-        'mydb'
-      );
+      mongo.explainFind.mockRejectedValue(new Error('explain failed'));
+      await send({ type: 'mongoExplainQuery', database: 'db', collection: 'users', filter: '', sort: '' });
+      expect(post).toHaveBeenCalledWith({ type: 'mongoExplainResult', error: 'explain failed' });
     });
   });
 });

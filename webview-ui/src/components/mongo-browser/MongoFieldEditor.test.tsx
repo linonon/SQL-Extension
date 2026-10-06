@@ -18,7 +18,7 @@ describe('MongoFieldEditor', () => {
     expect(screen.getByDisplayValue('Alice')).toBeInTheDocument();
   });
 
-  it('编辑字段标记 modified, Save 提交重建 EJSON 文档 (不含 _id)', () => {
+  it('编辑字段标记 modified, Save 提交打开时的字段与编辑结果 (都是 EJSON, 不含 _id)', () => {
     const onSave = vi.fn();
     render(<MongoFieldEditor document={doc} onSave={onSave} onCancel={vi.fn()} />);
     const nameInput = screen.getByDisplayValue('Alice');
@@ -26,7 +26,10 @@ describe('MongoFieldEditor', () => {
     expect(nameInput.closest('.mongo-fe-row')).toHaveClass('is-modified');
 
     fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
-    expect(onSave).toHaveBeenCalledWith({ name: 'Bob', age: 30, ref: { $oid: 'aabbccddeeff001122334455' } });
+    expect(onSave).toHaveBeenCalledWith(
+      { name: 'Alice', age: 30, ref: { $oid: 'aabbccddeeff001122334455' } },
+      { name: 'Bob', age: 30, ref: { $oid: 'aabbccddeeff001122334455' } },
+    );
   });
 
   it('数字字段保留类型', () => {
@@ -34,7 +37,7 @@ describe('MongoFieldEditor', () => {
     render(<MongoFieldEditor document={doc} onSave={onSave} onCancel={vi.fn()} />);
     fireEvent.change(screen.getByDisplayValue('30'), { target: { value: '45' } });
     fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
-    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ age: 45 }));
+    expect(onSave).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ age: 45 }));
   });
 
   it('删除字段 -> 标记 deleted, Save 省略', () => {
@@ -42,9 +45,18 @@ describe('MongoFieldEditor', () => {
     render(<MongoFieldEditor document={doc} onSave={onSave} onCancel={vi.fn()} />);
     fireEvent.click(screen.getByRole('button', { name: '删除字段 age' }));
     fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
-    const saved = onSave.mock.calls[0][0];
+    const [original, saved] = onSave.mock.calls[0];
+    expect(original.age).toBe(30);
     expect('age' in saved).toBe(false);
     expect(saved.name).toBe('Alice');
+  });
+
+  it('库里已有的空白名字段原样带上, 不因改别的字段被删', () => {
+    const onSave = vi.fn();
+    render(<MongoFieldEditor document={{ _id: 'x', ' ': 1, name: 'Alice' }} onSave={onSave} onCancel={vi.fn()} />);
+    fireEvent.change(screen.getByDisplayValue('Alice'), { target: { value: 'Bob' } });
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+    expect(onSave).toHaveBeenCalledWith({ ' ': 1, name: 'Alice' }, { ' ': 1, name: 'Bob' });
   });
 
   it('revert 撤销修改', () => {
@@ -60,7 +72,7 @@ describe('MongoFieldEditor', () => {
     const { rerender } = render(<MongoFieldEditor document={doc} onSave={onSave} onCancel={vi.fn()} saveSignal={0} />);
     fireEvent.change(screen.getByDisplayValue('Alice'), { target: { value: 'Bob' } });
     rerender(<MongoFieldEditor document={doc} onSave={onSave} onCancel={vi.fn()} saveSignal={1} />);
-    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ name: 'Bob' }));
+    expect(onSave).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ name: 'Bob' }));
   });
 
   it('round2 #6: 同 _id refetch (新对象引用) 不清空在编辑的草稿', () => {
@@ -90,7 +102,7 @@ describe('MongoFieldEditor', () => {
     // 改 name 触发 dirty
     fireEvent.change(screen.getByDisplayValue('Alice'), { target: { value: 'Bob' } });
     fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
-    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ name: 'Bob', n: { $numberInt: '-5' } }));
+    expect(onSave).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ name: 'Bob', n: { $numberInt: '-5' } }));
   });
 
   it('C2: 新字段填入形似 tag 的字符串按字面量保存, 不崩溃', () => {
@@ -103,7 +115,7 @@ describe('MongoFieldEditor', () => {
     const valueInput = rows[rows.length - 1].querySelector('.mongo-fe-value-input') as HTMLInputElement;
     fireEvent.change(valueInput, { target: { value: 'ObjectId("xyz")' } });
     fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
-    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ note: 'ObjectId("xyz")' }));
+    expect(onSave).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ note: 'ObjectId("xyz")' }));
   });
 
   it('L2: 新字段有值但 key 为空 -> 阻止保存并提示', () => {
@@ -128,6 +140,6 @@ describe('MongoFieldEditor', () => {
     const valueInput = rows[rows.length - 1].querySelector('.mongo-fe-value-input') as HTMLInputElement;
     fireEvent.change(valueInput, { target: { value: 'NYC' } });
     fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
-    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ city: 'NYC' }));
+    expect(onSave).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ city: 'NYC' }));
   });
 });

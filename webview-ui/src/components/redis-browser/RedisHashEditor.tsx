@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
+import { RedisLoadMore } from './RedisLoadMore';
+import { useReadOnly } from '../../hooks/useReadOnly';
+import { RedisValueInput } from './RedisValueInput';
 
 interface RedisHashEditorProps {
   readonly value: Record<string, string>;
@@ -9,17 +12,21 @@ interface RedisHashEditorProps {
 }
 
 export function RedisHashEditor({ value, onBatchEdit, onDeleteField, hashDone, onHashLoadMore }: RedisHashEditorProps) {
+  const readOnly = useReadOnly();
   const [newField, setNewField] = useState('');
   const [newValue, setNewValue] = useState('');
   // editMap: key = 原始 field name, value = { field: 当前 field, value: 当前 value }
   const [editMap, setEditMap] = useState<Record<string, { field: string; value: string }>>({});
 
   const [filterQuery, setFilterQuery] = useState('');
+  // Save All 被拦下的原因 (重名 field); webview 里 alert 不弹, 行内显示
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // value prop 变化时重置编辑状态和 filter
   useEffect(() => {
     setEditMap({});
     setFilterQuery('');
+    setSaveError(null);
   }, [value]);
 
   const entries = Object.entries(value);
@@ -66,9 +73,10 @@ export function RedisHashEditor({ value, onBatchEdit, onDeleteField, hashDone, o
     const newFields = edits.map((e) => e.newField);
     const dupes = newFields.filter((f, i) => newFields.indexOf(f) !== i);
     if (dupes.length > 0) {
-      window.alert(`Duplicate field names: ${[...new Set(dupes)].join(', ')}`);
+      setSaveError(`Duplicate field names: ${[...new Set(dupes)].join(', ')}`);
       return;
     }
+    setSaveError(null);
     if (edits.length > 0) {
       onBatchEdit(edits);
     }
@@ -76,6 +84,7 @@ export function RedisHashEditor({ value, onBatchEdit, onDeleteField, hashDone, o
 
   const handleDiscard = useCallback(() => {
     setEditMap({});
+    setSaveError(null);
   }, []);
 
   const handleAdd = useCallback(() => {
@@ -114,34 +123,35 @@ export function RedisHashEditor({ value, onBatchEdit, onDeleteField, hashDone, o
               className={`field${isDirty ? ' editing-dirty' : ''}`}
               value={currentField}
               onChange={(e) => handleFieldChange(origField, e.target.value)}
+              readOnly={readOnly}
             />
-            <input
-              className={`value${isDirty ? ' editing-dirty' : ''}`}
+            <RedisValueInput
               value={currentValue}
-              onChange={(e) => handleValueChange(origField, e.target.value)}
+              dirty={isDirty}
+              readOnly={readOnly}
+              onChange={(v) => handleValueChange(origField, v)}
             />
-            <button
-              className="btn-icon"
-              onClick={() => onDeleteField(origField)}
-              title="Delete field"
-            >
-              x
-            </button>
+            {!readOnly && (
+              <button
+                className="btn-icon"
+                onClick={() => onDeleteField(origField)}
+                title="Delete field"
+              >
+                x
+              </button>
+            )}
           </div>
         );
       })}
-      {!hashDone && (
-        <div className="redis-pagination">
-          <button onClick={onHashLoadMore}>Load More</button>
-        </div>
-      )}
+      {!hashDone && <RedisLoadMore pendingEdits={dirtyEntries.length} onLoadMore={onHashLoadMore} />}
+      {saveError && <div className="inline-error" role="alert">{saveError}</div>}
       {hasDirty && (
         <div className="batch-actions">
           <button onClick={handleSaveAll}>Save All ({dirtyEntries.length})</button>
           <button className="secondary" onClick={handleDiscard}>Discard</button>
         </div>
       )}
-      <div className="add-form">
+      {!readOnly && <div className="add-form">
         <input
           placeholder="Field"
           value={newField}
@@ -155,7 +165,7 @@ export function RedisHashEditor({ value, onBatchEdit, onDeleteField, hashDone, o
         <button onClick={handleAdd} disabled={!newField.trim()}>
           Add Field
         </button>
-      </div>
+      </div>}
     </div>
   );
 }

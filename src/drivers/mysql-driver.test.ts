@@ -11,11 +11,19 @@ vi.mock('mysql2/promise', () => {
     on: vi.fn(),
   };
 
+  // cancel 另开的短连接
+  const mockKillConn = {
+    query: vi.fn(),
+    end: vi.fn(),
+  };
+
   return {
     default: {
       createPool: vi.fn(() => mockPool),
+      createConnection: vi.fn(async () => mockKillConn),
     },
     __mockPool: mockPool,
+    __mockKillConn: mockKillConn,
   };
 });
 
@@ -52,6 +60,29 @@ describe('MySQLDriver', () => {
       expect(driver.isConnected()).toBe(true);
       expect(mockPool.getConnection).toHaveBeenCalled();
       expect(mockConn.release).toHaveBeenCalled();
+      // BIGINT 精确字符串, JSON 列原文
+      const mysql = await import('mysql2/promise');
+      expect(mysql.default.createPool).toHaveBeenCalledWith(expect.objectContaining({
+        supportBigNumbers: true, bigNumberStrings: true, jsonStrings: true,
+      }));
+    });
+
+    it('typeCast: DOUBLE 按服务端文本转数字 (不丢最后一位), NULL 为 null, 其他类型走默认解析', async () => {
+      mockPool.getConnection.mockResolvedValue({ release: vi.fn() });
+      await driver.connect({
+        id: 'test-id', name: 'test', driverType: 'mysql', host: 'localhost', port: 3306,
+        username: 'root', password: 'secret', database: 'testdb',
+      });
+      const mysql = await import('mysql2/promise');
+      const { typeCast } = vi.mocked(mysql.default.createPool).mock.calls[0][0] as { typeCast: (field: unknown, next: () => unknown) => unknown };
+      const next = vi.fn(() => 'default');
+
+      expect(typeCast({ type: 'DOUBLE', string: () => '2.3333333333333335' }, next)).toBe(2.3333333333333335);
+      expect(typeCast({ type: 'DOUBLE', string: () => '-1.7976931348623157e308' }, next)).toBe(-1.7976931348623157e308);
+      expect(typeCast({ type: 'DOUBLE', string: () => null }, next)).toBeNull();
+      expect(next).not.toHaveBeenCalled();
+      expect(typeCast({ type: 'FLOAT', string: () => '1.5' }, next)).toBe('default');
+      expect(typeCast({ type: 'LONGLONG', string: () => '9007199254740993' }, next)).toBe('default');
     });
 
     it('连接失败时应该抛出错误', async () => {
@@ -71,10 +102,7 @@ describe('MySQLDriver', () => {
           database: 'testdb',
         })
       ).rejects.toThrow('Connection refused');
-
-      // 注: 当前实现在连接验证失败时没有清理 pool, 这是 bug
-      // 理想情况下应该是 false, 但当前实现会留下 pool
-      // 这个测试主要验证错误被正确抛出
+      expect(driver.isConnected()).toBe(false);
     });
   });
 
@@ -146,8 +174,9 @@ describe('MySQLDriver', () => {
       mockPool.getConnection.mockResolvedValue(mockConn);
       mockPool.query.mockResolvedValue([
         [
-          { name: 'users', schema: 'testdb', rowCount: 100 },
-          { name: 'orders', schema: 'testdb', rowCount: 500 },
+          // bigNumberStrings 下 TABLE_ROWS (BIGINT UNSIGNED) 以字符串返回
+          { name: 'users', schema: 'testdb', rowCount: '100' },
+          { name: 'orders', schema: 'testdb', rowCount: '500' },
         ],
         [],
       ]);
@@ -194,6 +223,76 @@ describe('MySQLDriver', () => {
       const tables = await driver.listTables('testdb');
 
       expect(tables[0].rowCount).toBe(0);
+    });
+
+    it('listAllTables: 一条查询取所有库的表, 不按库过滤', async () => {
+      mockPool.query.mockResolvedValue([[{ name: 'users', schema: 'a', rowCount: '1' }, { name: 'logs', schema: 'b', rowCount: '2' }], []]);
+      await driver.connect({
+        id: 'test-id', name: 'test', driverType: 'mysql', host: 'localhost', port: 3306, username: 'root', password: 'secret', database: '',
+      });
+      mockPool.query.mockClear();
+
+      expect(await driver.listAllTables()).toEqual([
+        { name: 'users', schema: 'a', rowCount: 1 },
+        { name: 'logs', schema: 'b', rowCount: 2 },
+      ]);
+      expect(mockPool.query).toHaveBeenCalledTimes(1);
+      const [sql, params] = mockPool.query.mock.calls[0];
+      expect(sql).not.toContain('TABLE_SCHEMA = ?');
+      expect(params).toEqual([]);
+    });
+  });
+
+  describe('getDetailedColumns', () => {
+    const connectWith = async (rows: Record<string, unknown>[]) => {
+      mockPool.query.mockResolvedValue([rows, []]);
+      await driver.connect({
+        id: 'test-id', name: 'test', driverType: 'mysql', host: 'localhost', port: 3306, username: 'root', password: 'secret', database: '',
+      });
+    };
+    const row = (version: string, defaultValue: string | null, extra = '', generationExpression = '', collation: string | null = null) => ({
+      name: 'c', dataType: 'varchar(8)', nullable: 'YES', columnKey: '', defaultValue, extra, comment: '', generationExpression, version, collation,
+    });
+
+    it('collation 只取与表默认不同的 (SQL 里和 TABLE_COLLATION 比较)', async () => {
+      await connectWith([row('8.0.46', null, '', '', 'utf8mb4_bin'), row('8.0.46', null)]);
+      const cols = await driver.getDetailedColumns('db', 't');
+      expect(cols.map((c) => c.collation)).toEqual(['utf8mb4_bin', undefined]);
+      const sql = mockPool.query.mock.calls.at(-1)[0];
+      expect(sql).toContain('CASE WHEN c.COLLATION_NAME <> t.TABLE_COLLATION THEN c.COLLATION_NAME END');
+    });
+
+    it('MySQL 8: 表达式默认值与生成列表达式的 \\x 转义还原, 字面量默认值原样', async () => {
+      await connectWith([
+        row('8.0.46', "concat(_utf8mb4\\'a\\\\\\\\b\\',_utf8mb4\\'it\\\\\\'s\\')", 'DEFAULT_GENERATED'),
+        row('8.0.46', "a\\b'c"),
+        row('8.0.46', null, 'VIRTUAL GENERATED', "concat(`a`,_utf8mb4\\'\\\\\\'\\')"),
+      ]);
+      const cols = await driver.getDetailedColumns('db', 't');
+      expect(cols.map((c) => c.defaultValue)).toEqual(["concat(_utf8mb4'a\\\\b',_utf8mb4'it\\'s')", "a\\b'c", null]);
+      expect(cols.map((c) => c.generationExpression)).toEqual([undefined, undefined, "concat(`a`,_utf8mb4'\\'')"]);
+    });
+
+    it('MySQL 8: BINARY / VARBINARY 的十六进制默认值转成 x 字面量, 5.7 与字符串列原样', async () => {
+      const bin = (version: string, defaultValue: string, dataType = 'varbinary(16)') => ({ ...row(version, defaultValue), dataType });
+      await connectWith([bin('8.0.46', '0x6162'), bin('8.0.46', '0x00ff', 'binary(2)'), bin('5.7.44', '0x6162'), row('8.0.46', '0x6162')]);
+      const cols = await driver.getDetailedColumns('db', 't');
+      expect(cols.map((c) => c.defaultValue)).toEqual(["x'6162'", "x'00ff'", '0x6162', '0x6162']);
+    });
+
+    it('MySQL 5.7: 生成列表达式是原文, 不还原; 像带引号的字面量也不去引号', async () => {
+      await connectWith([row('5.7.44-log', null, 'VIRTUAL GENERATED', "concat(`a`,'\\'')"), row('5.7.44-log', "'x'")]);
+      const cols = await driver.getDetailedColumns('db', 't');
+      expect(cols.map((c) => [c.defaultValue, c.generationExpression])).toEqual([[null, "concat(`a`,'\\'')"], ["'x'", undefined]]);
+    });
+
+    it('MariaDB: 字面量去引号, 不带引号的 NULL 是 DEFAULT NULL, 表达式补 DEFAULT_GENERATED, 数值不动', async () => {
+      const v = '10.6.16-MariaDB';
+      await connectWith([row(v, "'it''s a\\\\b'"), row(v, 'NULL'), row(v, 'current_timestamp()', 'on update current_timestamp()'), row(v, '0.00'), row(v, null)]);
+      const cols = await driver.getDetailedColumns('db', 't');
+      expect(cols.map((c) => [c.defaultValue, c.extra])).toEqual([
+        ["it's a\\b", ''], [null, ''], ['current_timestamp()', 'DEFAULT_GENERATED on update current_timestamp()'], ['0.00', ''], [null, ''],
+      ]);
     });
   });
 
@@ -266,16 +365,12 @@ describe('MySQLDriver', () => {
       const mockConn = { release: vi.fn() };
       mockPool.getConnection.mockResolvedValue(mockConn);
 
-      const mockRows = [
-        { id: 1, name: 'Alice' },
-        { id: 2, name: 'Bob' },
-      ];
       const mockFields = [
         { name: 'id', type: 3 },
         { name: 'name', type: 253 },
       ] as mysql.FieldPacket[];
 
-      mockPool.query.mockResolvedValue([mockRows, mockFields]);
+      mockPool.query.mockResolvedValue([[[1, 'Alice'], [2, 'Bob']], mockFields]);
 
       await driver.connect({
         id: 'test-id',
@@ -290,7 +385,7 @@ describe('MySQLDriver', () => {
 
       const result = await driver.execute('SELECT * FROM users', []);
 
-      expect(result.rows).toEqual(mockRows);
+      expect(result.rows).toEqual([{ id: 1, name: 'Alice' }, { id: 2, name: 'Bob' }]);
       expect(result.columns).toHaveLength(2);
       expect(result.columns[0].name).toBe('id');
       expect(result.affectedRows).toBe(0);
@@ -354,9 +449,241 @@ describe('MySQLDriver', () => {
       await driver.execute('SELECT * FROM users WHERE id = ?', [42]);
 
       expect(mockPool.query).toHaveBeenCalledWith(
-        'SELECT * FROM users WHERE id = ?',
+        { sql: 'SELECT * FROM users WHERE id = ?', rowsAsArray: true },
         [42]
       );
+    });
+  });
+
+  describe('结果列来源 (source)', () => {
+    it('只给未改名的真实表列挂 schema.table; 表达式列和别名列不挂', async () => {
+      mockPool.getConnection.mockResolvedValue({ release: vi.fn() });
+      mockPool.query.mockResolvedValue([
+        [[1, 'a', 2]],
+        [
+          { name: 'id', orgName: 'id', table: 'u', orgTable: 'users', db: 'app', type: 3 },
+          { name: 'nick', orgName: 'name', table: 'u', orgTable: 'users', db: 'app', type: 253 },
+          { name: 'cnt', orgName: '', table: '', orgTable: '', db: '', type: 8 },
+        ],
+      ]);
+      await driver.connect({
+        id: 'test-id', name: 'test', driverType: 'mysql', host: 'localhost', port: 3306,
+        username: 'root', password: 'secret', database: 'testdb',
+      });
+
+      const result = await driver.execute('SELECT u.id, u.name AS nick, COUNT(*) AS cnt FROM users u');
+
+      expect(result.columns.map((c) => c.source)).toEqual([{ schema: 'app', table: 'users' }, undefined, undefined]);
+    });
+
+    it('CALL 多结果集取第一个; 列类型显示类型名而非数字码', async () => {
+      mockPool.getConnection.mockResolvedValue({ release: vi.fn() });
+      mockPool.query.mockResolvedValue([
+        [[[1, 'a']], [[9]], { affectedRows: 0 }],
+        [
+          [{ name: 'id', orgName: 'id', table: 'u', orgTable: 'users', db: 'app', type: 3 },
+            { name: 'name', orgName: 'name', table: 'u', orgTable: 'users', db: 'app', type: 253 }],
+          [{ name: 'total', orgName: '', table: '', orgTable: '', db: '', type: 8 }],
+          undefined,
+        ],
+      ]);
+      await driver.connect({
+        id: 'test-id', name: 'test', driverType: 'mysql', host: 'localhost', port: 3306,
+        username: 'root', password: 'secret', database: 'testdb',
+      });
+
+      const result = await driver.execute('CALL list_users()');
+
+      expect(result.rows).toEqual([{ id: 1, name: 'a' }]);
+      expect(result.columns.map((c) => c.dataType)).toEqual(['LONG', 'VAR_STRING']);
+    });
+
+    it('自连接 (同表多个别名): 该表的列都不挂 source', async () => {
+      mockPool.getConnection.mockResolvedValue({ release: vi.fn() });
+      mockPool.query.mockResolvedValue([
+        [[1, 'p']],
+        [
+          { name: 'id', orgName: 'id', table: 'a', orgTable: 't', db: 'app', type: 3 },
+          { name: 'name', orgName: 'name', table: 'b', orgTable: 't', db: 'app', type: 253 },
+        ],
+      ]);
+      await driver.connect({
+        id: 'test-id', name: 'test', driverType: 'mysql', host: 'localhost', port: 3306,
+        username: 'root', password: 'secret', database: 'testdb',
+      });
+
+      const result = await driver.execute('SELECT a.id, b.name FROM t a JOIN t b ON a.parent_id = b.id');
+
+      expect(result.columns.map((c) => c.source)).toEqual([undefined, undefined]);
+    });
+
+    it('JOIN 同名列: 两列都保留, 后者以表别名限定且不挂 source (只读)', async () => {
+      mockPool.getConnection.mockResolvedValue({ release: vi.fn() });
+      mockPool.query.mockResolvedValue([
+        [[1, 99, '5.00']],
+        [
+          { name: 'id', orgName: 'id', table: 'u', orgTable: 't_user', db: 'app', type: 8 },
+          { name: 'id', orgName: 'id', table: 'o', orgTable: 't_order', db: 'app', type: 8 },
+          { name: 'amount', orgName: 'amount', table: 'o', orgTable: 't_order', db: 'app', type: 246 },
+        ],
+      ]);
+      await driver.connect({
+        id: 'test-id', name: 'test', driverType: 'mysql', host: 'localhost', port: 3306,
+        username: 'root', password: 'secret', database: 'testdb',
+      });
+
+      const result = await driver.execute('SELECT u.id, o.id, o.amount FROM t_user u JOIN t_order o ON o.uid = u.id');
+
+      expect(result.columns.map((c) => c.name)).toEqual(['id', 'o.id', 'amount']);
+      expect(result.rows).toEqual([{ id: 1, 'o.id': 99, amount: '5.00' }]);
+      expect(result.columns.map((c) => c.source)).toEqual([
+        { schema: 'app', table: 't_user' }, undefined, { schema: 'app', table: 't_order' },
+      ]);
+    });
+  });
+
+  describe('executeBatch (单连接执行器)', () => {
+    const cfg = {
+      id: 'test-id', name: 'test', driverType: 'mysql' as const, host: 'localhost', port: 3306,
+      username: 'root', password: 'secret', database: 'testdb',
+    };
+    const header = (affectedRows: number) => [{ affectedRows }, undefined];
+    // driver 自己发的会话语句 (USE `db` / SET SESSION) 是裸字符串, 用户语句一律以 { sql, rowsAsArray } 下发
+    const sqlOf = (call: unknown[]) => (call[0] as { sql?: string }).sql ?? call[0];
+
+    it('一条专用连接: USE 一次, 按序执行, 遇错即停, 结束后销毁不归还', async () => {
+      const conn = {
+        threadId: 42, release: vi.fn(), destroy: vi.fn(),
+        query: vi.fn()
+          .mockResolvedValueOnce(header(0)) // USE
+          .mockResolvedValueOnce(header(0)) // USE other (批内切库对后续语句生效)
+          .mockResolvedValueOnce(header(3))
+          .mockRejectedValueOnce(new Error('boom')),
+      };
+      mockPool.getConnection.mockResolvedValue({ release: vi.fn() });
+      await driver.connect(cfg);
+      mockPool.getConnection.mockResolvedValue(conn);
+
+      const out = await driver.executeBatch(['USE other', 'UPDATE t SET a=1', 'BAD', 'SELECT 1'], 'app').promise;
+
+      expect(mockPool.getConnection).toHaveBeenCalledTimes(2);
+      expect(conn.query.mock.calls.map(sqlOf)).toEqual(['USE `app`', 'USE other', 'UPDATE t SET a=1', 'BAD']);
+      expect(out.results.map((r) => [r.sql, r.affectedRows])).toEqual([['USE other', 0], ['UPDATE t SET a=1', 3]]);
+      expect(out.error).toEqual({ index: 2, cause: new Error('boom') });
+      expect(conn.destroy).toHaveBeenCalledTimes(1);
+      expect(conn.release).not.toHaveBeenCalled();
+    });
+
+    it('readOnly: USE 之后, 语句之前把会话设为只读; 不带时不发', async () => {
+      const conn = { threadId: 5, destroy: vi.fn(), query: vi.fn().mockResolvedValue(header(0)) };
+      mockPool.getConnection.mockResolvedValue({ release: vi.fn() });
+      await driver.connect(cfg);
+      mockPool.getConnection.mockResolvedValue(conn);
+
+      await driver.executeBatch(['DROP TABLE t'], 'app', { readOnly: true }).promise;
+      expect(conn.query.mock.calls.map(sqlOf)).toEqual(['USE `app`', 'SET SESSION TRANSACTION READ ONLY', 'DROP TABLE t']);
+
+      conn.query.mockClear();
+      await driver.executeBatch(['SELECT 1'], 'app').promise;
+      expect(conn.query.mock.calls.map(sqlOf)).toEqual(['USE `app`', 'SELECT 1']);
+    });
+
+    it('BEGIN 之后没有 COMMIT: 回带事务已回滚的提示', async () => {
+      const conn = { threadId: 1, destroy: vi.fn(), query: vi.fn().mockResolvedValue(header(1)) };
+      mockPool.getConnection.mockResolvedValue({ release: vi.fn() });
+      await driver.connect(cfg);
+      mockPool.getConnection.mockResolvedValue(conn);
+
+      expect((await driver.executeBatch(['BEGIN', 'UPDATE t SET a=1']).promise).warning).toMatch(/rolled back/);
+      expect((await driver.executeBatch(['START TRANSACTION', 'UPDATE t SET a=1', 'COMMIT']).promise).warning).toBeUndefined();
+    });
+
+    it('cancel 在另开的短连接上 KILL 本连接的 threadId (不经可能被占满的池); 执行结束后 cancel 是 no-op', async () => {
+      const mysql = await import('mysql2/promise');
+      const killConn = (mysql as any).__mockKillConn;
+      killConn.query.mockResolvedValue([{ affectedRows: 0 }, undefined]);
+      killConn.end.mockResolvedValue(undefined);
+      let finish!: () => void;
+      const conn = {
+        threadId: 77, destroy: vi.fn(),
+        query: vi.fn(() => new Promise((r) => { finish = () => r(header(0)); })),
+      };
+      mockPool.getConnection.mockResolvedValue({ release: vi.fn() });
+      await driver.connect(cfg);
+      mockPool.getConnection.mockResolvedValue(conn);
+
+      const run = driver.executeBatch(['SELECT SLEEP(10)', 'SELECT 2']);
+      await vi.waitFor(() => expect(conn.query).toHaveBeenCalledTimes(1));
+      run.cancel();
+      expect(mysql.default.createConnection).toHaveBeenCalledWith({
+        host: 'localhost', port: 3306, user: 'root', password: 'secret', connectTimeout: 5000,
+      });
+      await vi.waitFor(() => expect(killConn.end).toHaveBeenCalled());
+      expect(killConn.query).toHaveBeenCalledWith('KILL QUERY 77');
+      expect(mockPool.query).not.toHaveBeenCalled();
+      finish();
+      const out = await run.promise;
+      // 被取消后不再执行下一条
+      expect(conn.query).toHaveBeenCalledTimes(1);
+      expect(out.error?.index).toBe(1);
+
+      vi.mocked(mysql.default.createConnection).mockClear();
+      run.cancel();
+      const done = driver.executeBatch(['SELECT 1']);
+      await vi.waitFor(() => expect(conn.query).toHaveBeenCalledTimes(2));
+      finish();
+      await done.promise;
+      done.cancel();
+      expect(mysql.default.createConnection).not.toHaveBeenCalled();
+      expect((await done.promise).cancelled).toBeUndefined();
+    });
+
+    it('最后一条被取消却照常返回 (KILL QUERY 打断的 SLEEP() 返回 1): 结果带 cancelled', async () => {
+      const mysql = await import('mysql2/promise');
+      const killConn = (mysql as any).__mockKillConn;
+      killConn.query.mockResolvedValue([{ affectedRows: 0 }, undefined]);
+      killConn.end.mockResolvedValue(undefined);
+      let finish!: () => void;
+      const conn = { threadId: 9, destroy: vi.fn(), query: vi.fn(() => new Promise((r) => { finish = () => r([[[1]], [{ name: 'SLEEP(10)' }]]); })) };
+      mockPool.getConnection.mockResolvedValue({ release: vi.fn() });
+      await driver.connect(cfg);
+      mockPool.getConnection.mockResolvedValue(conn);
+
+      const run = driver.executeBatch(['SELECT SLEEP(10)']);
+      await vi.waitFor(() => expect(conn.query).toHaveBeenCalledTimes(1));
+      run.cancel();
+      finish();
+      const out = await run.promise;
+      expect(out.error).toBeUndefined();
+      expect(out.cancelled).toBe(true);
+      expect(out.results).toHaveLength(1);
+    });
+  });
+
+  describe('executeReadOnly', () => {
+    it('专用连接上先设服务端超时, 再把会话设为只读 (DDL 也被拒), 再开只读事务; 不支持超时变量的服务器照常执行', async () => {
+      const conn = {
+        destroy: vi.fn(),
+        query: vi.fn()
+          .mockResolvedValueOnce([{ affectedRows: 0 }, undefined]) // USE
+          .mockRejectedValueOnce(new Error("Unknown system variable 'max_execution_time'"))
+          .mockResolvedValue([[[1]], [{ name: 'n' }]]),
+      };
+      mockPool.getConnection.mockResolvedValue({ release: vi.fn() });
+      await driver.connect({
+        id: 'test-id', name: 'test', driverType: 'mysql', host: 'localhost', port: 3306,
+        username: 'root', password: 'secret', database: 'testdb',
+      });
+      mockPool.getConnection.mockResolvedValue(conn);
+
+      const result = await driver.executeReadOnly('SELECT 1', 'app');
+
+      expect(conn.query.mock.calls.map((c) => c[0])).toEqual([
+        'USE `app`', 'SET SESSION max_execution_time = 30000', 'SET SESSION TRANSACTION READ ONLY', 'START TRANSACTION READ ONLY',
+        { sql: 'SELECT 1', rowsAsArray: true },
+      ]);
+      expect(result.rows).toEqual([{ n: 1 }]);
+      expect(conn.destroy).toHaveBeenCalled();
     });
   });
 

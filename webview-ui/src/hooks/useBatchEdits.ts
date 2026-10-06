@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
-import type { ColumnInfo } from '../types/database';
+import type { ColumnInfo } from '../../../src/types/query';
 
 interface PendingChange {
   readonly rowIndex: number;
@@ -17,6 +17,13 @@ function cellKey(rowIndex: number, columnId: string): string {
   return `${rowIndex}:${columnId}`;
 }
 
+// 编辑器给出的是字符串, 原值可能是 number 等: 按文本比较, 但 NULL 与空串是不同的值
+function sameCellValue(a: unknown, b: unknown): boolean {
+  const aNull = a === null || a === undefined;
+  const bNull = b === null || b === undefined;
+  return aNull || bNull ? aNull === bNull : String(a) === String(b);
+}
+
 export function useBatchEdits() {
   const [version, setVersion] = useState(0);
   const changesRef = useRef<Map<string, PendingChange>>(new Map());
@@ -25,7 +32,7 @@ export function useBatchEdits() {
     (rowIndex: number, columnId: string, oldValue: unknown, newValue: unknown) => {
       const key = cellKey(rowIndex, columnId);
       // 改回原值时移除 pending change
-      if (String(oldValue ?? '') === String(newValue ?? '')) {
+      if (sameCellValue(oldValue, newValue)) {
         changesRef.current.delete(key);
       } else {
         changesRef.current.set(key, { rowIndex, columnId, oldValue, newValue });

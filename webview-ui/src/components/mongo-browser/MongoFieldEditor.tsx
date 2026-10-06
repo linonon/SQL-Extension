@@ -4,7 +4,8 @@ import { validateEjsonValues } from './mongo-editor-syntax';
 
 interface MongoFieldEditorProps {
   readonly document: Record<string, unknown>;
-  readonly onSave: (doc: Record<string, unknown>) => void;
+  // original: 打开时的字段 (不含 _id); doc: 编辑结果. 都是 EJSON, 宿主按 path 对比后只写改动
+  readonly onSave: (original: Record<string, unknown>, doc: Record<string, unknown>) => void;
   readonly onCancel: () => void;
   readonly onDirtyChange?: (dirty: boolean) => void;
   readonly onSaveError?: () => void;
@@ -77,18 +78,23 @@ export function MongoFieldEditor({ document: doc, onSave, onCancel, onDirtyChang
       const orphan = rows.find((r) => !r.deleted && r.key.trim() === '' && r.isNew && r.draft.trim() !== '');
       if (orphan) { setError('新增字段缺少字段名 (key)'); onSaveError?.(); return; }
 
+      // 只读值来自 deepFormatValue, 才把其中真 shell-tag 还原为 EJSON; 可编辑值改过才按原类型 coerce 用户字面量.
+      // 没改的字段两边取同一个值, 宿主对比时不会当成改动
+      const unchanged = (r: FieldRow): unknown => (r.editable ? r.original : convertTags(r.original));
+      const original: Record<string, unknown> = {};
+      for (const r of rows) {
+        if (!r.isNew) { original[r.key] = unchanged(r); }
+      }
       const out: Record<string, unknown> = {};
       for (const r of rows) {
-        if (r.deleted || r.key.trim() === '') { continue; }
-        // 可编辑值是用户字面量 (按类型 coerce, 不做 shell 转换);
-        // 只读值来自 deepFormatValue, 才把其中真 shell-tag 还原为 EJSON.
-        out[r.key] = r.editable ? coerceToType(r.original, r.draft) : convertTags(r.original);
+        if (r.deleted || (r.isNew && r.key.trim() === '')) { continue; }
+        out[r.key] = r.editable && isModified(r) ? coerceToType(r.original, r.draft) : unchanged(r);
       }
       // 与 JSON 模式一致的值合法性闸: 拦越界整数 / 非法日期等, 不依赖后端 round-trip 才报错
       const problem = validateEjsonValues(out);
       if (problem) { setError(problem.message); onSaveError?.(); return; }
       setError('');
-      onSave(out);
+      onSave(original, out);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to build document');
       onSaveError?.();

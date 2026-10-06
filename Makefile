@@ -2,7 +2,6 @@
 
 build:
 	npm run build
-	cd webview-ui && npm run build
 
 install: build
 	vsce package --no-dependencies

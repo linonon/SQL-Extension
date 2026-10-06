@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useVSCodeMessage } from '../../hooks/useVSCodeMessage';
 import { usePostMessage } from '../../hooks/usePostMessage';
-import type { ExtensionMessage, MongoExplainSummary } from '../../types/messages';
-import type { ColumnInfo } from '../../types/database';
+import type { ExtensionMessage, MongoExplainSummary } from '../../../../src/types/messages';
+import type { ColumnInfo } from '../../../../src/types/query';
+import { convertShellToJson } from '../../utils/mongo-shell-to-json';
 import { MongoCollectionList } from './MongoCollectionList';
 import { MongoDocumentTable } from './MongoDocumentTable';
 import '../../styles/mongo-browser.css';
@@ -24,6 +25,21 @@ interface SelectedCollection {
 
 const PAGE_SIZE = 50;
 
+// mongoFindDocuments 的请求序号: 回执 requestId 不是最近一次的 (切集合 / 翻页后旧查询晚到) 即丢弃,
+// 否则旧集合的行会顶替当前集合, 随后的 Edit / Delete 按当前集合写进去
+let findSeq = 0;
+
+// 已生效的查询 (Apply / 切集合时快照): 翻页 / 刷新 / Explain / Export 都按它, 不读输入框里尚未 Apply 的文本
+interface AppliedQuery {
+  readonly filter: string;
+  readonly sort: string;
+  readonly projection: string;
+  readonly skip: number;
+  readonly limit: number;
+}
+
+const EMPTY_QUERY: AppliedQuery = { filter: '', sort: '', projection: '', skip: 0, limit: PAGE_SIZE };
+
 function resolveLimit(input: string, fallback: number): number {
   if (!input.trim()) { return fallback; }
   const n = parseInt(input, 10);
@@ -36,12 +52,28 @@ function resolveSkip(input: string): number {
   return (Number.isFinite(n) && n >= 0) ? n : 0;
 }
 
+/**
+ * projection 是否只按顶层字段整取整舍 (key 不含 '.', 值都是 0/1/true/false): 这时显示的字段都是库内的完整原值,
+ * 按 path diff 写回只动改过的字段. 子路径 ("a.b" / 嵌套) 会把子文档数组的每个元素裁掉未投影的字段, 而数组整体 $set,
+ * 写回会丢掉这些字段; 含表达式 ("$field" 重命名 / $slice / 计算字段) 时显示值不是库内值. 这两类都不可写回.
+ */
+export function isPathProjection(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) { return true; }
+  let parsed: unknown;
+  try { parsed = JSON.parse(convertShellToJson(trimmed)); } catch { return false; }
+  return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+    && Object.entries(parsed).every(([k, v]) =>
+      !k.startsWith('$') && !k.includes('.') && (typeof v === 'number' || typeof v === 'boolean'));
+}
+
 export function MongoBrowser({ connectionId }: MongoBrowserProps) {
   const [allCollections, setAllCollections] = useState<readonly GlobalCollectionInfo[]>([]);
   const [selected, setSelected] = useState<SelectedCollection | null>(null);
   const [columns, setColumns] = useState<readonly ColumnInfo[]>([]);
   const [rows, setRows] = useState<readonly Record<string, unknown>[]>([]);
-  const [total, setTotal] = useState(0);
+  // null: 总数未知 (计数中 / 失败 / 超时)
+  const [total, setTotal] = useState<number | null>(null);
   const [filter, setFilter] = useState('');
   const [sort, setSort] = useState('');
   const [projection, setProjection] = useState('');
@@ -51,9 +83,17 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
   const [loading, setLoading] = useState(false);
   const [collectionsLoading, setCollectionsLoading] = useState(false);
   const [queryError, setQueryError] = useState<string | null>(null);
+  // 写操作 (文档 / 集合) 的失败原因, 行内显示 (webview sandbox 里 alert 不弹); 下次取数或写成功时清掉
+  const [writeError, setWriteError] = useState<string | null>(null);
+  // 每条文档写回执一个新对象, 编辑器据此决定关闭还是保留草稿
+  const [writeResult, setWriteResult] = useState<{ readonly ok: boolean } | null>(null);
   const [panelWidth, setPanelWidth] = useState(220);
   const [pendingSwitchSignal, setPendingSwitchSignal] = useState(0);
   const [explain, setExplain] = useState<{ loading?: boolean; summary?: MongoExplainSummary; error?: string } | null>(null);
+  const [applied, setApplied] = useState<AppliedQuery>(EMPTY_QUERY);
+  const findIdRef = useRef(0);
+  // 带 count 的那次查询的 requestId: 其后翻页不重算总数, 总数回执按它认领
+  const countIdRef = useRef(0);
   const pendingSwitchTarget = useRef<{ database: string; name: string } | null>(null);
 
   const postMessage = usePostMessage();
@@ -61,34 +101,34 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
   const startX = useRef(0);
   const startWidth = useRef(0);
 
-  // 保存当前 filter/sort/projection/page 的 ref, 供 refetch 使用
-  const filterRef = useRef(filter);
-  const sortRef = useRef(sort);
-  const projectionRef = useRef(projection);
-  const customLimitRef = useRef(customLimit);
-  const pageRef = useRef(page);
-  filterRef.current = filter;
-  sortRef.current = sort;
-  projectionRef.current = projection;
-  customLimitRef.current = customLimit;
-  pageRef.current = page;
-
-  const handleRefetch = useCallback(() => {
+  // 唯一的取数入口: page 是相对 q.skip 的页号, skip / limit 都由已生效的查询推出; count 时重算总数
+  const fetchDocs = useCallback((q: AppliedQuery, p: number, count: boolean) => {
     if (!selected) { return; }
-    const effectiveLimit = resolveLimit(customLimitRef.current, PAGE_SIZE);
     setQueryError(null);
+    setWriteError(null);
     setLoading(true);
+    setPage(p);
+    findIdRef.current = ++findSeq;
+    if (count) {
+      countIdRef.current = findIdRef.current;
+      setTotal(null);
+    }
     postMessage({
       type: 'mongoFindDocuments',
+      requestId: findIdRef.current,
       database: selected.database,
       collection: selected.name,
-      filter: filterRef.current,
-      sort: sortRef.current,
-      projection: projectionRef.current,
-      skip: pageRef.current * effectiveLimit,
-      limit: effectiveLimit,
+      filter: q.filter,
+      sort: q.sort,
+      projection: q.projection,
+      skip: q.skip + p * q.limit,
+      limit: q.limit,
+      count,
     });
   }, [selected, postMessage]);
+
+  // 写操作 / 导入后刷新: 留在当前页, 写入改变了文档数, 重算总数
+  const handleRefetch = useCallback(() => fetchDocs(applied, page, true), [fetchDocs, applied, page]);
 
   const handleMessage = useCallback((msg: ExtensionMessage) => {
     switch (msg.type) {
@@ -100,43 +140,41 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
         }
         break;
       case 'mongoDocumentList':
+        if (msg.requestId !== findIdRef.current) { break; }
         setColumns(msg.columns);
         setRows(msg.rows);
-        setTotal(msg.total);
         setQueryError(msg.error ?? null);
         setLoading(false);
         break;
+      case 'mongoDocumentCount':
+        if (msg.requestId === countIdRef.current) { setTotal(msg.total); }
+        break;
       case 'error':
+        // 笼统失败 (如按需重连失败) 由 App 显示; 这里清掉 spinner, 挂起的保存按失败处理 (保留草稿)
         setLoading(false);
-        // 集合列表加载若失败 (mongoListAllCollections 抛错), 后端回笼统 error: 同步清掉 spinner 避免左栏永久转
         setCollectionsLoading(false);
-        setQueryError(msg.message);
+        setWriteResult({ ok: false });
+        setExplain((prev) => (prev?.loading ? null : prev));
         break;
       case 'mongoOperationResult':
+        setWriteResult({ ok: msg.success });
         if (!msg.success) {
-          alert(`Operation failed: ${msg.error ?? 'Unknown error'}`);
+          setWriteError(`Operation failed: ${msg.error ?? 'Unknown error'}`);
         } else {
           handleRefetch();
         }
         break;
-      case 'mongoExportResult':
-        if (!msg.success) {
-          alert(`Export failed: ${msg.error ?? 'Unknown error'}`);
-        }
-        break;
+      // 导出 / 导入的失败由宿主弹提示 (宿主侧流程: 文件对话框 / 进度)
       case 'mongoImportResult':
-        if (!msg.success) {
-          alert(`Import failed: ${msg.error ?? 'Unknown error'}`);
-        } else {
-          handleRefetch();
-        }
+        if (msg.success) { handleRefetch(); }
         break;
       case 'mongoExplainResult':
-        setExplain({ summary: msg.summary, error: msg.error });
+        // 只接收进行中的 explain: 切 collection 时面板已清空, 旧 collection 迟到的结果丢弃
+        setExplain((prev) => (prev?.loading ? { summary: msg.summary, error: msg.error } : prev));
         break;
       case 'mongoCollectionCreated':
         if (!msg.success) {
-          alert(`Create collection failed: ${msg.error ?? 'Unknown error'}`);
+          setWriteError(`Create collection failed: ${msg.error ?? 'Unknown error'}`);
         }
         break;
       case 'mongoCollectionDropped':
@@ -149,7 +187,7 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
           });
         }
         if (!msg.success) {
-          alert(`Drop collection failed: ${msg.error ?? 'Unknown error'}`);
+          setWriteError(`Drop collection failed: ${msg.error ?? 'Unknown error'}`);
         }
         break;
     }
@@ -163,23 +201,12 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
     postMessage({ type: 'mongoListAllCollections' });
   }, [postMessage]);
 
-  // 选中 collection 时自动加载首页文档
+  // 选中 / 切换 collection: 查询复位, 关掉上一个集合的 explain, 从首页取并计数
   useEffect(() => {
-    if (selected) {
-      setLoading(true);
-      setPage(0);
-      postMessage({
-        type: 'mongoFindDocuments',
-        database: selected.database,
-        collection: selected.name,
-        filter: '',
-        sort: '',
-        projection: '',
-        skip: 0,
-        limit: PAGE_SIZE,
-      });
-    }
-  }, [selected, postMessage]);
+    setApplied(EMPTY_QUERY);
+    setExplain(null);
+    fetchDocs(EMPTY_QUERY, 0, true);
+  }, [selected, fetchDocs]);
 
   const handleSelectCollection = useCallback((database: string, name: string) => {
     pendingSwitchTarget.current = { database, name };
@@ -196,7 +223,6 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
     setProjection('');
     setCustomLimit('');
     setCustomSkip('');
-    setPage(0);
   }, []);
 
   const onSwitchCancelled = useCallback(() => {
@@ -204,40 +230,12 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
   }, []);
 
   const handleApply = useCallback(() => {
-    if (!selected) { return; }
-    setQueryError(null);
-    setLoading(true);
-    setPage(0);
-    const effectiveLimit = resolveLimit(customLimit, PAGE_SIZE);
-    postMessage({
-      type: 'mongoFindDocuments',
-      database: selected.database,
-      collection: selected.name,
-      filter,
-      sort,
-      projection,
-      skip: resolveSkip(customSkip),
-      limit: effectiveLimit,
-    });
-  }, [selected, filter, sort, projection, customLimit, customSkip, postMessage]);
+    const q = { filter, sort, projection, skip: resolveSkip(customSkip), limit: resolveLimit(customLimit, PAGE_SIZE) };
+    setApplied(q);
+    fetchDocs(q, 0, true);
+  }, [filter, sort, projection, customSkip, customLimit, fetchDocs]);
 
-  const handlePageChange = useCallback((newPage: number) => {
-    if (!selected) { return; }
-    const effectiveLimit = resolveLimit(customLimit, PAGE_SIZE);
-    setQueryError(null);
-    setLoading(true);
-    setPage(newPage);
-    postMessage({
-      type: 'mongoFindDocuments',
-      database: selected.database,
-      collection: selected.name,
-      filter,
-      sort,
-      projection,
-      skip: newPage * effectiveLimit,
-      limit: effectiveLimit,
-    });
-  }, [selected, filter, sort, projection, customLimit, postMessage]);
+  const handlePageChange = useCallback((p: number) => fetchDocs(applied, p, false), [fetchDocs, applied]);
 
   const handleInsertDocument = useCallback((doc: Record<string, unknown>) => {
     if (!selected) { return; }
@@ -249,18 +247,31 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
     });
   }, [selected, postMessage]);
 
-  const handleUpdateDocument = useCallback((id: string, doc: Record<string, unknown>) => {
+  const handleUpdateDocument = useCallback((id: unknown, original: Record<string, unknown>, doc: Record<string, unknown>) => {
     if (!selected) { return; }
     postMessage({
       type: 'mongoUpdateDocument',
       database: selected.database,
       collection: selected.name,
       id,
+      original,
       document: doc,
     });
   }, [selected, postMessage]);
 
-  const handleDeleteDocument = useCallback((id: string) => {
+  const handleCloneDocument = useCallback((sourceId: unknown, original: Record<string, unknown>, doc: Record<string, unknown>) => {
+    if (!selected) { return; }
+    postMessage({
+      type: 'mongoCloneDocument',
+      database: selected.database,
+      collection: selected.name,
+      sourceId,
+      original,
+      document: doc,
+    });
+  }, [selected, postMessage]);
+
+  const handleDeleteDocument = useCallback((id: unknown) => {
     if (!selected) { return; }
     postMessage({
       type: 'mongoDeleteDocument',
@@ -277,22 +288,10 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
       type: 'mongoExplainQuery',
       database: selected.database,
       collection: selected.name,
-      filter: filterRef.current,
-      sort: sortRef.current,
+      filter: applied.filter,
+      sort: applied.sort,
     });
-  }, [selected, postMessage]);
-
-  const handleUpdateField = useCallback((id: string, path: string, value: unknown) => {
-    if (!selected) { return; }
-    postMessage({
-      type: 'mongoUpdateField',
-      database: selected.database,
-      collection: selected.name,
-      id,
-      path,
-      value,
-    });
-  }, [selected, postMessage]);
+  }, [selected, applied, postMessage]);
 
   const handleExport = useCallback(() => {
     if (!selected) { return; }
@@ -300,11 +299,11 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
       type: 'mongoExportCollection',
       database: selected.database,
       collection: selected.name,
-      filter: filterRef.current,
-      sort: sortRef.current,
-      projection: projectionRef.current,
+      filter: applied.filter,
+      sort: applied.sort,
+      projection: applied.projection,
     });
-  }, [selected, postMessage]);
+  }, [selected, applied, postMessage]);
 
   const handleImport = useCallback(() => {
     if (!selected) { return; }
@@ -351,6 +350,7 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
 
   return (
     <div className="mongo-browser">
+      {writeError && <div className="mongo-error" role="alert">{writeError}</div>}
       <div className="mongo-body">
         <div className="mongo-left-panel" style={{ width: panelWidth }}>
           <MongoCollectionList
@@ -372,10 +372,12 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
               total={total}
               loading={loading}
               page={page}
-              pageSize={resolveLimit(customLimit, PAGE_SIZE)}
+              offset={applied.skip + page * applied.limit}
+              pageSize={applied.limit}
               filter={filter}
               sort={sort}
               projection={projection}
+              readOnly={!isPathProjection(applied.projection)}
               customLimit={customLimit}
               customSkip={customSkip}
               onFilterChange={setFilter}
@@ -387,9 +389,10 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
               onPageChange={handlePageChange}
               onInsertDocument={handleInsertDocument}
               onUpdateDocument={handleUpdateDocument}
-              onUpdateField={handleUpdateField}
+              onCloneDocument={handleCloneDocument}
               onDeleteDocument={handleDeleteDocument}
               queryError={queryError}
+              writeResult={writeResult}
               onExport={handleExport}
               onImport={handleImport}
               onExplain={handleExplain}

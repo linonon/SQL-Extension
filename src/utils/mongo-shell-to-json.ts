@@ -80,16 +80,36 @@ const SHELL_PATTERNS: ReadonlyArray<{
   },
 ];
 
+// 每个 shell 写法前并上 JSON 字符串字面量分支: 字符串整段原样放回, 只改写字符串之外的 shell 写法
+const STRING_LITERAL = /"(?:[^"\\]|\\.)*"/.source;
+const SHELL_OUTSIDE_STRINGS = SHELL_PATTERNS.map(({ pattern, replace }) => ({
+  pattern: new RegExp(`${STRING_LITERAL}|${pattern.source}`, 'g'),
+  replace: (m: string) => (m.startsWith('"') ? m : m.replace(pattern, replace)),
+}));
+
+// 字符串字面量整体匹配 (跳过其中的数字), 或前后不接标识符 / 小数点 / 指数的裸整数
+const STRING_OR_INTEGER = /"(?:[^"\\]|\\.)*"|(?<![\w$.+-])-?\d+(?![\w$.])/g;
+
+// 字符串外超出 2^53 的裸整数包成 {"$numberLong":"..."}: JSON.parse 会把它静默舍入成邻近的 double.
+// 超出 int64 的不可能是 Long, 保持原样按 double 解析
+function wrapUnsafeIntegers(json: string): string {
+  return json.replace(STRING_OR_INTEGER, (m) => {
+    if (m.startsWith('"') || Number.isSafeInteger(Number(m))) { return m; }
+    const n = BigInt(m);
+    return n < INT64_MIN || n > INT64_MAX ? m : `{"$numberLong":"${m}"}`;
+  });
+}
+
 /**
  * 将 MongoDB shell 语法转换为 Extended JSON 格式.
  * 例如 ObjectId("abc...") -> {"$oid":"abc..."}
  */
 export function convertShellToJson(input: string): string {
   let result = input;
-  for (const { pattern, replace } of SHELL_PATTERNS) {
-    result = result.replace(pattern, replace as (...args: string[]) => string);
+  for (const { pattern, replace } of SHELL_OUTSIDE_STRINGS) {
+    result = result.replace(pattern, replace);
   }
-  return result;
+  return wrapUnsafeIntegers(result);
 }
 
 // --- Extended JSON 标记转 BSON 实例 ---

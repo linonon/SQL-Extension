@@ -17,7 +17,8 @@ interface SqlEditorProps {
   readonly onChange: (value: string) => void;
   readonly schema: Record<string, string[]>;
   readonly placeholder?: string;
-  readonly onExecute?: () => void;
+  /** Ctrl/Cmd+Enter, 参数是当时的光标位置 (selectionStart) */
+  readonly onExecute?: (caret: number) => void;
   readonly onFormat?: () => void;
   readonly warnings?: readonly SqlWarning[];
   readonly onSelectionChange?: (selectedText: string, start: number) => void;
@@ -57,19 +58,25 @@ export function SqlEditor({
 }: SqlEditorProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const highlightRef = useRef<HTMLPreElement>(null);
+  const gutterRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const [completionItems, setCompletionItems] = useState<readonly string[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [popupPos, setPopupPos] = useState({ top: 0, left: 0 });
   const charWidthRef = useRef<number>(0);
+  // 当前候选对应的光标位置: 光标离开这里 (点击别处 / 方向键 / 选中文本) 候选就作废
+  const completionAnchorRef = useRef(-1);
 
-  const reportSelection = useCallback(() => {
+  const handleSelect = useCallback(() => {
     const textarea = textareaRef.current;
-    if (!textarea || !onSelectionChange) return;
+    if (!textarea) return;
     const start = textarea.selectionStart;
     const end = textarea.selectionEnd;
-    onSelectionChange(start === end ? '' : value.slice(start, end), start);
-  }, [onSelectionChange, value]);
+    if (completionItems.length > 0 && (start !== completionAnchorRef.current || end !== start)) {
+      setCompletionItems([]);
+    }
+    onSelectionChange?.(start === end ? '' : value.slice(start, end), start);
+  }, [completionItems, onSelectionChange, value]);
 
   // mount 时测量字符宽度
   useEffect(() => {
@@ -79,21 +86,23 @@ export function SqlEditor({
     charWidthRef.current = measureCharWidth(font, size);
   }, []);
 
-  // schema 异步加载完成后, 重新评估当前 cursor 位置的补全
+  // schema 异步加载完成后, 重新评估当前 cursor 位置的补全 (编辑器失焦时不弹)
   useEffect(() => {
     const textarea = textareaRef.current;
-    if (!textarea || Object.keys(schema).length === 0) return;
+    if (!textarea || document.activeElement !== textarea || Object.keys(schema).length === 0) return;
     updateCompletion(value, textarea.selectionStart);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [schema]);
 
-  // scroll 同步
+  // 高亮层与行号跟随 textarea 滚动
   const handleScroll = useCallback(() => {
     const textarea = textareaRef.current;
     const highlight = highlightRef.current;
-    if (!textarea || !highlight) return;
+    const gutter = gutterRef.current;
+    if (!textarea || !highlight || !gutter) return;
     highlight.scrollTop = textarea.scrollTop;
     highlight.scrollLeft = textarea.scrollLeft;
+    gutter.scrollTop = textarea.scrollTop;
   }, []);
 
   // 生成高亮 HTML
@@ -151,6 +160,7 @@ export function SqlEditor({
   const updateCompletion = useCallback((text: string, cursorPos: number) => {
     const ctx = getAutocompleteContext(text, cursorPos);
     const items = getCompletionItems(ctx, schema);
+    completionAnchorRef.current = cursorPos;
     setCompletionItems(items);
     setSelectedIndex(0);
     if (items.length > 0) {
@@ -189,8 +199,11 @@ export function SqlEditor({
   }, [onChange, updateCompletion]);
 
   const handleKeyDown = useCallback((e: KeyboardEvent<HTMLTextAreaElement>) => {
-    // popup 可见时拦截导航键
-    if (completionItems.length > 0) {
+    // 输入法组字中的按键 (含确认用的 Enter) 归输入法, 不触发补全或执行
+    if (e.nativeEvent.isComposing || e.keyCode === 229) { return; }
+    // popup 可见时拦截导航键; 带修饰键的 Enter / Tab / 方向键不归补全 (Ctrl/Cmd+Enter 照常执行, Shift+方向键扩展选区)
+    const modified = e.ctrlKey || e.metaKey || e.altKey || e.shiftKey;
+    if (completionItems.length > 0 && !modified) {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
         setSelectedIndex((prev) => Math.min(prev + 1, completionItems.length - 1));
@@ -216,12 +229,13 @@ export function SqlEditor({
     // Ctrl/Cmd + Enter -> execute
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
-      onExecute?.();
+      setCompletionItems([]);
+      onExecute?.(e.currentTarget.selectionStart);
       return;
     }
 
-    // Shift+Alt+F -> format
-    if (e.key === 'f' && e.shiftKey && e.altKey) {
+    // Shift+Alt+F -> format; 按物理键判断: Shift 时 key 是 'F', macOS Option 时是别的字形
+    if (e.code === 'KeyF' && e.shiftKey && e.altKey) {
       e.preventDefault();
       onFormat?.();
       return;
@@ -256,7 +270,7 @@ export function SqlEditor({
 
   return (
     <div className="sql-editor">
-      <div className="sql-editor-gutter">
+      <div className="sql-editor-gutter" ref={gutterRef}>
         {lineNumbers.map((num) => (
           <div key={num} className="sql-editor-gutter-line">{num}</div>
         ))}
@@ -266,13 +280,15 @@ export function SqlEditor({
           ref={highlightRef}
           className="sql-editor-highlight"
           aria-hidden="true"
-          dangerouslySetInnerHTML={{ __html: highlightHtml || '&nbsp;' }}
+          // 末尾补一行: pre 不渲染结尾换行后的空行而 textarea 会, textarea 的横向滚动条也让它能多滚一截, 高亮层须滚得到同一位置
+          dangerouslySetInnerHTML={{ __html: highlightHtml + '\n ' }}
         />
         <textarea
           ref={textareaRef}
-          onSelect={reportSelection}
-          onKeyUp={reportSelection}
-          onMouseUp={reportSelection}
+          onSelect={handleSelect}
+          onKeyUp={handleSelect}
+          onMouseUp={handleSelect}
+          onBlur={() => setCompletionItems([])}
           className="sql-editor-input"
           value={value}
           onChange={handleChange}

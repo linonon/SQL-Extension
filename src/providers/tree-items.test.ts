@@ -28,7 +28,14 @@ describe('tree-items', () => {
       expect(item.contextValue).toBe('connection-connecting');
       expect(item.collapsibleState).toBe(vscode.TreeItemCollapsibleState.None);
       expect(item.iconPath).toEqual(new vscode.ThemeIcon('loading~spin'));
-      expect(item.command?.command).toBe('sqlext.cancelConnect');
+      // 整行单击不取消, 取消只走行内 Stop
+      expect(item.command).toBeUndefined();
+    });
+
+    it('只读连接: 描述带 (read-only), 连接中也带', () => {
+      expect(new ConnectionTreeItem('c', 'Release', 'db', 3306, 'mysql', 'disconnected', true).description).toBe('db:3306 (read-only)');
+      expect(new ConnectionTreeItem('c', 'Release', 'db', 3306, 'mysql', 'connecting', true).description).toBe('Connecting... (read-only)');
+      expect(new ConnectionTreeItem('c', 'Test', 'db', 3306, 'mysql', 'connected').description).toBe('db:3306');
     });
 
     it('should store connection metadata', () => {

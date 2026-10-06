@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import { ContextMenu, type ContextMenuItem } from '../common/ContextMenu';
 import { fuzzyScore } from '../../utils/fuzzy-score';
+import { useReadOnly } from '../../hooks/useReadOnly';
 
 export interface DatabaseInfo {
   readonly name: string;
@@ -23,7 +24,7 @@ interface DatabaseObjectListProps {
   readonly loading?: boolean;
   readonly onSelectTable: (database: string, table: string) => void;
   readonly onNewQuery: (database: string) => void;
-  readonly onImportSql: (database: string, table?: string) => void;
+  readonly onImportSql: (database: string) => void;
   readonly onEditTable: (database: string, table: string) => void;
   readonly onShowDDL: (database: string, table: string) => void;
   readonly onDumpStruct: (database: string, table: string) => void;
@@ -94,7 +95,11 @@ export function DatabaseObjectList({
   onDumpStruct,
   onDumpStructAndData,
 }: DatabaseObjectListProps) {
+  // 只读连接不给写入口: 导入 SQL 与改表结构
+  const readOnly = useReadOnly();
   const [filter, setFilter] = useState('');
+  // 折叠的库分组, 只在这个 panel 里记着; 有过滤词时全部展开, 免得匹配项藏在折叠的分组里
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
   const [contextMenu, setContextMenu] = useState<{
     items: ContextMenuItem[];
     position: { x: number; y: number };
@@ -110,28 +115,34 @@ export function DatabaseObjectList({
     setContextMenu({
       items: [
         { label: 'New Query', action: () => onNewQuery(database) },
-        { label: 'Import SQL', action: () => onImportSql(database) },
+        ...(readOnly ? [] : [{ label: 'Import SQL', action: () => onImportSql(database) }]),
       ],
       position: { x: e.clientX, y: e.clientY },
     });
-  }, [onNewQuery, onImportSql]);
+  }, [onNewQuery, onImportSql, readOnly]);
 
   const handleTableContextMenu = useCallback((e: React.MouseEvent, database: string, table: string) => {
     e.preventDefault();
     setContextMenu({
       items: [
-        { label: 'Open Table', action: () => onSelectTable(database, table) },
-        { label: 'Edit Table', action: () => onEditTable(database, table) },
+        ...(readOnly ? [] : [{ label: 'Edit Table', action: () => onEditTable(database, table) }]),
         { label: 'Show DDL', action: () => onShowDDL(database, table) },
         { label: 'Dump Struct', action: () => onDumpStruct(database, table) },
         { label: 'Dump Struct and Data', action: () => onDumpStructAndData(database, table) },
-        { label: 'Import SQL', action: () => onImportSql(database, table) },
       ],
       position: { x: e.clientX, y: e.clientY },
     });
-  }, [onSelectTable, onEditTable, onShowDDL, onDumpStruct, onDumpStructAndData, onImportSql]);
+  }, [onEditTable, onShowDDL, onDumpStruct, onDumpStructAndData, readOnly]);
 
   const closeContextMenu = useCallback(() => setContextMenu(null), []);
+
+  const toggleGroup = useCallback((database: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(database)) next.add(database);
+      return next;
+    });
+  }, []);
 
   return (
     <div className="db-object-list-panel">
@@ -151,28 +162,33 @@ export function DatabaseObjectList({
           </div>
         ) : (
           <>
-            {filtered.map((db) => (
-              <div key={db.name} className="db-group">
-                <div
-                  className="db-group-header"
-                  onContextMenu={(e) => handleDbContextMenu(e, db.name)}
-                >
-                  <span className="db-group-name">{db.name}</span>
-                  <span className="db-group-count">{db.tables.length}</span>
-                </div>
-                {db.tables.map((t) => (
+            {filtered.map((db) => {
+              const open = !!filter || !collapsed.has(db.name);
+              return (
+                <div key={db.name} className="db-group">
                   <div
-                    key={`${db.name}.${t.name}`}
-                    className={`db-table-item${isSelected(db.name, t.name) ? ' selected' : ''}`}
-                    onClick={() => onSelectTable(db.name, t.name)}
-                    onContextMenu={(e) => handleTableContextMenu(e, db.name, t.name)}
+                    className="db-group-header"
+                    onClick={() => toggleGroup(db.name)}
+                    onContextMenu={(e) => handleDbContextMenu(e, db.name)}
                   >
-                    <span className="db-table-name">{t.name}</span>
-                    <span className="db-table-count">{formatRowCount(t.rowCount)}</span>
+                    <span className="db-group-chevron">{open ? '\u25BE' : '\u25B8'}</span>
+                    <span className="db-group-name">{db.name}</span>
+                    <span className="db-group-count">{db.tables.length}</span>
                   </div>
-                ))}
-              </div>
-            ))}
+                  {open && db.tables.map((t) => (
+                    <div
+                      key={`${db.name}.${t.name}`}
+                      className={`db-table-item${isSelected(db.name, t.name) ? ' selected' : ''}`}
+                      onClick={() => onSelectTable(db.name, t.name)}
+                      onContextMenu={(e) => handleTableContextMenu(e, db.name, t.name)}
+                    >
+                      <span className="db-table-name">{t.name}</span>
+                      <span className="db-table-count">{formatRowCount(t.rowCount)}</span>
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
             {filtered.length === 0 && (
               <div className="db-empty">No tables found</div>
             )}

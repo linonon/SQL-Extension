@@ -6,6 +6,8 @@ import type { MongoView } from './ViewToggle';
 interface MongoDocumentListProps {
   readonly rows: readonly Record<string, unknown>[];
   readonly view: Exclude<MongoView, 'table'>;
+  // projection 不是顶层字段 0/1 取舍 (子路径 / 表达式), 写回会丢字段或写错值: 禁用 Edit / Clone
+  readonly readOnly?: boolean;
   readonly fieldNames?: readonly string[];
   // 正在 in-card 编辑的现存文档 _id (idToShell 形式); null 表示无
   readonly editingId?: string | null;
@@ -13,8 +15,8 @@ interface MongoDocumentListProps {
   readonly composing?: Record<string, unknown> | null;
   readonly onEdit: (doc: Record<string, unknown>) => void;
   readonly onClone: (doc: Record<string, unknown>) => void;
-  readonly onDelete: (id: string) => void;
-  readonly onSave?: (id: string | null, doc: Record<string, unknown>) => void;
+  readonly onDelete: (id: unknown) => void;
+  readonly onSave?: (original: Record<string, unknown> | null, doc: Record<string, unknown>) => void;
   readonly onCancelEdit?: () => void;
   readonly onDirtyChange?: (dirty: boolean) => void;
   readonly onSaveError?: () => void;
@@ -24,6 +26,7 @@ interface MongoDocumentListProps {
 export function MongoDocumentList({
   rows,
   view,
+  readOnly,
   fieldNames,
   editingId,
   composing,
@@ -43,7 +46,7 @@ export function MongoDocumentList({
         <div className="mongo-doc-card mongo-doc-card-editing mongo-doc-card-composing">
           {hasSeed && (
             <div className="mongo-clone-hint">
-              Clone: 保存将按当前 _id 新建文档; 原文档仍保留. 如意在更名 _id, 请另行删除原文档.
+              Clone: 保存将新建文档, 原文档仍保留. 不改 _id 则生成新 ObjectId; 改了 _id 则用新值 (如意在更名 _id, 请另行删除原文档).
             </div>
           )}
           <MongoDocumentDetail
@@ -64,9 +67,10 @@ export function MongoDocumentList({
         const isEditing = editingId != null && rowId === editingId;
         return (
           <MongoDocumentCard
-            key={String(row._id ?? idx)}
+            key={rowId || idx}
             doc={row}
             view={view}
+            readOnly={readOnly}
             editing={isEditing}
             fieldNames={fieldNames}
             onEdit={onEdit}

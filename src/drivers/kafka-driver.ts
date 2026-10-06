@@ -1,7 +1,10 @@
 import { Kafka, type Admin, type Consumer, type SASLOptions } from 'kafkajs';
 import type { ConnectionConfig } from '../types/connection.js';
 import type { IKafkaDriver } from '../types/kafka-driver.js';
-import type { KafkaTopicInfo, KafkaPartitionInfo, KafkaMessage, KafkaProduceResult } from '../types/kafka.js';
+import type { KafkaTopicInfo, KafkaPartitionInfo, KafkaMessage, KafkaFetchResult, KafkaProduceResult } from '../types/kafka.js';
+
+// 加入 group 之后等消息的时长; 到点按已收到的返回
+const FETCH_WAIT_MS = 3000;
 
 export class KafkaDriver implements IKafkaDriver {
   readonly driverType = 'kafka' as const;
@@ -87,64 +90,75 @@ export class KafkaDriver implements IKafkaDriver {
     partition: number,
     offset: string,
     limit: number
-  ): Promise<readonly KafkaMessage[]> {
+  ): Promise<KafkaFetchResult> {
     if (!this.kafka) { throw new Error('Not connected'); }
 
+    const groupId = `sqlext-browse-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     // maxWaitTimeInMs: broker 端 long-poll 等待时间.
     // 默认 5000ms, 会导致空 fetch (seek 还没生效时) 卡 5 秒.
     // 设 200ms: 空 fetch 快速返回, 下一轮 fetch 就能用 seek offset.
-    const consumer: Consumer = this.kafka.consumer({
-      groupId: `sqlext-browse-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      maxWaitTimeInMs: 200,
-    });
+    const consumer: Consumer = this.kafka.consumer({ groupId, maxWaitTimeInMs: 200 });
     const messages: KafkaMessage[] = [];
+    let timedOut = false;
 
     try {
       await consumer.connect();
       await consumer.subscribe({ topic, fromBeginning: true });
 
-      const done = new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => resolve(), 3000);
+      let finish!: () => void;
+      const done = new Promise<void>((resolve) => { finish = resolve; });
 
-        consumer.run({
-          eachBatchAutoResolve: true,
-          eachBatch: async ({ batch }) => {
-            if (batch.partition !== partition) { return; }
+      // 只读浏览, 不提交 offset
+      const running = consumer.run({
+        autoCommit: false,
+        eachBatchAutoResolve: true,
+        eachBatch: async ({ batch }) => {
+          if (batch.partition !== partition) { return; }
 
-            for (const msg of batch.messages) {
-              const headers: Record<string, string> = {};
-              if (msg.headers) {
-                for (const [k, v] of Object.entries(msg.headers)) {
-                  headers[k] = v ? Buffer.from(v).toString('utf-8') : '';
-                }
-              }
-
-              messages.push({
-                partition: batch.partition,
-                offset: msg.offset,
-                key: msg.key ? msg.key.toString('utf-8') : null,
-                value: msg.value ? msg.value.toString('utf-8') : null,
-                timestamp: msg.timestamp,
-                headers,
-              });
-
-              if (messages.length >= limit) {
-                clearTimeout(timeout);
-                resolve();
-                return;
+          for (const msg of batch.messages) {
+            const headers: Record<string, string> = {};
+            if (msg.headers) {
+              for (const [k, v] of Object.entries(msg.headers)) {
+                // 同一 header key 出现多次时 kafkajs 解码成数组
+                const parts = Array.isArray(v) ? v : [v];
+                headers[k] = parts.map((p) => (p ? p.toString() : '')).join(', ');
               }
             }
-          },
-        }).catch(reject);
+
+            messages.push({
+              partition: batch.partition,
+              offset: msg.offset,
+              key: msg.key ? msg.key.toString('utf-8') : null,
+              value: msg.value ? msg.value.toString('utf-8') : null,
+              timestamp: msg.timestamp,
+              headers,
+            });
+
+            if (messages.length >= limit) {
+              finish();
+              return;
+            }
+          }
+        },
       });
 
       consumer.seek({ topic, partition, offset });
+      // run 在加入 group 之后才 resolve (新 group 首次 join 要等 broker 的 initial rebalance delay, 默认 3 秒),
+      // 等消息的计时从这里开始, 否则 join 就耗光等待时间, 静默返回空
+      await running;
+      const timer = setTimeout(() => {
+        timedOut = messages.length === 0;
+        finish();
+      }, FETCH_WAIT_MS);
       await done;
+      clearTimeout(timer);
     } finally {
       await consumer.disconnect();
+      // group 名是随机的一次性名字, 尽力删掉, 不在 broker 上留垃圾组; 失败不影响本次结果
+      await this.admin?.deleteGroups([groupId]).catch(() => undefined);
     }
 
-    return messages;
+    return { messages, timedOut };
   }
 
   async fetchOffsetByTimestamp(topic: string, partition: number, timestamp: number): Promise<string> {

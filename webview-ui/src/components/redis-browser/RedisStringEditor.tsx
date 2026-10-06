@@ -1,28 +1,31 @@
 import { useCallback, useEffect, useState } from 'react';
+import { formatJsonLossless } from '../../utils/json-format';
+import { useReadOnly } from '../../hooks/useReadOnly';
 
 interface RedisStringEditorProps {
   readonly value: string;
   readonly onSave: (value: string) => void;
 }
 
-function tryFormatJson(value: string): { readonly formatted: string; readonly isJson: boolean } {
+function isJson(value: string): boolean {
   try {
-    const parsed = JSON.parse(value);
-    return { formatted: JSON.stringify(parsed, null, 2), isJson: true };
+    JSON.parse(value);
+    return true;
   } catch {
-    return { formatted: value, isJson: false };
+    return false;
   }
 }
 
 export function RedisStringEditor({ value, onSave }: RedisStringEditorProps) {
+  const readOnly = useReadOnly();
   const [text, setText] = useState('');
-  const [isJson, setIsJson] = useState(false);
+  const [canFormat, setCanFormat] = useState(false);
   const [dirty, setDirty] = useState(false);
 
+  // 加载时原样显示, 不自动 pretty: 未编辑时 Save 写回的就是读到的原文
   useEffect(() => {
-    const { formatted, isJson: detected } = tryFormatJson(value);
-    setText(formatted);
-    setIsJson(detected);
+    setText(value);
+    setCanFormat(isJson(value));
     setDirty(false);
   }, [value]);
 
@@ -37,11 +40,7 @@ export function RedisStringEditor({ value, onSave }: RedisStringEditorProps) {
   }, [text, onSave]);
 
   const handleFormat = useCallback(() => {
-    const { formatted, isJson: detected } = tryFormatJson(text);
-    if (detected) {
-      setText(formatted);
-      setIsJson(true);
-    }
+    setText(formatJsonLossless(text));
   }, [text]);
 
   return (
@@ -50,12 +49,15 @@ export function RedisStringEditor({ value, onSave }: RedisStringEditorProps) {
         value={text}
         onChange={handleChange}
         spellCheck={false}
+        readOnly={readOnly}
       />
       <div className="editor-actions">
-        <button onClick={handleSave} disabled={!dirty}>
-          Save
-        </button>
-        {isJson && (
+        {!readOnly && (
+          <button onClick={handleSave} disabled={!dirty}>
+            Save
+          </button>
+        )}
+        {canFormat && (
           <button className="secondary" onClick={handleFormat}>
             Format JSON
           </button>

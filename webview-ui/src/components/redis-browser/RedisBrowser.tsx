@@ -1,17 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useVSCodeMessage } from '../../hooks/useVSCodeMessage';
 import { usePostMessage } from '../../hooks/usePostMessage';
-import type { ExtensionMessage } from '../../types/messages';
-import type { RedisKeyInfo, RedisKeyType, RedisValue } from '../../types/redis';
+import type { ExtensionMessage } from '../../../../src/types/messages';
+import type { RedisKeyInfo, RedisKeyType, RedisValue } from '../../../../src/types/redis';
 import { RedisToolbar } from './RedisToolbar';
 import { RedisKeyList } from './RedisKeyList';
 import { RedisValueViewer } from './RedisValueViewer';
 import '../../styles/redis-browser.css';
 
 const PAGE_SIZE = 100;
-const LIST_PAGE_SIZE = 100;
-const ZSET_PAGE_SIZE = 100;
 const HASH_SCAN_COUNT = 100;
+
+// redisScan 的请求序号: 回执 requestId 不是最近一次的 (换 pattern / 换库 / 刷新后旧 SCAN 晚到) 即丢弃, 不并进当前列表
+let scanSeq = 0;
 
 interface RedisBrowserProps {
   readonly connectionId: string;
@@ -19,14 +20,15 @@ interface RedisBrowserProps {
   readonly separator?: string;
 }
 
-// 根据 key type 生成对应的 command 提示
+// 根据 key type 生成对应的 command 提示; 集合类一律有界, 一键 Run 不会把大 key 整个拉进宿主
 function buildCommandForKey(key: string, keyType: RedisKeyType): string {
   switch (keyType) {
     case 'hash': return `HSCAN ${key} 0 COUNT ${HASH_SCAN_COUNT}`;
     case 'string': return `GET ${key}`;
-    case 'list': return `LRANGE ${key} 0 -1`;
-    case 'set': return `SMEMBERS ${key}`;
-    case 'zset': return `ZRANGE ${key} 0 -1 WITHSCORES`;
+    case 'list': return `LRANGE ${key} 0 99`;
+    case 'set': return `SSCAN ${key} 0 COUNT 100`;
+    case 'zset': return `ZRANGE ${key} 0 99 WITHSCORES`;
+    case 'stream': return `XRANGE ${key} - + COUNT 100`;
     default: return `TYPE ${key}`;
   }
 }
@@ -65,6 +67,9 @@ export function RedisBrowser({ database: initialDb, separator = ':' }: RedisBrow
   const [filterQuery, setFilterQuery] = useState('');
   const [cursor, setCursor] = useState('0');
   const [hasMore, setHasMore] = useState(false);
+  // 当前这次搜索累计扫过的 key 数 (估值) 与是否有 SCAN 请求在途
+  const [scanned, setScanned] = useState(0);
+  const [scanning, setScanning] = useState(false);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [selectedKeyType, setSelectedKeyType] = useState<RedisKeyType>('string');
   const [selectedTTL, setSelectedTTL] = useState(-1);
@@ -77,32 +82,31 @@ export function RedisBrowser({ database: initialDb, separator = ':' }: RedisBrow
   // command bar state
   const [commandText, setCommandText] = useState('*');
   const [commandOutput, setCommandOutput] = useState<string | null>(null);
+  // 最近一次读写操作的失败原因 (webview sandbox 里 alert 不弹); 下一次成功或换 key / 搜索 / 换库时清掉
+  const [opError, setOpError] = useState<string | null>(null);
 
   // hash 分页状态
   const [hashCursor, setHashCursor] = useState('0');
   const [hashDone, setHashDone] = useState(true);
 
-  // list/zset 分页状态
-  const [listOffset, setListOffset] = useState(0);
-  const [listHasMore, setListHasMore] = useState(false);
-  const [zsetOffset, setZSetOffset] = useState(0);
-  const [zsetHasMore, setZSetHasMore] = useState(false);
-
-  // set cursor 分页状态
+  // set cursor 分页状态; list / zset 的下一页起点由已加载的 value (start + 长度) 推出, 不另存
   const [memberCursor, setMemberCursor] = useState('0');
   const [memberHasMore, setMemberHasMore] = useState(false);
   const setLoadingMore = useRef(false);
-  const listLoadingMore = useRef(false);
-  const zsetLoadingMore = useRef(false);
   const selectedKeyRef = useRef<string | null>(null);
+  const scanIdRef = useRef(0);
 
   // 扫描 keys
   const doScan = useCallback((pat: string, cur: string, append: boolean) => {
     if (!append) {
       setKeys([]);
       setCursor('0');
+      setHasMore(false);
+      setScanned(0);
     }
-    postMessage({ type: 'redisScan', database: db, pattern: pat, cursor: cur, count: PAGE_SIZE });
+    setScanning(true);
+    scanIdRef.current = ++scanSeq;
+    postMessage({ type: 'redisScan', requestId: scanIdRef.current, database: db, pattern: pat, cursor: cur, count: PAGE_SIZE });
   }, [db, postMessage]);
 
   // 初始加载数据库列表
@@ -110,15 +114,22 @@ export function RedisBrowser({ database: initialDb, separator = ':' }: RedisBrow
     postMessage({ type: 'redisListDatabases' });
   }, [postMessage]);
 
-  // 初始加载 + db 变化时重新扫描
+  // 初始加载 + db 变化时扫描; 换 pattern 由 handleSearch 自己扫, 不经这里, 免得同一次搜索发两遍 SCAN
   useEffect(() => {
     doScan(pattern, '0', false);
-  }, [db, doScan, pattern]);
+  }, [db]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 处理消息
   const handleMessage = useCallback((message: ExtensionMessage) => {
     switch (message.type) {
       case 'redisScanResult': {
+        if (message.requestId !== scanIdRef.current) { break; }
+        setScanning(false);
+        if (message.error !== undefined) {
+          setOpError(`Scan failed: ${message.error}`);
+          break;
+        }
+        setScanned((prev) => prev + message.scanned);
         setHasMore(!message.done);
         setCursor(message.cursor);
         setKeys((prev) => {
@@ -129,6 +140,8 @@ export function RedisBrowser({ database: initialDb, separator = ':' }: RedisBrow
         break;
       }
       case 'redisValueResult': {
+        // 只认当前选中 key 的回执: 晚到的旧 key 值显示在新 key 下, Save 会把它写进新 key
+        if (message.key !== selectedKeyRef.current || message.database !== db) { break; }
         setCommandOutput(null);
         setSelectedKeyType(message.keyType);
         setSelectedTTL(message.ttl);
@@ -158,55 +171,34 @@ export function RedisBrowser({ database: initialDb, separator = ':' }: RedisBrow
             setValue(setVal);
           }
         }
-        // list: load more 时追加, 否则替换
+        // list / zset: start 为 0 是首屏或写后重载, 替换; 否则是 Load More 的下一页, 必须紧接已加载的末尾才追加,
+        // 对不上 (重载后晚到的旧页, 重复点击) 丢弃, 保证 value[i] 始终是 Redis index start + i
         else if (message.value.type === 'list') {
-          const listVal = message.value;
-          if (listLoadingMore.current) {
-            listLoadingMore.current = false;
-            setValue((prev) => {
-              if (prev?.type === 'list') {
-                const combined = [...prev.value, ...listVal.value];
-                setListHasMore(combined.length < listVal.total);
-                return { type: 'list' as const, value: combined, total: listVal.total };
-              }
-              return listVal;
-            });
-          } else {
-            setListHasMore(listVal.value.length < listVal.total);
-            setValue(listVal);
-          }
+          const page = message.value;
+          setValue((prev) => page.start === 0 ? page
+            : prev?.type === 'list' && prev.start + prev.value.length === page.start
+              ? { ...page, start: prev.start, value: [...prev.value, ...page.value] }
+              : prev);
         }
-        // zset: load more 时追加, 否则替换
         else if (message.value.type === 'zset') {
-          const zsetVal = message.value;
-          if (zsetLoadingMore.current) {
-            zsetLoadingMore.current = false;
-            setValue((prev) => {
-              if (prev?.type === 'zset') {
-                const combined = [...prev.value, ...zsetVal.value];
-                setZSetHasMore(combined.length < zsetVal.total);
-                return { type: 'zset' as const, value: combined, total: zsetVal.total };
-              }
-              return zsetVal;
-            });
-          } else {
-            setZSetHasMore(zsetVal.value.length < zsetVal.total);
-            setValue(zsetVal);
-          }
+          const page = message.value;
+          setValue((prev) => page.start === 0 ? page
+            : prev?.type === 'zset' && prev.start + prev.value.length === page.start
+              ? { ...page, start: prev.start, value: [...prev.value, ...page.value] }
+              : prev);
         }
-        // string or unknown
+        // string / unsupported
         else {
           setMemberCursor('0');
           setMemberHasMore(false);
           setHashCursor('0');
           setHashDone(true);
-          setListHasMore(false);
-          setZSetHasMore(false);
           setValue(message.value);
         }
         break;
       }
       case 'redisHashScanResult': {
+        if (message.key !== selectedKeyRef.current || message.database !== db) { break; }
         setHashCursor(message.cursor);
         setHashDone(message.done);
         setValue((prev) => {
@@ -227,13 +219,21 @@ export function RedisBrowser({ database: initialDb, separator = ':' }: RedisBrow
       }
       case 'redisOperationResult': {
         if (!message.success) {
-          window.alert(`Operation failed: ${message.error ?? 'Unknown error'}`);
+          setOpError(`Operation failed: ${message.error ?? 'Unknown error'}`);
           break;
         }
+        setOpError(null);
+        // 写成功后重拉第一页: 在途的 set Load More 不能把首屏追加到旧成员后面
+        setLoadingMore.current = false;
         const key = selectedKeyRef.current;
         if (key) {
           postMessage({ type: 'redisGetValue', key, database: db });
         }
+        break;
+      }
+      case 'error': {
+        // 笼统失败 (如按需重连失败) 由 App 显示; 不清 scanning 则列表永远停在 Scanning...
+        setScanning(false);
         break;
       }
       case 'redisDeleteKeysResult': {
@@ -269,7 +269,7 @@ export function RedisBrowser({ database: initialDb, separator = ':' }: RedisBrow
       default:
         break;
     }
-  }, [db, postMessage]);
+  }, [db, doScan, pattern, postMessage]);
 
   useVSCodeMessage(handleMessage);
 
@@ -280,6 +280,7 @@ export function RedisBrowser({ database: initialDb, separator = ':' }: RedisBrow
     setSelectedKey(null);
     setValue(null);
     setCommandOutput(null);
+    setOpError(null);
     setFilterQuery('');
     doScan(pat, '0', false);
   }, [doScan]);
@@ -297,6 +298,7 @@ export function RedisBrowser({ database: initialDb, separator = ':' }: RedisBrow
     setSelectedKey(null);
     setValue(null);
     setCommandOutput(null);
+    setOpError(null);
     setKeys([]);
   }, []);
 
@@ -305,6 +307,7 @@ export function RedisBrowser({ database: initialDb, separator = ':' }: RedisBrow
     setSelectedKey(null);
     setValue(null);
     setCommandOutput(null);
+    setOpError(null);
     setFilterQuery('');
     doScan(pattern, '0', false);
   }, [pattern, doScan]);
@@ -315,14 +318,15 @@ export function RedisBrowser({ database: initialDb, separator = ':' }: RedisBrow
 
   const handleSelectKey = useCallback((key: string) => {
     selectedKeyRef.current = key;
+    // 上一个 key 的 Load More 回执会被丢弃, 不能把追加标记留给新 key 的首屏
+    setLoadingMore.current = false;
     setSelectedKey(key);
+    // 回执到达前不显示上一个 key 的值: 此时 Save 针对的是新 key, 会把旧内容写进去
+    setValue(null);
     setCommandOutput(null);
-    setListOffset(0);
-    setListHasMore(false);
+    setOpError(null);
     setMemberCursor('0');
     setMemberHasMore(false);
-    setZSetOffset(0);
-    setZSetHasMore(false);
     setHashCursor('0');
     setHashDone(true);
     const keyInfo = keys.find((k) => k.key === key);
@@ -345,14 +349,13 @@ export function RedisBrowser({ database: initialDb, separator = ':' }: RedisBrow
     postMessage({ type: 'redisSetTTLPrompt', key: target, database: db });
   }, [db, postMessage]);
 
+  // 导出当前库里匹配当前 pattern 的全部 key (extension host 跑完整轮 SCAN), 不只是已加载的
   const handleExportAll = useCallback(() => {
-    const keyNames = keys.map((k) => k.key);
-    if (keyNames.length === 0) { return; }
-    postMessage({ type: 'redisExportKeys', keys: keyNames, database: db });
-  }, [keys, db, postMessage]);
+    postMessage({ type: 'redisExportPattern', database: db, pattern });
+  }, [db, pattern, postMessage]);
 
   const handleExportKey = useCallback((key: string) => {
-    postMessage({ type: 'redisExportKeys', keys: [key], database: db });
+    postMessage({ type: 'redisExportKey', database: db, key });
   }, [db, postMessage]);
 
   const handleImport = useCallback(() => {
@@ -390,12 +393,9 @@ export function RedisBrowser({ database: initialDb, separator = ':' }: RedisBrow
   }, [db, postMessage]);
 
   const handleListLoadMore = useCallback(() => {
-    if (!selectedKeyRef.current) { return; }
-    const newOffset = listOffset + LIST_PAGE_SIZE;
-    setListOffset(newOffset);
-    listLoadingMore.current = true;
-    postMessage({ type: 'redisGetValue', key: selectedKeyRef.current, database: db, listStart: newOffset });
-  }, [listOffset, db, postMessage]);
+    if (!selectedKeyRef.current || value?.type !== 'list') { return; }
+    postMessage({ type: 'redisGetValue', key: selectedKeyRef.current, database: db, listStart: value.start + value.value.length });
+  }, [value, db, postMessage]);
 
   const handleListRemove = useCallback((index: number) => {
     if (!selectedKeyRef.current) { return; }
@@ -445,12 +445,12 @@ export function RedisBrowser({ database: initialDb, separator = ':' }: RedisBrow
   }, [db, postMessage]);
 
   const handleZSetLoadMore = useCallback(() => {
-    if (!selectedKeyRef.current) { return; }
-    const newOffset = zsetOffset + ZSET_PAGE_SIZE;
-    setZSetOffset(newOffset);
-    zsetLoadingMore.current = true;
-    postMessage({ type: 'redisGetValue', key: selectedKeyRef.current, database: db, zsetStart: newOffset });
-  }, [zsetOffset, db, postMessage]);
+    if (!selectedKeyRef.current || value?.type !== 'zset') { return; }
+    postMessage({ type: 'redisGetValue', key: selectedKeyRef.current, database: db, zsetStart: value.start + value.value.length });
+  }, [value, db, postMessage]);
+
+  const listHasMore = value?.type === 'list' && value.start + value.value.length < value.total;
+  const zsetHasMore = value?.type === 'zset' && value.start + value.value.length < value.total;
 
   return (
     <div className={`redis-browser${isResizing ? ' resizing' : ''}`}>
@@ -467,6 +467,7 @@ export function RedisBrowser({ database: initialDb, separator = ':' }: RedisBrow
         onExport={handleExportAll}
         onImport={handleImport}
       />
+      {opError && <div className="inline-error" role="alert">{opError}</div>}
       <div className="redis-body" ref={containerRef}>
         <div className="key-panel" style={{ width: panelWidth }}>
           {keys.length > 0 && (
@@ -483,6 +484,8 @@ export function RedisBrowser({ database: initialDb, separator = ':' }: RedisBrow
             keys={keys}
             selectedKey={selectedKey}
             hasMore={hasMore}
+            scanning={scanning}
+            scanned={scanned}
             filterQuery={filterQuery}
             separator={separator}
             onSelectKey={handleSelectKey}

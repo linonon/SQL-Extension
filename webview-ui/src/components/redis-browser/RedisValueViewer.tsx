@@ -1,9 +1,10 @@
-import type { RedisKeyType, RedisValue } from '../../types/redis';
+import type { RedisKeyType, RedisValue } from '../../../../src/types/redis';
 import { RedisStringEditor } from './RedisStringEditor';
 import { RedisHashEditor } from './RedisHashEditor';
 import { RedisListEditor } from './RedisListEditor';
 import { RedisSetEditor } from './RedisSetEditor';
 import { RedisSortedSetEditor } from './RedisSortedSetEditor';
+import { useReadOnly } from '../../hooks/useReadOnly';
 
 interface RedisValueViewerProps {
   readonly keyName: string;
@@ -72,6 +73,7 @@ export function RedisValueViewer({
   onDeleteKey,
   onSetTTL,
 }: RedisValueViewerProps) {
+  const readOnly = useReadOnly();
   // command raw output 优先显示
   if (commandOutput !== null) {
     return (
@@ -98,16 +100,20 @@ export function RedisValueViewer({
         <div className="key-info">
           <h3>{keyName}</h3>
           <div className="key-meta">
-            <span className={`type-badge ${keyType}`}>{keyType}</span>
+            <span className={`type-badge ${keyType}`}>{value.type === 'unsupported' ? value.typeName : keyType}</span>
             <span>TTL: {formatTTL(ttl)}</span>
           </div>
         </div>
-        <button className="secondary" onClick={onSetTTL}>
-          Set TTL
-        </button>
-        <button className="secondary" onClick={onDeleteKey}>
-          Delete
-        </button>
+        {!readOnly && (
+          <>
+            <button className="secondary" onClick={onSetTTL}>
+              Set TTL
+            </button>
+            <button className="secondary" onClick={onDeleteKey}>
+              Delete
+            </button>
+          </>
+        )}
       </div>
       <div className="redis-value-body">
         {value.type === 'string' && (
@@ -125,6 +131,7 @@ export function RedisValueViewer({
         {value.type === 'list' && (
           <RedisListEditor
             value={value.value}
+            start={value.start}
             total={value.total}
             onPush={onListPush}
             onRemove={onListRemove}
@@ -153,6 +160,13 @@ export function RedisValueViewer({
             onBatchEdit={onZSetBatchEdit}
             onLoadMore={onZSetLoadMore}
           />
+        )}
+        {value.type === 'unsupported' && (
+          <div className="redis-empty">
+            {value.typeName === 'none'
+              ? 'This key no longer exists (expired or deleted). Refresh the key list.'
+              : `"${value.typeName}" keys are read-only here. Use the command bar to inspect them.`}
+          </div>
         )}
       </div>
     </>

@@ -37,6 +37,9 @@ export class ThemeIcon {
 }
 
 export class Uri {
+  static file(fsPath: string): Uri {
+    return new Uri(fsPath);
+  }
   static joinPath(base: Uri, ...parts: string[]): Uri {
     return new Uri(`${base.path}/${parts.join('/')}`);
   }
@@ -61,7 +64,19 @@ export const window = {
   showInformationMessage: async () => undefined,
   showWarningMessage: async () => undefined,
   showErrorMessage: async () => undefined,
+  showSaveDialog: async () => undefined,
+  showOpenDialog: async () => undefined,
+  showInputBox: async () => undefined,
+  withProgress: async (_opts: unknown, task: Function) => task({ report: () => {} }, { isCancellationRequested: false }),
 };
+
+export enum ProgressLocation {
+  Notification = 15,
+}
+
+export enum ViewColumn {
+  One = 1,
+}
 
 export const commands = {
   registerCommand: (_id: string, _handler: Function) => ({ dispose: () => {} }),
@@ -72,4 +87,13 @@ export const workspace = {
     get: () => undefined,
     update: async () => {},
   }),
+  workspaceFolders: undefined,
+  fs: {
+    writeFile: async () => {},
+    readFile: async () => new Uint8Array(),
+  },
+};
+
+export const lm = {
+  selectChatModels: async () => [],
 };

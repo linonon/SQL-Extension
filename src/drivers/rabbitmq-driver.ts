@@ -72,6 +72,11 @@ export class RabbitMQDriver implements IRabbitMQDriver {
     return this.connected;
   }
 
+  // management UI 与 HTTP API 同址同端口
+  managementUrl(): string {
+    return `${this.useHttps ? 'https' : 'http'}://${this.host}:${this.port}/`;
+  }
+
   async ping(): Promise<void> {
     if (!this.connected) { throw new Error('RabbitMQ is not connected'); }
     await this.request({ method: 'GET', path: '/api/overview' });

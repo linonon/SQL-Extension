@@ -298,6 +298,15 @@ describe('RabbitMQDriver', () => {
     });
   });
 
+  describe('managementUrl', () => {
+    it('与 API 请求同址: SSH 隧道下为本地端口', async () => {
+      setupMockResponse(200, '{}');
+      await driver.connect({ ...TEST_CONFIG, host: '127.0.0.1', port: 54321 });
+      expect(lastRequestOptions).toMatchObject({ hostname: '127.0.0.1', port: 54321 });
+      expect(driver.managementUrl()).toBe('http://127.0.0.1:54321/');
+    });
+  });
+
   describe('listQueues', () => {
     it('未连接时抛出 Not connected', async () => {
       await expect(driver.listQueues()).rejects.toThrow('Not connected');

@@ -2,6 +2,7 @@ import { render, screen, fireEvent, within } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { ChangeEvent, KeyboardEvent, RefObject } from 'react';
 import { MongoDocumentTable } from './MongoDocumentTable';
+import { convertShellToJson } from '../../utils/mongo-shell-to-json';
 
 // 卡片编辑器 / filter 输入用 autocomplete hook, mock 掉避免 DOM 测量
 vi.mock('../../hooks/useMongoAutocomplete', () => ({
@@ -26,6 +27,7 @@ function renderTable(over: Record<string, unknown> = {}) {
     total: 1,
     loading: false,
     page: 0,
+    offset: 0,
     pageSize: 50,
     filter: '',
     sort: '',
@@ -41,7 +43,7 @@ function renderTable(over: Record<string, unknown> = {}) {
     onPageChange: vi.fn(),
     onInsertDocument: vi.fn(),
     onUpdateDocument: vi.fn(),
-    onUpdateField: vi.fn(),
+    onCloneDocument: vi.fn(),
     onDeleteDocument: vi.fn(),
     queryError: null,
     ...over,
@@ -63,6 +65,85 @@ describe('MongoDocumentTable - 渲染保护 (H8/P3a)', () => {
   it('rows 不超过 200 时无提示', () => {
     renderTable();
     expect(screen.queryByText(/性能保护/)).toBeNull();
+  });
+});
+
+describe('MongoDocumentTable - readOnly (projection 含子路径或表达式)', () => {
+  it('readOnly 时 Edit/Clone 禁用带提示, Delete 仍可用; 表格视图不可原地编辑也不能打开', () => {
+    renderTable({ readOnly: true });
+    expect(screen.getByText(/Projection 含子路径或表达式/)).toBeInTheDocument();
+    const edit = screen.getByRole('button', { name: 'Edit' });
+    expect(edit).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Clone' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Table' }));
+    fireEvent.doubleClick(screen.getByText('Alice'));
+    expect(document.querySelector('.mongo-cell-input')).toBeNull();
+    expect(screen.queryByRole('button', { name: /ObjectId/ })).toBeNull();
+  });
+
+  it('默认 (含顶层字段取舍的 projection) 可编辑, 无提示', () => {
+    renderTable();
+    expect(screen.queryByText(/Projection 含子路径或表达式/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Edit' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Clone' })).toBeEnabled();
+  });
+});
+
+describe('MongoDocumentTable - Table 视图 (单击不切走, 双击原地编辑, _id 打开)', () => {
+  it('单击, 单击, 双击 -> 原地编辑, 仍在 Table 视图; 点 _id 才切回 List 进入编辑', () => {
+    const onUpdateDocument = vi.fn();
+    renderTable({ onUpdateDocument });
+    fireEvent.click(screen.getByRole('button', { name: 'Table' }));
+    const cell = screen.getByText('Alice');
+    fireEvent.click(cell);
+    fireEvent.click(cell);
+    fireEvent.doubleClick(cell);
+    const input = document.querySelector('.mongo-cell-input') as HTMLInputElement;
+    expect(input).not.toBeNull();
+    fireEvent.change(input, { target: { value: 'Bob' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onUpdateDocument).toHaveBeenCalledWith({ $oid: 'aaaaaaaaaaaaaaaaaaaaaaaa' }, { name: 'Alice' }, { name: 'Bob' });
+    expect(document.querySelector('.mongo-table')).not.toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa")' }));
+    expect(document.querySelector('.mongo-table')).toBeNull();
+    expect(document.querySelector('.mongo-doc-card-editing')).not.toBeNull();
+  });
+});
+
+describe('MongoDocumentTable - 分页 (偏移含 Skip, 总数可能未知)', () => {
+  const twoRows = [
+    { _id: 'ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa")', name: 'Alice' },
+    { _id: 'ObjectId("bbbbbbbbbbbbbbbbbbbbbbbb")', name: 'Bob' },
+  ];
+  const next = () => screen.getByRole('button', { name: /^next$/i });
+
+  it('范围标签从 offset 起算; 总数未知显示 ?, 本页取满时仍可 Next', () => {
+    renderTable({ rows: twoRows, total: null, page: 1, offset: 12, pageSize: 2 });
+    expect(screen.getByText('13-14 of ?')).toBeInTheDocument();
+    expect(next()).toBeEnabled();
+  });
+
+  it('总数未知且本页没取满 -> 没有下一页', () => {
+    renderTable({ total: null, offset: 12, pageSize: 2 });
+    expect(next()).toBeDisabled();
+  });
+
+  it('总数已知: 到达总数后没有下一页', () => {
+    renderTable({ rows: twoRows, total: 14, page: 1, offset: 12, pageSize: 2 });
+    expect(screen.getByText('13-14 of 14')).toBeInTheDocument();
+    expect(next()).toBeDisabled();
+  });
+});
+
+describe('MongoDocumentTable - 输入框 placeholder', () => {
+  it('Filter / Sort / Projection 的 placeholder 是后端能解析的写法', () => {
+    renderTable();
+    const placeholders = [...document.querySelectorAll('textarea.mongo-filter-input')].map((t) => t.getAttribute('placeholder')!);
+    expect(placeholders).toHaveLength(3);
+    for (const p of placeholders) { expect(() => JSON.parse(convertShellToJson(p))).not.toThrow(); }
   });
 });
 
@@ -93,10 +174,10 @@ describe('MongoDocumentTable - 脏数据守卫 (H6)', () => {
     expect(onApply).toHaveBeenCalled();
   });
 
-  it('GAP1: 对话框 Save 内容有效 -> 先保存 (onUpdateDocument) 再执行挂起的 Apply', () => {
+  it('GAP1: 对话框 Save 内容有效 -> 先保存 (onUpdateDocument), 宿主确认成功后再执行挂起的 Apply', () => {
     const onApply = vi.fn();
     const onUpdateDocument = vi.fn();
-    renderTable({ onApply, onUpdateDocument });
+    const { props, rerender } = renderTable({ onApply, onUpdateDocument });
     fireEvent.click(screen.getByRole('button', { name: /^edit$/i }));
     const textarea = document.querySelector('.highlight-editor-textarea') as HTMLTextAreaElement;
     fireEvent.change(textarea, { target: { value: '{"name":"ok"}' } });
@@ -106,7 +187,24 @@ describe('MongoDocumentTable - 脏数据守卫 (H6)', () => {
     fireEvent.click(within(dialog).getByText('Save'));
 
     expect(onUpdateDocument).toHaveBeenCalled();
+    expect(onApply).not.toHaveBeenCalled();
+    rerender(<MongoDocumentTable {...(props as any)} writeResult={{ ok: true }} />);
     expect(onApply).toHaveBeenCalled();
+    expect(document.querySelector('.highlight-editor-textarea')).toBeNull();
+  });
+
+  it('宿主写入失败: 草稿留在编辑器里, 挂起的 Apply 取消', () => {
+    const onApply = vi.fn();
+    const { props, rerender } = renderTable({ onApply });
+    fireEvent.click(screen.getByRole('button', { name: /^edit$/i }));
+    const textarea = document.querySelector('.highlight-editor-textarea') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: '{"name":"dup"}' } });
+    fireEvent.click(screen.getByRole('button', { name: /^apply$/i }));
+    fireEvent.click(within(document.querySelector('.mongo-nav-dialog') as HTMLElement).getByText('Save'));
+
+    rerender(<MongoDocumentTable {...(props as any)} writeResult={{ ok: false }} />);
+    expect(onApply).not.toHaveBeenCalled();
+    expect((document.querySelector('.highlight-editor-textarea') as HTMLTextAreaElement).value).toBe('{"name":"dup"}');
   });
 
   it('round2 #3: 对话框 Save 但内容非法保存失败 -> 挂起的 Apply 取消, 后续手动保存不触发它', () => {
@@ -133,7 +231,7 @@ describe('MongoDocumentTable - 脏数据守卫 (H6)', () => {
 
   it('编辑器脏时翻页弹对话框, Cancel 不翻页', () => {
     const onPageChange = vi.fn();
-    renderTable({ onPageChange, total: 200, page: 0 });
+    renderTable({ onPageChange, total: 200, page: 0, pageSize: 1 });
     fireEvent.click(screen.getByRole('button', { name: /^edit$/i }));
     const textarea = document.querySelector('.highlight-editor-textarea') as HTMLTextAreaElement;
     fireEvent.change(textarea, { target: { value: '{"name":"changed"}' } });
@@ -147,7 +245,93 @@ describe('MongoDocumentTable - 脏数据守卫 (H6)', () => {
   });
 });
 
-describe('MongoDocumentTable - handleSave insert/update 分流 (H8)', () => {
+describe('MongoDocumentTable - 脏编辑器下编辑别的文档 / Clone / New / 切视图', () => {
+  const twoRows = [
+    { _id: 'ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa")', name: 'Alice' },
+    { _id: 'ObjectId("bbbbbbbbbbbbbbbbbbbbbbbb")', name: 'Bob' },
+  ];
+  const dirtyEditOnFirst = () => {
+    fireEvent.click(screen.getAllByRole('button', { name: /^edit$/i })[0]);
+    const textarea = document.querySelector('.highlight-editor-textarea') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: '{"name":"changed"}' } });
+    return textarea;
+  };
+  const cancelDialog = () => {
+    const dialog = document.querySelector('.mongo-nav-dialog') as HTMLElement;
+    expect(dialog).not.toBeNull();
+    fireEvent.click(within(dialog).getByText('Cancel'));
+  };
+
+  it('四个动作都先弹未保存对话框, Cancel 后编辑内容保留', () => {
+    renderTable({ rows: twoRows, total: 2 });
+    const textarea = dirtyEditOnFirst();
+    const viewToggle = within(screen.getByRole('group', { name: 'View mode' }));
+    const actions = [
+      screen.getByRole('button', { name: /^edit$/i }), // 第二张卡片 (第一张在编辑中, 不显示 Edit)
+      screen.getAllByRole('button', { name: /^clone$/i })[0],
+      screen.getByRole('button', { name: /New Document/i }),
+      viewToggle.getByRole('button', { name: 'Table' }),
+      viewToggle.getByRole('button', { name: 'JSON' }),
+    ];
+    for (const button of actions) {
+      fireEvent.click(button);
+      cancelDialog();
+      expect(document.querySelector('.highlight-editor-textarea')).toBe(textarea);
+      expect(textarea.value).toBe('{"name":"changed"}');
+    }
+  });
+
+  it('Discard 后执行挂起的动作: 编辑另一张卡片', () => {
+    renderTable({ rows: twoRows, total: 2 });
+    dirtyEditOnFirst();
+    fireEvent.click(screen.getByRole('button', { name: /^edit$/i }));
+    fireEvent.click(within(document.querySelector('.mongo-nav-dialog') as HTMLElement).getByText('Discard'));
+    const textarea = document.querySelector('.highlight-editor-textarea') as HTMLTextAreaElement;
+    expect(textarea.value).toContain('Bob');
+  });
+});
+
+describe('MongoDocumentTable - handleSave insert/update/clone 分流', () => {
+  const oid = { $oid: 'aaaaaaaaaaaaaaaaaaaaaaaa' };
+
+  it('Edit 保存走 update: _id 还原成 EJSON, 带打开时的文档作对比基准', () => {
+    const onUpdateDocument = vi.fn();
+    renderTable({ onUpdateDocument });
+    fireEvent.click(screen.getByRole('button', { name: /^edit$/i }));
+    const textarea = document.querySelector('.highlight-editor-textarea') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: '{"name": "Bob"}' } });
+    fireEvent.click(screen.getByText('Save'));
+    expect(onUpdateDocument).toHaveBeenCalledWith(oid, { name: 'Alice' }, { name: 'Bob' });
+  });
+
+  it('Clone 保存走 clone: 源 _id 取自 seed, 不走 insert', () => {
+    const onCloneDocument = vi.fn();
+    const onInsertDocument = vi.fn();
+    renderTable({ onCloneDocument, onInsertDocument });
+    fireEvent.click(screen.getByRole('button', { name: /^clone$/i }));
+    const textarea = document.querySelector('.highlight-editor-textarea') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: '{"_id": ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa"), "name": "copy"}' } });
+    fireEvent.click(screen.getByText('Save'));
+    expect(onCloneDocument).toHaveBeenCalledWith(oid, { _id: oid, name: 'Alice' }, { _id: oid, name: 'copy' });
+    expect(onInsertDocument).not.toHaveBeenCalled();
+  });
+
+  it('表格单元格编辑走 update, 前后文档只含该 path (嵌套字段按层级展开)', () => {
+    const onUpdateDocument = vi.fn();
+    renderTable({
+      onUpdateDocument,
+      columns: [col('_id'), col('bag')],
+      rows: [{ _id: 'ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa")', bag: { gold: 10 } }],
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Table' }));
+    fireEvent.click(screen.getByRole('button', { name: /expand bag/i }));
+    fireEvent.doubleClick(screen.getByText('10'));
+    const input = document.querySelector('.mongo-cell-input') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '20' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onUpdateDocument).toHaveBeenCalledWith(oid, { bag: { gold: 10 } }, { bag: { gold: 20 } });
+  });
+
   it('New Document 保存走 insert', () => {
     const onInsertDocument = vi.fn();
     renderTable({ onInsertDocument });

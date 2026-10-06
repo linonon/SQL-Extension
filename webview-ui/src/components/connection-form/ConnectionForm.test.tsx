@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { ConnectionForm } from './ConnectionForm';
 import { mockPostMessage } from '../../__test__/setup';
-import type { ExtensionMessage } from '../../types/messages';
+import type { ExtensionMessage } from '../../../../src/types/messages';
 
 describe('ConnectionForm', () => {
   beforeEach(() => {
@@ -224,7 +224,51 @@ describe('ConnectionForm', () => {
         sshAuthType: 'password',
         sshPassword: '',
         sshPrivateKeyPath: '',
+        readOnly: false,
       },
+    });
+  });
+
+  it('Read-only 勾选随保存发出', () => {
+    render(<ConnectionForm />);
+    fireEvent.change(screen.getByPlaceholderText('My Database'), { target: { value: 'release' } });
+    fireEvent.click(screen.getByLabelText('Read-only (block writes from the UI and from agents)'));
+    fireEvent.click(screen.getByText('Save'));
+
+    expect(mockPostMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'saveConnection',
+      config: expect.objectContaining({ name: 'release', readOnly: true }),
+    }));
+  });
+
+  describe('编辑已有连接', () => {
+    const editConnection = {
+      id: 'c1', name: 'release', driverType: 'mysql' as const, host: 'db', port: 3306, username: 'root',
+      hasPassword: true, database: 'game', separator: ':',
+      sshEnabled: true, sshHost: 'jump', sshPort: 22, sshUsername: 'ops', sshAuthType: 'password' as const,
+      hasSshPassword: true, sshPrivateKeyPath: '', readOnly: true,
+    };
+    const passwordInputs = () => Array.from(document.querySelectorAll<HTMLInputElement>('input[type="password"]'));
+
+    it('密码框为空, 已存的密码显示 (unchanged); 只读勾选回显', () => {
+      render(<ConnectionForm editConnection={editConnection} />);
+      expect(passwordInputs().map((i) => [i.value, i.placeholder])).toEqual([['', '(unchanged)'], ['', '(unchanged)']]);
+      expect(screen.getByLabelText('Read-only (block writes from the UI and from agents)')).toBeChecked();
+    });
+
+    it('不改密码直接 Update: 发空串 (宿主保留已存值); 填了就发新值', () => {
+      render(<ConnectionForm editConnection={editConnection} />);
+      fireEvent.click(screen.getByText('Update'));
+      expect(mockPostMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+        type: 'updateConnection',
+        config: expect.objectContaining({ id: 'c1', password: '', sshPassword: '', readOnly: true }),
+      }));
+
+      fireEvent.change(passwordInputs()[0], { target: { value: 'new-pw' } });
+      fireEvent.click(screen.getByText('Update'));
+      expect(mockPostMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+        config: expect.objectContaining({ password: 'new-pw', sshPassword: '' }),
+      }));
     });
   });
 
@@ -328,5 +372,31 @@ describe('ConnectionForm', () => {
       const pwInput = formElement?.querySelector('input[type="password"]') as HTMLInputElement;
       expect(pwInput.placeholder).toBe('Password (optional)');
     });
+  });
+
+  it('私钥认证: SSH 密码字段作为 Key Passphrase 发出; Kafka + SSH 给出单 broker 限制提示', () => {
+    render(<ConnectionForm />);
+    const form = document.querySelector('.connection-form') as HTMLElement;
+    fireEvent.change(form.querySelector('select') as HTMLSelectElement, { target: { value: 'kafka' } });
+    fireEvent.click(screen.getByText('Enable SSH Tunnel'));
+    expect(screen.getByText(/single broker whose advertised listener/)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByDisplayValue('Password'), { target: { value: 'privateKey' } });
+    expect(screen.getByText(/ssh-agent \(SSH_AUTH_SOCK\)/)).toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText('(only for an encrypted key)'), { target: { value: 'key-pass' } });
+    fireEvent.click(screen.getByText('Test Connection'));
+
+    expect(mockPostMessage).toHaveBeenCalledWith({
+      type: 'testConnection',
+      config: expect.objectContaining({ driverType: 'kafka', sshAuthType: 'privateKey', sshPassword: 'key-pass', sshPrivateKeyPath: '' }),
+    });
+  });
+
+  it('宿主回笼统 error 时结束 Testing...', () => {
+    render(<ConnectionForm />);
+    fireEvent.click(screen.getByText('Test Connection'));
+    expect(screen.getByText('Testing...')).toBeInTheDocument();
+    fireEvent(window, new MessageEvent('message', { data: { type: 'error', message: 'boom' } satisfies ExtensionMessage }));
+    expect(screen.getByText('Test Connection')).toBeInTheDocument();
   });
 });

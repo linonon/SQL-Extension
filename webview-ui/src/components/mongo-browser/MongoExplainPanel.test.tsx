@@ -6,19 +6,18 @@ describe('MongoExplainPanel', () => {
   it('COLLSCAN -> 显示全表扫描警告', () => {
     render(
       <MongoExplainPanel
-        summary={{ stage: 'COLLSCAN', docsExamined: 10000, keysExamined: 0, nReturned: 5, executionTimeMillis: 40, isCollScan: true }}
+        summary={{ stage: 'COLLSCAN', isCollScan: true }}
         onClose={vi.fn()}
       />,
     );
     expect(screen.getByText(/COLLSCAN/)).toBeInTheDocument();
     expect(screen.getByText(/全表扫描|无索引|建议/)).toBeInTheDocument();
-    expect(screen.getByText(/docs examined: 10000/)).toBeInTheDocument();
   });
 
   it('IXSCAN -> 显示索引名, 无警告', () => {
     render(
       <MongoExplainPanel
-        summary={{ stage: 'IXSCAN', indexName: 'age_1', docsExamined: 5, keysExamined: 5, nReturned: 5, executionTimeMillis: 1, isCollScan: false }}
+        summary={{ stage: 'IXSCAN', indexName: 'age_1', isCollScan: false }}
         onClose={vi.fn()}
       />,
     );

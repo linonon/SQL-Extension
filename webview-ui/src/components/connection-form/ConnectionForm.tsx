@@ -1,7 +1,8 @@
 import { useCallback, useState } from 'react';
 import { useVSCodeMessage } from '../../hooks/useVSCodeMessage';
 import { usePostMessage } from '../../hooks/usePostMessage';
-import type { DriverType, SSHAuthType, ExtensionMessage, ConnectionFormSSH } from '../../types/messages';
+import type { ExtensionMessage, ConnectionFormSSH } from '../../../../src/types/messages';
+import type { DriverType, SSHAuthType } from '../../../../src/types/connection';
 import '../../styles/connection-form.css';
 
 interface FormState {
@@ -21,6 +22,7 @@ interface FormState {
   readonly sshAuthType: SSHAuthType;
   readonly sshPassword: string;
   readonly sshPrivateKeyPath: string;
+  readonly readOnly: boolean;
 }
 
 const DEFAULT_PORTS: Record<DriverType, string> = {
@@ -49,8 +51,10 @@ const initialState: FormState = {
   sshAuthType: 'password',
   sshPassword: '',
   sshPrivateKeyPath: '',
+  readOnly: false,
 };
 
+// 已存的密码不发到 webview, 只给有没有: 编辑时密码框留空表示沿用已存的值
 interface EditConnection {
   readonly id: string;
   readonly name: string;
@@ -58,7 +62,7 @@ interface EditConnection {
   readonly host: string;
   readonly port: number;
   readonly username: string;
-  readonly password: string;
+  readonly hasPassword: boolean;
   readonly database: string;
   readonly authSource?: string;
   readonly separator?: string;
@@ -67,9 +71,12 @@ interface EditConnection {
   readonly sshPort: number;
   readonly sshUsername: string;
   readonly sshAuthType: SSHAuthType;
-  readonly sshPassword: string;
+  readonly hasSshPassword: boolean;
   readonly sshPrivateKeyPath: string;
+  readonly readOnly: boolean;
 }
+
+const UNCHANGED_PLACEHOLDER = '(unchanged)';
 
 function sshFields(form: FormState): ConnectionFormSSH {
   return {
@@ -98,7 +105,7 @@ export function ConnectionForm({ editConnection }: ConnectionFormProps) {
       host: editConnection.host,
       port: String(editConnection.port),
       username: editConnection.username,
-      password: editConnection.password,
+      password: '',
       database: editConnection.database,
       authSource: editConnection.authSource ?? '',
       separator: editConnection.separator ?? ':',
@@ -107,8 +114,9 @@ export function ConnectionForm({ editConnection }: ConnectionFormProps) {
       sshPort: String(editConnection.sshPort),
       sshUsername: editConnection.sshUsername,
       sshAuthType: editConnection.sshAuthType,
-      sshPassword: editConnection.sshPassword,
+      sshPassword: '',
       sshPrivateKeyPath: editConnection.sshPrivateKeyPath,
+      readOnly: editConnection.readOnly,
     };
   });
   const [testResult, setTestResult] = useState<{ success: boolean; error?: string } | null>(null);
@@ -151,6 +159,10 @@ export function ConnectionForm({ editConnection }: ConnectionFormProps) {
       setTesting(false);
       setTestResult({ success: message.success, error: message.error });
     }
+    // 笼统失败 (如保存出错) 由 App 显示, 这里只结束 Testing
+    if (message.type === 'error') {
+      setTesting(false);
+    }
   }, []);
 
   useVSCodeMessage(handleMessage);
@@ -192,6 +204,7 @@ export function ConnectionForm({ editConnection }: ConnectionFormProps) {
           ...separatorField,
           ...authSourceField,
           ...sshFields(form),
+          readOnly: form.readOnly,
         },
       });
     } else {
@@ -208,6 +221,7 @@ export function ConnectionForm({ editConnection }: ConnectionFormProps) {
           ...separatorField,
           ...authSourceField,
           ...sshFields(form),
+          readOnly: form.readOnly,
         },
       });
     }
@@ -287,7 +301,9 @@ export function ConnectionForm({ editConnection }: ConnectionFormProps) {
             type="password"
             value={form.password}
             onChange={(e) => updateField('password', e.target.value)}
-            placeholder={form.driverType === 'redis' || form.driverType === 'mongodb' || form.driverType === 'kafka' ? 'Password (optional)' : undefined}
+            placeholder={editConnection?.hasPassword
+              ? UNCHANGED_PLACEHOLDER
+              : form.driverType === 'redis' || form.driverType === 'mongodb' || form.driverType === 'kafka' ? 'Password (optional)' : undefined}
           />
         </div>
       </div>
@@ -346,6 +362,17 @@ export function ConnectionForm({ editConnection }: ConnectionFormProps) {
         </div>
       )}
 
+      <div className="form-group">
+        <label className="read-only-toggle">
+          <input
+            type="checkbox"
+            checked={form.readOnly}
+            onChange={(e) => updateField('readOnly', e.target.checked)}
+          />
+          Read-only (block writes from the UI and from agents)
+        </label>
+      </div>
+
       <div className="ssh-section">
           <label className="ssh-toggle">
             <input
@@ -358,6 +385,12 @@ export function ConnectionForm({ editConnection }: ConnectionFormProps) {
 
           {form.sshEnabled && (
             <div className="ssh-fields">
+              {form.driverType === 'kafka' && (
+                // tunnel 只转发一个端口, kafkajs 拿到 metadata 后直连 broker 自己 advertise 的地址
+                <p className="form-hint">
+                  SSH works only for a single broker whose advertised listener is reachable through the tunnel.
+                </p>
+              )}
               <div className="form-row">
                 <div className="form-group">
                   <label>SSH Host</label>
@@ -392,7 +425,7 @@ export function ConnectionForm({ editConnection }: ConnectionFormProps) {
                   onChange={(e) => updateField('sshAuthType', e.target.value as SSHAuthType)}
                 >
                   <option value="password">Password</option>
-                  <option value="privateKey">Private Key</option>
+                  <option value="privateKey">Private Key / ssh-agent</option>
                 </select>
               </div>
 
@@ -403,17 +436,31 @@ export function ConnectionForm({ editConnection }: ConnectionFormProps) {
                     type="password"
                     value={form.sshPassword}
                     onChange={(e) => updateField('sshPassword', e.target.value)}
+                    placeholder={editConnection?.hasSshPassword ? UNCHANGED_PLACEHOLDER : undefined}
                   />
                 </div>
               ) : (
-                <div className="form-group">
-                  <label>Private Key Path</label>
-                  <input
-                    value={form.sshPrivateKeyPath}
-                    onChange={(e) => updateField('sshPrivateKeyPath', e.target.value)}
-                    placeholder="~/.ssh/id_rsa"
-                  />
-                </div>
+                <>
+                  <div className="form-group">
+                    <label>Private Key Path</label>
+                    <input
+                      value={form.sshPrivateKeyPath}
+                      onChange={(e) => updateField('sshPrivateKeyPath', e.target.value)}
+                      placeholder="~/.ssh/id_rsa"
+                    />
+                    <p className="form-hint">Leave empty to use the keys in ssh-agent (SSH_AUTH_SOCK).</p>
+                  </div>
+                  {/* 加密私钥的 passphrase 存在 SSH 密码字段 */}
+                  <div className="form-group">
+                    <label>Key Passphrase</label>
+                    <input
+                      type="password"
+                      value={form.sshPassword}
+                      onChange={(e) => updateField('sshPassword', e.target.value)}
+                      placeholder={editConnection?.hasSshPassword ? UNCHANGED_PLACEHOLDER : '(only for an encrypted key)'}
+                    />
+                  </div>
+                </>
               )}
             </div>
           )}

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import { usePostMessage } from './usePostMessage';
 import { mockPostMessage } from '../__test__/setup';
-import type { WebviewMessage } from '../types/messages';
+import type { WebviewMessage } from '../../../src/types/messages';
 
 describe('usePostMessage', () => {
   it('应该返回一个稳定的 postMessage 函数', () => {
@@ -28,29 +28,12 @@ describe('usePostMessage', () => {
     expect(mockPostMessage).toHaveBeenCalledWith(message);
   });
 
-  it('应该正确发送 fetchRows 消息', () => {
-    const { result } = renderHook(() => usePostMessage());
-
-    const message: WebviewMessage = {
-      type: 'fetchRows',
-      database: 'test_db',
-      table: 'users',
-      offset: 0,
-      limit: 100,
-    };
-
-    act(() => {
-      result.current(message);
-    });
-
-    expect(mockPostMessage).toHaveBeenCalledWith(message);
-  });
-
   it('应该正确发送 executeQuery 消息', () => {
     const { result } = renderHook(() => usePostMessage());
 
     const message: WebviewMessage = {
       type: 'executeQuery',
+      requestId: 1,
       database: 'test_db',
       sql: 'SELECT * FROM users',
     };
@@ -74,6 +57,13 @@ describe('usePostMessage', () => {
         username: 'root',
         password: 'secret',
         database: 'test',
+        sshEnabled: false,
+        sshHost: '',
+        sshPort: 22,
+        sshUsername: '',
+        sshAuthType: 'password',
+        sshPassword: '',
+        sshPrivateKeyPath: '',
       },
     };
 
@@ -97,6 +87,14 @@ describe('usePostMessage', () => {
         username: 'postgres',
         password: 'pass',
         database: 'mydb',
+        readOnly: false,
+        sshEnabled: false,
+        sshHost: '',
+        sshPort: 22,
+        sshUsername: '',
+        sshAuthType: 'password',
+        sshPassword: '',
+        sshPrivateKeyPath: '',
       },
     };
 
