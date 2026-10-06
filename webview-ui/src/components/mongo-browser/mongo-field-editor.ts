@@ -1,16 +1,10 @@
 import { convertShellToJson } from '../../../../src/utils/mongo-shell-syntax';
 import { detectLeafType } from './mongo-leaf-type';
 
-// 结构化字段编辑器的纯逻辑.
+// Table 单元格原地编辑与 _id 定位的纯逻辑.
 
-export interface FieldDescriptor {
-  readonly key: string;
-  readonly value: unknown;
-  readonly editable: boolean;
-}
-
-// 仅标量叶子可在字段编辑器里直接改: string(非 shell-tag) / number / boolean.
-// shell-tag (ObjectId/Date/...) / object / array / null -> 只读 (用 JSON 模式编辑).
+// 仅标量叶子可在单元格里直接改: string(非 shell-tag) / number / boolean.
+// shell-tag (ObjectId/Date/...) / object / array / null -> 只读 (用卡片的 JSON 编辑器改).
 export function isEditableLeaf(value: unknown): boolean {
   if (typeof value === 'number' || typeof value === 'boolean') { return true; }
   if (typeof value === 'string') { return detectLeafType(value) === 'string'; }
@@ -36,13 +30,6 @@ export function coerceToType(original: unknown, text: string): unknown {
     return original;
   }
   return text;
-}
-
-// 顶层字段 (排除 _id), 标记可编辑性
-export function documentToFields(doc: Record<string, unknown>): FieldDescriptor[] {
-  return Object.entries(doc)
-    .filter(([key]) => key !== '_id')
-    .map(([key, value]) => ({ key, value, editable: isEditableLeaf(value) }));
 }
 
 // 按叶子转换: 只把"真正的 shell-tag 字符串" (detectLeafType 判为非 string, 来自 deepFormatValue)

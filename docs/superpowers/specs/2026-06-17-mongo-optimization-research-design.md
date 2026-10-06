@@ -48,7 +48,11 @@
 
 1. **内嵌字段展开为列** (高回报): 列头支持点击展开 `Object` 类型字段 -> 子字段变独立列, 列头显示 dot + 完整 path. 数据已是真嵌套 (1a 保证), 纯前端按路径取值即可, 无新 round-trip.
 2. **单元格里的嵌套值** 从裸字符串改为带类型 badge 的紧凑预览 (复用 [mongo-leaf-type.ts](/Users/linonon/Workspace/tools/SQL-Extension/webview-ui/src/components/mongo-browser/mongo-leaf-type.ts) 的 shell-tag 识别), hover 展开 popover 看全量.
+   - **结论: 换成 preview.** 树的折叠摘要和 Table 的容器单元格共用一个 `preview()` (去掉 key 引号的单行 shell 文本, 截约 100 字符, 数组带元素数), 单元格 title 截 2KB. 不用 `[n items]` 形式: 看不出内容.
 3. **列管理** (可选): 列宽自适应 / 隐藏空列 / 按列排序 (点列头). 注意 "拖拽重排 / 批量展开内嵌" 这条来源弃权未验, 列为低优先.
+   - **结论: 不做.** Projection 已经能选列, Table 的内嵌字段展开已经能铺成列.
+
+**数组 Step Into 结论: 不做.** 按下标写回, 游戏服并发 `$pull` 之后下标错位, 值会写到别的道具上. 读数组靠 preview 加 JSON 视图, 改数组靠 JSON 整文档编辑加保存时的字段锁 (path 自打开后被别人改过就拒绝写入).
 
 **约束**: 图标一律文字/emoji, webview 无 Tabler 字体 ([[webview-no-tabler-icon-font]]).
 
@@ -66,6 +70,7 @@
 1b 把 [MongoDocumentDetail.tsx](/Users/linonon/Workspace/tools/SQL-Extension/webview-ui/src/components/mongo-browser/MongoDocumentDetail.tsx) 内核抽成可复用编辑器, 卡片内编辑. 在此之上, 用 Compass 的三个**已验证**细节把编辑体验做扎实:
 
 1. **颜色化 dirty** [已验证]: 改过的字段/行黄底, 标记删除的红底. 比现状 "顶部一条 unsaved" 更精确, 让用户提交前看清 diff.
+   - **结论: JSON 编辑器不做.** 按行号直比, 插入一行后全部错位, 正确做法要 LCS diff. 已有 Unsaved 标记, 保存冲突的报错会点名 path.
 2. **逐字段 revert** [已验证]: hover 改过的行, 左侧出 revert 图标 (文字/emoji 替代), 点一下还原该字段, 不必整体 Cancel.
 3. **显式 Update / Cancel 分组** [已验证]: Update 实心主按钮 + Cancel 一组 (右); 工具类 (Copy as / Find) 一组; **Delete 单独隔开远离 Save** (spec 1b 已列, 此处确认其与业界一致).
 
@@ -118,6 +123,8 @@ db.coll.updateOne({"_id":"${id}"}, {"$set": <整个文档(去掉_id)>})
 
 [一手未验] Studio 3T Visual Query Builder: 拖字段免写语法, 分 Query (字段+运算符+值, 默认 `$and`) / Projection / Sort 三段, 与文本查询栏**双向镜像**, 改一边同步另一边. 这是 spec Phase 2 "filter builder" 的成熟参照. 现状只有手输 [MongoFilterInput.tsx](/Users/linonon/Workspace/tools/SQL-Extension/webview-ui/src/components/mongo-browser/MongoFilterInput.tsx), 门槛高.
 
+**结论: 不做.** 浏览器不设 Builder, 单向的也没有 (造不出日期条件). Filter 认 mongosh 写法, 加上 Ask AI, 已经覆盖 "不想手写" 的需求.
+
 ### C2. 查询历史 (Phase 2)
 
 spec Phase 2 已列. 业界标配, 保存/复用最近查询, 一键回填. 低成本.
@@ -130,13 +137,17 @@ spec Phase 2 已列. 业界标配, 保存/复用最近查询, 一键回填. 低�
 
 [一手未验] Compass 的聚合构建器: 每个 stage 一张可拖拽卡片 + enable/disable 开关, 配 live preview (抽样 ~10 文档实时看每 stage 输出), 还有 Stage Wizard / Focus Mode / Text View 多种编辑模式. 这是 spec 完全没规划的大件, 但也是 "数据库管理插件" 跨入 "数据分析工具" 的关键差异点. 建议**独立 Phase 3**, 体量大, 先评估需求强度再投入 (YAGNI: 若用户群以 CRUD 为主, 可缓做).
 
+**结论: 不做.** aggregate 只占 shell 调用的 13/245, MCP 里是 0. Ask AI 是更便宜的入口, 问题需要分组时回答里给一个供复制的 pipeline.
+
 ### C5. Explain / 索引洞察 (全新)
 
 [一手未验] Compass 有 query plan 可视化与性能洞察 (慢查询 / 缺索引提示). 对常跑查询的用户价值高. 可作轻量切入: 查询面板加一个 "Explain" 按钮, 跑 `.explain()` 展示扫描行数/是否命中索引. 中等优先.
 
 ### C6. 大结果集虚拟化 (性能)
 
-[一手未验] 大集合浏览需虚拟滚动 / 无限滚动避免 DOM 爆炸. 现状 driver 默认 `limit=1000` ([dispatchToCollection:209](/Users/linonon/Workspace/tools/SQL-Extension/src/drivers/mongo-driver.ts:209)) + 分页. 若 List/Table 一次渲染上千卡片会卡, 建议列表层做窗口化渲染 (react-window 之类). 中等优先, 数据量大时才痛.
+[一手未验] 大集合浏览需虚拟滚动 / 无限滚动避免 DOM 爆炸. 若 List/Table 一次渲染上千卡片会卡, 建议列表层做窗口化渲染 (react-window 之类). 中等优先, 数据量大时才痛.
+
+**结论: 不做.** Limit 上限 200, 50 张卡片重渲染只要 2.8ms. 真正的热点是单个大文档的编辑器, 它在超过约 2000 行或 200KB 时只渲染 plain textarea, 校验挪到 Save.
 
 ---
 

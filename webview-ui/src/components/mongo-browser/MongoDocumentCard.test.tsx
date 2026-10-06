@@ -103,20 +103,26 @@ describe('MongoDocumentCard', () => {
     expect(screen.getByRole('button', { name: /delete/i })).toBeDisabled();
   });
 
-  it('editing 默认 JSON 模式; 切到 Fields 模式渲染结构化字段编辑器', () => {
-    render(
-      <MongoDocumentCard
-        doc={doc} view="list" editing fieldNames={[]}
-        onEdit={vi.fn()} onClone={vi.fn()} onDelete={vi.fn()}
-        onSave={vi.fn()} onCancelEdit={vi.fn()}
-      />,
-    );
-    // 默认 JSON: textarea 在, 字段编辑器不在
-    expect(document.querySelector('.highlight-editor-textarea')).not.toBeNull();
-    expect(document.querySelector('.mongo-fe')).toBeNull();
-    // 切到 Fields
-    fireEvent.click(screen.getByRole('button', { name: /^fields$/i }));
-    expect(document.querySelector('.mongo-fe')).not.toBeNull();
-    expect(document.querySelector('.highlight-editor-textarea')).toBeNull();
+  it('Copy _id 复制 shell 写法 (复合 _id 里的 ISODate 不转义); 投影排除 _id 时禁用', () => {
+    const writeText = vi.fn();
+    Object.assign(navigator, { clipboard: { writeText } });
+    const _id = { uid: 7, day: 'ISODate("2024-01-15T00:00:00.000Z")' };
+    const { rerender } = render(<MongoDocumentCard doc={{ _id, aid: 'w' }} view="list" onEdit={vi.fn()} onClone={vi.fn()} onDelete={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Copy _id' }));
+    expect(writeText).toHaveBeenCalledWith('{"uid":7,"day":ISODate("2024-01-15T00:00:00.000Z")}');
+    rerender(<MongoDocumentCard doc={{ aid: 'w' }} view="list" onEdit={vi.fn()} onClone={vi.fn()} onDelete={vi.fn()} />);
+    expect(screen.getByRole('button', { name: 'Copy _id' })).toBeDisabled();
+  });
+
+  it('List 视图渲染不 stringify 整篇文档, 点 Copy 时才生成 shell 文本', () => {
+    const writeText = vi.fn();
+    Object.assign(navigator, { clipboard: { writeText } });
+    const spy = vi.spyOn(JSON, 'stringify');
+    render(<MongoDocumentCard doc={doc} view="list" onEdit={vi.fn()} onClone={vi.fn()} onDelete={vi.fn()} />);
+    expect(spy).not.toHaveBeenCalledWith(doc, null, 2);
+    fireEvent.click(screen.getByRole('button', { name: 'Copy' }));
+    expect(spy).toHaveBeenCalledWith(doc, null, 2);
+    expect(writeText).toHaveBeenCalledWith(expect.stringContaining('"aid": "w-1"'));
+    spy.mockRestore();
   });
 });

@@ -33,6 +33,11 @@ describe('idToShell', () => {
     expect(idToShell(null)).toBe('null');
   });
 
+  it('复合 _id 里的 shell-tag 是 shell 写法而不是转义的字符串', () => {
+    expect(idToShell({ uid: 7, day: 'ISODate("2024-01-15T00:00:00.000Z")' }))
+      .toBe('{"uid":7,"day":ISODate("2024-01-15T00:00:00.000Z")}');
+  });
+
   it('undefined (投影排除 _id) -> 空串, 不返回 undefined — M7', () => {
     expect(idToShell(undefined)).toBe('');
   });

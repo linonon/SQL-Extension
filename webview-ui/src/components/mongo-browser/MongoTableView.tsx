@@ -3,6 +3,8 @@ import type { ColumnInfo } from '../../../../src/types/query';
 import { buildDisplayColumns, getByPath } from './mongo-table-columns';
 import { coerceToType, isEditableLeaf } from './mongo-field-editor';
 import { idToShell } from './mongo-id';
+import { localTime } from './mongo-leaf-type';
+import { preview } from '../../utils/mongo-shell-to-json';
 
 interface MongoTableViewProps {
   readonly columns: readonly ColumnInfo[];
@@ -13,11 +15,15 @@ interface MongoTableViewProps {
   readonly onCellEdit?: (id: unknown, path: string, original: unknown, value: unknown) => void;
 }
 
-// 将 cell 值转换为显示字符串, 对象类型 JSON.stringify 以避免 [object Object]
-function cellText(value: unknown, max: number): string {
-  if (value === null || value === undefined) { return '(null)'; }
-  const s = typeof value === 'object' ? JSON.stringify(value) : String(value);
-  return s.length > max ? s.slice(0, max) + '...' : s;
+// 单元格显示文本: 子文档 / 数组是 shell 写法的预览
+function cellText(value: unknown): string {
+  return value === null || value === undefined ? '(null)' : preview(value);
+}
+
+// 单元格 title: 完整值截到 2KB (容器值可能有几百 KB), Date 附本地时间
+function cellTitle(value: unknown): string {
+  const local = localTime(value);
+  return preview(value, 2048) + (local ? `\n${local}` : '');
 }
 
 const isIdPath = (path: string): boolean => path === '_id' || path.startsWith('_id.');
@@ -131,11 +137,11 @@ export function MongoTableView({ columns, rows, onOpen, onCellEdit }: MongoTable
                 }
                 // rowId 为空 = _id 被投影排除, 无法定位文档 -> 不可原地编辑 (否则发 id='' 必然失败)
                 const editable = onCellEdit != null && rowId !== '' && isEditableCell(col.path, v);
-                const full = typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v ?? '');
+                const full = cellTitle(v);
                 if (colIdx === openIdx && onOpen && rowId !== '') {
                   return (
                     <td key={col.path} title={`${full}\n(点击打开编辑)`}>
-                      <button type="button" className="mongo-id-open" onClick={() => onOpen(row)}>{cellText(v, 80)}</button>
+                      <button type="button" className="mongo-id-open" onClick={() => onOpen(row)}>{cellText(v)}</button>
                     </td>
                   );
                 }
@@ -146,7 +152,7 @@ export function MongoTableView({ columns, rows, onOpen, onCellEdit }: MongoTable
                     className={editable ? 'mongo-cell-editable' : undefined}
                     onDoubleClick={editable ? () => startEdit(rowId, row._id, col.path, v) : undefined}
                   >
-                    {cellText(v, 80)}
+                    {cellText(v)}
                   </td>
                 );
               })}

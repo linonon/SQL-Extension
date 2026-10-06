@@ -40,3 +40,25 @@ export function jsonToShell(json: string): string {
     .replace(/"MinKey\(\)"/g, 'MinKey()')
     .replace(/"MaxKey\(\)"/g, 'MaxKey()');
 }
+
+// 容器值的单行 shell 文本按对象缓存: 重渲染不重复 stringify, 新查询回来的行是新对象, 缓存随旧行释放
+const shellCache = new WeakMap<object, string>();
+
+/**
+ * 单行预览 (树的折叠摘要 / Table 单元格与 title): 子文档与数组是去掉 key 引号的 shell 文本, 截到 max 字符,
+ * 数组后缀元素数, 如 [{id:1,cnt:5},...] (60). 标量是 String(v).
+ */
+export function preview(value: unknown, max = 100): string {
+  if (value === null || typeof value !== 'object') {
+    const s = String(value ?? '');
+    return s.length > max ? s.slice(0, max) + '...' : s;
+  }
+  let s = shellCache.get(value);
+  if (s === undefined) {
+    // JSON.stringify 输出里未转义的 " 都是字符串边界, 紧跟 { 或 , 且后接 ": 的只能是 key
+    s = jsonToShell(JSON.stringify(value)).replace(/([{,])"([A-Za-z_$][\w$]*)":/g, '$1$2:');
+    shellCache.set(value, s);
+  }
+  const text = s.length > max ? s.slice(0, max) + '...' : s;
+  return Array.isArray(value) ? `${text} (${value.length})` : text;
+}

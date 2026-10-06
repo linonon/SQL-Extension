@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { detectLeafType } from './mongo-leaf-type';
+import { detectLeafType, localTime } from './mongo-leaf-type';
 
 describe('detectLeafType', () => {
   it('识别 shell-tag 字符串', () => {
@@ -32,5 +32,13 @@ describe('detectLeafType', () => {
     expect(detectLeafType(42)).toBe('number');
     expect(detectLeafType(true)).toBe('boolean');
     expect(detectLeafType(null)).toBe('null');
+  });
+});
+
+describe('localTime', () => {
+  it('Date 叶子给本地时间, 其余值为 undefined', () => {
+    expect(localTime('ISODate("2026-01-01T00:00:00.000Z")')).toBe(new Date('2026-01-01T00:00:00.000Z').toLocaleString());
+    expect(localTime('2026-01-01')).toBeUndefined();
+    expect(localTime(5)).toBeUndefined();
   });
 });

@@ -57,18 +57,69 @@ function renderTable(over: Record<string, unknown> = {}, wrapper?: FC<{ children
 
 beforeEach(() => vi.clearAllMocks());
 
-describe('MongoDocumentTable - 渲染保护 (H8/P3a)', () => {
-  it('rows 超过 200 时显示性能保护提示, 仅渲染前 200', () => {
-    const rows = Array.from({ length: 250 }, (_, i) => ({ _id: `ObjectId("${String(i).padStart(24, '0')}")`, name: `u${i}` }));
-    renderTable({ rows, total: 250 });
-    expect(screen.getByText(/性能保护/)).toBeInTheDocument();
-    // 卡片数量被截断到 200
-    expect(document.querySelectorAll('.mongo-doc-card').length).toBe(200);
+describe('MongoDocumentTable - 刷新时不卸载结果', () => {
+  it('loading 时旧行留在原处, 加载层盖在上面; 新行到达后 Table 的展开列与滚动容器都还是原来的', () => {
+    const rows = [{ _id: 'ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa")', bag: { gold: 10 } }];
+    const { props, rerender } = renderTable({ columns: [col('_id'), col('bag')], rows });
+    fireEvent.click(screen.getByRole('button', { name: 'Table' }));
+    fireEvent.click(screen.getByRole('button', { name: /expand bag/i }));
+    const body = document.querySelector('.mongo-document-body');
+    const table = document.querySelector('.mongo-table');
+
+    rerender(<MongoDocumentTable {...(props as any)} loading />);
+    expect(document.querySelector('.mongo-loading-overlay')).not.toBeNull();
+    expect(document.querySelector('.mongo-table')).toBe(table);
+    expect(screen.getByText('10')).toBeInTheDocument();
+
+    rerender(<MongoDocumentTable {...(props as any)} rows={[{ ...rows[0], bag: { gold: 20 } }]} loading={false} />);
+    expect(document.querySelector('.mongo-loading-overlay')).toBeNull();
+    expect(document.querySelector('.mongo-document-body')).toBe(body);
+    expect(document.querySelector('.mongo-table')).toBe(table);
+    expect(screen.getByText('bag.gold')).toBeInTheDocument();
+    expect(screen.getByText('20')).toBeInTheDocument();
   });
 
-  it('rows 不超过 200 时无提示', () => {
-    renderTable();
-    expect(screen.queryByText(/性能保护/)).toBeNull();
+  it('刷新保留纵向滚动; 翻页 / Apply 回到顶部, 横向滚动不动', () => {
+    const { props, rerender } = renderTable({ pageSize: 1, total: 5 });
+    const body = document.querySelector('.mongo-document-body') as HTMLElement;
+    body.scrollTop = 300;
+    body.scrollLeft = 40;
+
+    rerender(<MongoDocumentTable {...(props as any)} loading />);
+    rerender(<MongoDocumentTable {...(props as any)} loading={false} />);
+    expect(body.scrollTop).toBe(300);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    expect(props.onPageChange).toHaveBeenCalledWith(1);
+    expect(body.scrollTop).toBe(0);
+    expect(body.scrollLeft).toBe(40);
+
+    body.scrollTop = 300;
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+    expect(props.onApply).toHaveBeenCalled();
+    expect(body.scrollTop).toBe(0);
+  });
+});
+
+describe('MongoDocumentTable - 编辑中的文档从结果里消失', () => {
+  const twoRows = [
+    { _id: 'ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa")', name: 'Alice' },
+    { _id: 'ObjectId("bbbbbbbbbbbbbbbbbbbbbbbb")', name: 'Bob' },
+  ];
+
+  it('刷新后仍在: 草稿保留; 不在了 (编辑器里删掉): 编辑器关闭, 之后 Apply 不再被未保存对话框拦下', () => {
+    const { props, rerender } = renderTable({ rows: twoRows, total: 2 });
+    fireEvent.click(screen.getAllByRole('button', { name: /^edit$/i })[0]);
+    fireEvent.change(document.querySelector('.highlight-editor-textarea') as HTMLTextAreaElement, { target: { value: '{"name":"changed"}' } });
+
+    rerender(<MongoDocumentTable {...(props as any)} rows={twoRows.map((r) => ({ ...r }))} />);
+    expect((document.querySelector('.highlight-editor-textarea') as HTMLTextAreaElement).value).toBe('{"name":"changed"}');
+
+    rerender(<MongoDocumentTable {...(props as any)} rows={[twoRows[1]]} total={1} />);
+    expect(document.querySelector('.highlight-editor-textarea')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /^apply$/i }));
+    expect(document.querySelector('.mongo-nav-dialog')).toBeNull();
+    expect(props.onApply).toHaveBeenCalledTimes(1);
   });
 });
 

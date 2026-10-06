@@ -97,12 +97,14 @@ describe('MongoBrowser - 已生效查询的快照', () => {
     expect(tableProps.total).toBeNull();
   });
 
-  it('切集合: 查询复位并重新计数, 关掉上一个集合的 explain', () => {
+  it('切集合: 查询复位并重新计数, 关掉上一个集合的 explain, 上一个集合的行不留在新集合名下', () => {
     render(<MongoBrowser connectionId="c1" defaultDatabase="db" />);
     send({ type: 'mongoAllCollectionList', collections: [
       { database: 'db', name: 'users', count: 1 }, { database: 'db', name: 'orders', count: 1 },
     ] });
     applyQuery({ filter: '{"a": 1}', skip: '5' });
+    send(docList());
+    expect(tableProps.rows).toHaveLength(1);
     act(() => { tableProps.onExplain(); });
     send({ type: 'mongoExplainResult', summary: { stage: 'COLLSCAN', isCollScan: true } });
     expect(tableProps.explain).not.toBeNull();
@@ -110,11 +112,25 @@ describe('MongoBrowser - 已生效查询的快照', () => {
     act(() => { listProps.onSelectCollection('db', 'orders'); });
     act(() => { tableProps.onSwitchConfirmed(); });
     expect(tableProps.explain).toBeNull();
+    expect(tableProps).toMatchObject({ collection: 'orders', rows: [], loading: true });
     // 切走前发出的 explain 迟到: 面板已关, 不再显示旧集合的执行计划
     send({ type: 'mongoExplainResult', summary: { stage: 'IXSCAN', isCollScan: false } });
     expect(tableProps.explain).toBeNull();
     expect(lastSent('mongoFindDocuments')).toMatchObject({ collection: 'orders', filter: '', skip: 0, limit: 50, count: true });
     expect(tableProps).toMatchObject({ filter: '', offset: 0 });
+  });
+
+  it('Limit 最多 200; Apply 关掉上一条查询的 explain', () => {
+    openUsers();
+    act(() => { tableProps.onExplain(); });
+    send({ type: 'mongoExplainResult', summary: { stage: 'COLLSCAN', isCollScan: true } });
+    expect(tableProps.explain).not.toBeNull();
+    applyQuery({ limit: '1000' });
+    expect(lastSent('mongoFindDocuments')).toMatchObject({ limit: 200, skip: 0 });
+    expect(tableProps.explain).toBeNull();
+    send(docList());
+    act(() => { tableProps.onPageChange(1); });
+    expect(lastSent('mongoFindDocuments')).toMatchObject({ limit: 200, skip: 200 });
   });
 
   it('readOnly 跟随已生效的 projection: 顶层字段取舍可编辑, 子路径 / 表达式只读', () => {

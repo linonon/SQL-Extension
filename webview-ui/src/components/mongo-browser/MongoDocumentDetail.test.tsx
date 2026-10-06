@@ -234,4 +234,59 @@ describe('MongoDocumentDetail - UX 改进', () => {
     fireEvent.change(textarea, { target: { value: '{"name": "changed"}' } });
     expect(screen.getByText(/unsaved/i)).toBeInTheDocument();
   });
+
+  it('复合 _id 在 _id 栏显示 shell 写法, 不是 [object Object]', () => {
+    const doc = { _id: { uid: 7, day: 'ISODate("2024-01-15T00:00:00.000Z")' }, n: 1 };
+    render(<MongoDocumentDetail {...defaultProps} document={doc} mode="edit" />);
+    expect(document.querySelector('.detail-id-value')?.textContent).toBe('{"uid":7,"day":ISODate("2024-01-15T00:00:00.000Z")}');
+  });
+
+  it('Ctrl+F 只开自制搜索条, 不冒泡到 window (VS Code 在那里转发给自己的查找框)', () => {
+    const onWindowKey = vi.fn();
+    window.addEventListener('keydown', onWindowKey);
+    try {
+      render(<MongoDocumentDetail {...defaultProps} document={{ _id: 'x', name: 'test' }} mode="edit" />);
+      const textarea = document.querySelector('.highlight-editor-textarea') as HTMLTextAreaElement;
+      fireEvent.keyDown(textarea, { key: 'f', metaKey: true });
+      expect(document.querySelector('.detail-search-bar')).not.toBeNull();
+      fireEvent.keyDown(document.querySelector('.detail-search-bar input') as HTMLInputElement, { key: 'f', metaKey: true });
+      expect(onWindowKey).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener('keydown', onWindowKey);
+    }
+  });
+});
+
+describe('MongoDocumentDetail - 大文档', () => {
+  // 2100 个顶层字段, 缩进格式化后超过 2000 行
+  const bigDoc = { _id: 'myid', ...Object.fromEntries(Array.from({ length: 2100 }, (_, i) => [`k${i}`, i])) };
+
+  it('不逐键校验: 打出非法 JSON 时没有错误条, Save 时才校验并拦下; 改好后可保存', () => {
+    const onSave = vi.fn();
+    render(<MongoDocumentDetail {...defaultProps} document={bigDoc} mode="edit" onSave={onSave} />);
+    const textarea = document.querySelector('.highlight-editor-textarea') as HTMLTextAreaElement;
+    const valid = textarea.value;
+    fireEvent.change(textarea, { target: { value: valid.replace('"k0": 0', '"k0": ') } });
+    expect(document.querySelector('.detail-error')).toBeNull();
+    expect(screen.getByText('Save')).not.toBeDisabled();
+
+    fireEvent.click(screen.getByText('Save'));
+    expect(onSave).not.toHaveBeenCalled();
+    expect(document.querySelector('.detail-error')?.textContent).toMatch(/Invalid JSON/);
+    expect(screen.getByText('Save')).toBeDisabled();
+
+    fireEvent.change(textarea, { target: { value: valid.replace('"k0": 0', '"k0": 1') } });
+    expect(document.querySelector('.detail-error')).toBeNull();
+    fireEvent.click(screen.getByText('Save'));
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(onSave.mock.calls[0][1].k0).toBe(1);
+  });
+
+  it('没有自制搜索 (无高亮层): 不显示 Find, Ctrl+F 不拦截, 交给 VS Code 页内查找', () => {
+    render(<MongoDocumentDetail {...defaultProps} document={bigDoc} mode="edit" />);
+    expect(screen.queryByRole('button', { name: 'Find' })).toBeNull();
+    const textarea = document.querySelector('.highlight-editor-textarea') as HTMLTextAreaElement;
+    expect(fireEvent.keyDown(textarea, { key: 'f', metaKey: true })).toBe(true);
+    expect(document.querySelector('.detail-search-bar')).toBeNull();
+  });
 });

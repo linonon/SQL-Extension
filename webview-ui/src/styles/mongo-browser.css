@@ -167,8 +167,7 @@
   width: 100%;
 }
 
-.mongo-filter-field .mongo-filter-input,
-.mongo-filter-field .mongo-sort-input {
+.mongo-filter-field .mongo-filter-input {
   width: 100%;
   box-sizing: border-box;
   min-width: 0;
@@ -212,17 +211,25 @@
   padding: 0 4px;
 }
 
-.mongo-sort-input {
-  font-size: 12px;
-  font-family: var(--vscode-editor-font-family, monospace);
-  width: 100%;
-  box-sizing: border-box;
-  height: 24px;
+/* 结果区: 加载层绝对覆盖在滚动容器上 (不随内容滚走) */
+.mongo-document-view {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
 }
 
 .mongo-document-body {
   flex: 1;
   overflow: auto;
+}
+
+.mongo-loading-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  background: color-mix(in srgb, var(--vscode-editor-background) 55%, transparent);
 }
 
 /* Table */
@@ -342,40 +349,8 @@
 .mongo-explain-warn { color: var(--vscode-editorWarning-foreground, #cca700); }
 .mongo-explain-error { color: var(--vscode-errorForeground, #f48771); }
 
-/* 结构化字段编辑器 + 编辑模式切换 */
-.mongo-edit-mode-toggle { display: flex; gap: 4px; padding: 6px 8px 0; }
-.mongo-edit-mode-toggle .btn-small.is-active {
-  background: var(--vscode-button-background);
-  color: var(--vscode-button-foreground);
-}
-.mongo-fe { padding: 8px; }
-.mongo-fe-rows { display: flex; flex-direction: column; gap: 3px; }
-.mongo-fe-row {
-  display: flex; align-items: center; gap: 6px;
-  padding: 2px 4px; border-radius: 3px;
-}
-.mongo-fe-row.is-modified { background: rgba(204, 167, 0, 0.18); }   /* 黄: 已改 */
-.mongo-fe-row.is-deleted { background: rgba(244, 135, 113, 0.18); text-decoration: line-through; } /* 红: 待删 */
-.mongo-fe-key { min-width: 90px; font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; color: var(--vscode-symbolIcon-fieldForeground, var(--vscode-foreground)); }
-.mongo-fe-key-input { min-width: 90px; }
-.mongo-fe-key-input, .mongo-fe-value-input {
-  padding: 2px 6px;
-  background: var(--vscode-input-background); color: var(--vscode-input-foreground);
-  border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, rgba(128, 128, 128, 0.4)));
-  border-radius: 3px; font-family: var(--vscode-editor-font-family, monospace); font-size: 12px;
-}
-.mongo-fe-value-input { flex: 1; min-width: 0; }
-.mongo-fe-value-readonly {
-  flex: 1; min-width: 0;
-  font-family: var(--vscode-editor-font-family, monospace); font-size: 12px;
-  color: var(--vscode-descriptionForeground);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.mongo-fe-actions { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
-.mongo-fe-error { color: var(--vscode-errorForeground, #f48771); font-size: 12px; margin-top: 6px; }
-
-/* 渲染上限提示 */
-.mongo-render-cap-notice {
+/* 结果区上方的提示条 */
+.mongo-notice {
   padding: 5px 10px;
   font-size: 11.5px;
   color: var(--vscode-editorWarning-foreground, #cca700);
@@ -441,17 +416,6 @@
   flex: 1;
   overflow: hidden;
   padding: 0;
-}
-
-.mongo-document-detail .detail-pre {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-all;
-  font-family: var(--vscode-editor-font-family, monospace);
-  font-size: var(--vscode-editor-font-size, 13px);
-  background: var(--vscode-textBlockQuote-background, rgba(128, 128, 128, 0.1));
-  padding: 8px;
-  border-radius: 4px;
 }
 
 /* Query error */
@@ -637,13 +601,6 @@
 .detail-id-copy { flex-shrink: 0; margin-left: auto; }
 
 /* 未保存改动提示 */
-.detail-dirty-hint {
-  padding: 3px 12px;
-  font-size: 11px;
-  color: var(--vscode-editorWarning-foreground, #cca700);
-  flex-shrink: 0;
-}
-
 .detail-dirty-dot {
   font-size: 11px;
   color: var(--vscode-editorWarning-foreground, #cca700);
@@ -657,22 +614,6 @@
   padding: 6px 12px;
   border-top: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.35));
   flex-shrink: 0;
-}
-
-/* Detail editor textarea */
-.detail-editor {
-  width: 100%;
-  height: 100%;
-  box-sizing: border-box;
-  resize: none;
-  border: none;
-  outline: none;
-  padding: 8px;
-  font-family: var(--vscode-editor-font-family, monospace);
-  font-size: var(--vscode-editor-font-size, 13px);
-  background: var(--vscode-editor-background);
-  color: var(--vscode-editor-foreground);
-  line-height: 1.5;
 }
 
 /* Detail error bar */
@@ -857,6 +798,17 @@
   color: transparent;
   background: transparent;
   caret-color: var(--vscode-editorCursor-foreground, var(--vscode-editor-foreground));
+}
+
+/* 大文档 (plain): 只有 textarea, 文字可见, 在普通流里定高并自己滚动 (卡片里 .detail-body 封顶 60vh) */
+.highlight-editor-container.is-plain .highlight-editor-textarea {
+  position: static;
+  display: block;
+  width: 100%;
+  height: 60vh;
+  overflow: auto;
+  padding: 8px;
+  color: var(--vscode-editor-foreground);
 }
 
 .highlight-match {

@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { stripShellTypes, jsonToShell } from './mongo-shell-to-json';
+import { describe, it, expect, vi } from 'vitest';
+import { stripShellTypes, jsonToShell, preview } from './mongo-shell-to-json';
 import { convertShellToJson } from '../../../src/utils/mongo-shell-syntax';
 
 // convertShellToJson 自身的用例在 src/utils/mongo-shell-syntax.test.ts; 这里只测与 jsonToShell 的往返
@@ -147,5 +147,31 @@ describe('jsonToShell', () => {
     expect(parsed.created).toEqual({ '$date': '2024-01-15T00:00:00.000Z' });
     expect(parsed.count).toEqual({ '$numberLong': '999' });
     expect(parsed.name).toBe('test');
+  });
+});
+
+describe('preview', () => {
+  it('子文档数组: 去掉 key 引号的 shell 文本截到 max, 后缀元素数; 字符串值里的 "x": 不动', () => {
+    const items = Array.from({ length: 60 }, (_, i) => ({ id: i + 1, cnt: 5, t: 'ISODate("2026-01-01T00:00:00.000Z")', note: 'a,"b":c' }));
+    const p = preview(items);
+    expect(p.startsWith('[{id:1,cnt:5,t:ISODate("2026-01-01T00:00:00.000Z"),note:"a,\\"b\\":c"},{id:2,')).toBe(true);
+    expect(p.endsWith('... (60)')).toBe(true);
+    expect(p.length).toBe(100 + '... (60)'.length);
+  });
+
+  it('短的子文档不截断; 非标识符 key 保留引号; 标量按 String 截断', () => {
+    expect(preview({ uid: 7, 'a-b': 1 })).toBe('{uid:7,"a-b":1}');
+    expect(preview([])).toBe('[] (0)');
+    expect(preview('x'.repeat(5), 3)).toBe('xxx...');
+    expect(preview(null)).toBe('');
+  });
+
+  it('同一对象只 stringify 一次', () => {
+    const v = { a: 1 };
+    const spy = vi.spyOn(JSON, 'stringify');
+    preview(v);
+    preview(v, 2048);
+    expect(spy).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
   });
 });

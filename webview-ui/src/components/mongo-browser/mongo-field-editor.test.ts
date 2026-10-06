@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isEditableLeaf, coerceToType, convertTags, documentToFields } from './mongo-field-editor';
+import { isEditableLeaf, coerceToType, convertTags } from './mongo-field-editor';
 
 describe('isEditableLeaf', () => {
   it('标量 string/number/boolean 可编辑', () => {
@@ -48,21 +48,6 @@ describe('coerceToType', () => {
     expect(coerceToType(false, ' true ')).toBe(true);
     expect(coerceToType(true, 'False')).toBe(false);
     expect(coerceToType(false, 'yes')).toBe(false); // 真非法输入仍回退原值, 不写反值
-  });
-});
-
-describe('documentToFields', () => {
-  it('展开顶层字段, 排除 _id, 标记可编辑性', () => {
-    const fields = documentToFields({
-      _id: 'ObjectId("507f1f77bcf86cd799439011")',
-      name: 'Alice',
-      ref: 'ObjectId("aabbccddeeff001122334455")',
-      tags: ['a', 'b'],
-    });
-    expect(fields.map((f) => f.key)).toEqual(['name', 'ref', 'tags']);
-    expect(fields.find((f) => f.key === 'name')!.editable).toBe(true);
-    expect(fields.find((f) => f.key === 'ref')!.editable).toBe(false);
-    expect(fields.find((f) => f.key === 'tags')!.editable).toBe(false);
   });
 });
 

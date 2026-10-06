@@ -27,6 +27,8 @@ interface SelectedCollection {
 }
 
 const PAGE_SIZE = 50;
+// Limit 上限: 一页的文档全部渲染, 更多的用 Next 翻; 导出不走 Limit
+const MAX_LIMIT = 200;
 
 // mongoFindDocuments 的请求序号: 回执 requestId 不是最近一次的 (切集合 / 翻页后旧查询晚到) 即丢弃,
 // 否则旧集合的行会顶替当前集合, 随后的 Edit / Delete 按当前集合写进去
@@ -46,7 +48,7 @@ const EMPTY_QUERY: AppliedQuery = { filter: '', sort: '', projection: '', skip: 
 function resolveLimit(input: string, fallback: number): number {
   if (!input.trim()) { return fallback; }
   const n = parseInt(input, 10);
-  return (Number.isFinite(n) && n > 0) ? n : fallback;
+  return (Number.isFinite(n) && n > 0) ? Math.min(n, MAX_LIMIT) : fallback;
 }
 
 function resolveSkip(input: string): number {
@@ -212,10 +214,11 @@ export function MongoBrowser({ connectionId, defaultDatabase }: MongoBrowserProp
   // 初始加载所有 collections
   useEffect(() => { refreshCollections(); }, [refreshCollections]);
 
-  // 选中 / 切换 collection: 查询复位, 关掉上一个集合的 explain, 从首页取并计数
+  // 选中 / 切换 collection: 查询复位, 关掉上一个集合的 explain, 清掉上一个集合的行 (加载中不显示在新集合名下), 从首页取并计数
   useEffect(() => {
     setApplied(EMPTY_QUERY);
     setExplain(null);
+    setRows([]);
     fetchDocs(EMPTY_QUERY, 0, true);
   }, [selected, fetchDocs]);
 
@@ -243,6 +246,8 @@ export function MongoBrowser({ connectionId, defaultDatabase }: MongoBrowserProp
   const handleApply = useCallback(() => {
     const q = { filter, sort, projection, skip: resolveSkip(customSkip), limit: resolveLimit(customLimit, PAGE_SIZE) };
     setApplied(q);
+    // 旧的执行计划属于上一条查询
+    setExplain(null);
     fetchDocs(q, 0, true);
     if (selected) {
       pendingHistory.current = { requestId: findIdRef.current, entry: { namespace: `${selected.database}.${selected.name}`, filter, sort, projection } };

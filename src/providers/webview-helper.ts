@@ -38,6 +38,8 @@ export function getWebviewOptions(extensionUri: vscode.Uri): vscode.WebviewOptio
   return {
     enableScripts: true,
     retainContextWhenHidden: true,
+    // Cmd+F 页内查找, 如 Mongo JSON 视图与大文档编辑器 (它们没有自制搜索条)
+    enableFindWidget: true,
     localResourceRoots: [
       vscode.Uri.joinPath(extensionUri, 'webview-ui', 'dist'),
     ],

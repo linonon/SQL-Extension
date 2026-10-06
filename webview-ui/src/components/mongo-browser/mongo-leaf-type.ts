@@ -31,3 +31,8 @@ export function detectLeafType(value: unknown): LeafType {
   }
   return 'string';
 }
+
+// Date 叶子的本地时间 (界面上的 ISODate 是 UTC), 作悬停提示; 其余值为 undefined
+export function localTime(value: unknown): string | undefined {
+  return detectLeafType(value) === 'Date' ? new Date((value as string).slice(9, -2)).toLocaleString() : undefined;
+}
