@@ -48,10 +48,13 @@ export interface BatchOutcome {
   readonly cancelled?: boolean;
 }
 
+// MySQL 的 defaultValue 与 generationExpression 是 SQL 原文 (服务端的转义 / 引号已还原), 表达式默认值由 extra 的 DEFAULT_GENERATED 标出
 export interface DetailedColumnInfo extends ColumnInfo {
   readonly comment: string;
-  // MySQL 字符串列的 COLLATION_NAME; 非字符串列与 PG 缺省
+  // MySQL 字符串列与表默认不同的 COLLATION_NAME; 相同时, 非字符串列与 PG 缺省
   readonly collation?: string;
+  // MySQL 生成列的表达式; 非生成列与 PG 缺省
+  readonly generationExpression?: string;
 }
 
 export interface AlterTableChanges {
@@ -69,7 +72,8 @@ export interface AddColumnDef {
   readonly comment: string;
 }
 
-// 改动后的完整列定义 (原列合并改动): MySQL MODIFY COLUMN 整列重写, 用完整定义; PG 只对 changed 里的属性逐条 ALTER
+// 改动后的完整列定义 (原列合并改动): MySQL MODIFY / CHANGE COLUMN 整列重写, 用完整定义; PG 只对 changed 里的属性逐条 ALTER.
+// 改名的列属性没改也在 (changed 为空): MySQL 用它写 CHANGE COLUMN
 export interface ModifyColumnDef {
   readonly name: string;
   readonly dataType: string;
@@ -78,7 +82,9 @@ export interface ModifyColumnDef {
   readonly comment: string;
   // 原列的 information_schema EXTRA (如 auto_increment, DEFAULT_GENERATED on update CURRENT_TIMESTAMP); PG 为空
   readonly extra: string;
-  // 原列的 collation (MySQL 字符串列): MODIFY 不写出就回落到表默认
+  // 原列的 collation (MySQL 字符串列, 与表默认不同时): MODIFY 不写出就回落到表默认
   readonly collation?: string;
+  // 原列的生成列表达式 (MySQL)
+  readonly generationExpression?: string;
   readonly changed: readonly ('dataType' | 'nullable' | 'defaultValue' | 'comment')[];
 }

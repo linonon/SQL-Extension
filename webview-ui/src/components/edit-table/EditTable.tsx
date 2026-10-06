@@ -62,8 +62,8 @@ export function buildChanges(
 
     if (col.isNew || col.isDropped) { continue; }
 
-    // 检查是否 rename
-    if (col.name !== col.originalName) {
+    const renamed = col.name !== col.originalName;
+    if (renamed) {
       renamedColumns.push({ from: col.originalName, to: col.name });
     }
 
@@ -77,7 +77,8 @@ export function buildChanges(
     if (col.defaultValue !== (orig.defaultValue ?? '')) { changed.push('defaultValue'); }
     if (col.comment !== orig.comment) { changed.push('comment'); }
 
-    if (changed.length > 0) {
+    // 改名的列属性没改也发完整定义: MySQL 用 CHANGE COLUMN 带完整定义改名
+    if (changed.length > 0 || renamed) {
       modifiedColumns.push({
         name: col.name,
         dataType: col.dataType,
@@ -87,6 +88,7 @@ export function buildChanges(
         comment: col.comment,
         extra: orig.extra,
         collation: orig.collation,
+        generationExpression: orig.generationExpression,
         changed,
       });
     }

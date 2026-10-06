@@ -105,12 +105,29 @@ describe('buildAlterTableStatements', () => {
     });
 
     describe('rename column', () => {
-      it('应该生成 RENAME COLUMN 语句', () => {
+      it('CHANGE COLUMN 带完整定义改名 (5.7 没有 RENAME COLUMN); 属性没改也写完整定义', () => {
         const changes = emptyChanges({
-          renamedColumns: [{ from: 'old_name', to: 'new_name' }],
+          renamedColumns: [{ from: 'nick', to: 'nickname' }],
+          modifiedColumns: [mod('nickname', {}, { dataType: 'varchar(32)', defaultValue: "a\\b'c", comment: 'n', collation: 'utf8mb4_bin' })],
         });
-        const stmts = buildAlterTableStatements(driver, 'users', changes);
-        expect(stmts).toEqual([
+        expect(buildAlterTableStatements(driver, 'users', changes)).toEqual([
+          "ALTER TABLE `users` CHANGE COLUMN `nick` `nickname` varchar(32) COLLATE utf8mb4_bin NULL DEFAULT 'a\\\\b''c' COMMENT 'n';",
+        ]);
+      });
+
+      it('改名同时改属性: 并成一条 CHANGE COLUMN, 不再另发 MODIFY', () => {
+        const changes = emptyChanges({
+          renamedColumns: [{ from: 'score', to: 'points' }],
+          modifiedColumns: [mod('points', { comment: 'renamed' }, { dataType: 'decimal(10,2)', nullable: false, defaultValue: '0.00' })],
+        });
+        expect(buildAlterTableStatements(driver, 'users', changes)).toEqual([
+          "ALTER TABLE `users` CHANGE COLUMN `score` `points` decimal(10,2) NOT NULL DEFAULT '0.00' COMMENT 'renamed';",
+        ]);
+      });
+
+      it('没带完整定义时退回 RENAME COLUMN', () => {
+        const changes = emptyChanges({ renamedColumns: [{ from: 'old_name', to: 'new_name' }] });
+        expect(buildAlterTableStatements(driver, 'users', changes)).toEqual([
           'ALTER TABLE `users` RENAME COLUMN `old_name` TO `new_name`;',
         ]);
       });
@@ -179,12 +196,68 @@ describe('buildAlterTableStatements', () => {
         ]);
       });
 
-      it('未改动的表达式默认值: information_schema 里转义过的引号还原', () => {
+      it('未改动的表达式默认值原文加括号写回, 其中的引号与反斜杠不再转义', () => {
         const changes = emptyChanges({
-          modifiedColumns: [mod('tags', { comment: 'x' }, { dataType: 'json', defaultValue: "_utf8mb4\\'[]\\'", extra: 'DEFAULT_GENERATED' })],
+          modifiedColumns: [mod('ex2', { comment: 'x' }, {
+            dataType: 'varchar(32)', defaultValue: "concat(_utf8mb4'a\\\\b',_utf8mb4'it\\'s')", extra: 'DEFAULT_GENERATED',
+          })],
         });
         expect(buildAlterTableStatements(driver, 't', changes)[0]).toBe(
-          "ALTER TABLE `t` MODIFY COLUMN `tags` json NULL DEFAULT (_utf8mb4'[]') COMMENT 'x';"
+          "ALTER TABLE `t` MODIFY COLUMN `ex2` varchar(32) NULL DEFAULT (concat(_utf8mb4'a\\\\b',_utf8mb4'it\\'s')) COMMENT 'x';"
+        );
+      });
+
+      it('未改动的默认值按元信息写回: 像关键字 / 函数调用的字面量与数值都加引号', () => {
+        const stmts = buildAlterTableStatements(driver, 't', emptyChanges({
+          modifiedColumns: [
+            mod('a', { comment: 'c' }, { dataType: 'varchar(8)', defaultValue: 'TRUE' }),
+            mod('b', { comment: 'c' }, { dataType: 'varchar(8)', defaultValue: 'NULL' }),
+            mod('c', { comment: 'c' }, { dataType: 'varchar(16)', defaultValue: 'now()' }),
+            mod('d', { comment: 'c' }, { dataType: 'int', defaultValue: '1' }),
+            mod('e', { comment: 'c' }, { dataType: 'varchar(32)', defaultValue: 'CURRENT_TIMESTAMP' }),
+          ],
+        }));
+        expect(stmts).toEqual([
+          "ALTER TABLE `t` MODIFY COLUMN `a` varchar(8) NULL DEFAULT 'TRUE' COMMENT 'c';",
+          "ALTER TABLE `t` MODIFY COLUMN `b` varchar(8) NULL DEFAULT 'NULL' COMMENT 'c';",
+          "ALTER TABLE `t` MODIFY COLUMN `c` varchar(16) NULL DEFAULT 'now()' COMMENT 'c';",
+          "ALTER TABLE `t` MODIFY COLUMN `d` int NULL DEFAULT '1' COMMENT 'c';",
+          "ALTER TABLE `t` MODIFY COLUMN `e` varchar(32) NULL DEFAULT 'CURRENT_TIMESTAMP' COMMENT 'c';",
+        ]);
+      });
+
+      it('未改动的默认值: 5.7 的 datetime / timestamp CURRENT_TIMESTAMP 没有 DEFAULT_GENERATED 也裸写', () => {
+        const stmts = buildAlterTableStatements(driver, 't', emptyChanges({
+          modifiedColumns: [
+            mod('ms', { comment: 'c' }, { dataType: 'datetime(3)', nullable: false, defaultValue: 'CURRENT_TIMESTAMP(3)' }),
+            mod('up', { comment: 'c' }, { dataType: 'timestamp', nullable: false, defaultValue: 'CURRENT_TIMESTAMP', extra: 'on update CURRENT_TIMESTAMP' }),
+          ],
+        }));
+        expect(stmts).toEqual([
+          "ALTER TABLE `t` MODIFY COLUMN `ms` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT 'c';",
+          "ALTER TABLE `t` MODIFY COLUMN `up` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP on update CURRENT_TIMESTAMP COMMENT 'c';",
+        ]);
+      });
+
+      it('生成列写回 GENERATED ALWAYS AS (expr), 不写 DEFAULT 与生成列标记', () => {
+        const stmts = buildAlterTableStatements(driver, 't', emptyChanges({
+          modifiedColumns: [
+            mod('gen', { comment: 'new comment' }, { extra: 'VIRTUAL GENERATED', generationExpression: '(`level` * 2)' }),
+            mod('full', { nullable: false }, {
+              dataType: 'varchar(65)', collation: 'utf8mb4_bin', extra: 'STORED GENERATED', generationExpression: "concat(`a`,'\\'',`b`)",
+            }),
+          ],
+        }));
+        expect(stmts).toEqual([
+          "ALTER TABLE `t` MODIFY COLUMN `gen` int GENERATED ALWAYS AS ((`level` * 2)) VIRTUAL NULL COMMENT 'new comment';",
+          "ALTER TABLE `t` MODIFY COLUMN `full` varchar(65) COLLATE utf8mb4_bin GENERATED ALWAYS AS (concat(`a`,'\\'',`b`)) STORED NOT NULL;",
+        ]);
+      });
+
+      it('生成列缺表达式时不转成普通列: EXTRA 原样写出, 由数据库拒绝', () => {
+        const changes = emptyChanges({ modifiedColumns: [mod('gen', { comment: 'c' }, { extra: 'VIRTUAL GENERATED' })] });
+        expect(buildAlterTableStatements(driver, 't', changes)[0]).toBe(
+          "ALTER TABLE `t` MODIFY COLUMN `gen` int NULL VIRTUAL GENERATED COMMENT 'c';"
         );
       });
 
@@ -209,6 +282,9 @@ describe('buildAlterTableStatements', () => {
       it('位串默认值 (b\'0\') 不加引号', () => {
         const changes = emptyChanges({ modifiedColumns: [mod('flag', { comment: 'f' }, { dataType: 'bit(1)', defaultValue: "b'0'" })] });
         expect(buildAlterTableStatements(driver, 't', changes)[0]).toBe("ALTER TABLE `t` MODIFY COLUMN `flag` bit(1) NULL DEFAULT b'0' COMMENT 'f';");
+        // 未改动的 VARBINARY 默认值 (MySQL 8 报成十六进制, driver 转成 x 字面量) 原样写回, 不当文本加引号
+        const bin = emptyChanges({ modifiedColumns: [mod('b', { comment: 'f' }, { dataType: 'varbinary(16)', defaultValue: "x'6162'" })] });
+        expect(buildAlterTableStatements(driver, 't', bin)[0]).toBe("ALTER TABLE `t` MODIFY COLUMN `b` varbinary(16) NULL DEFAULT x'6162' COMMENT 'f';");
       });
 
       it('无变更属性时不生成语句', () => {
@@ -270,13 +346,15 @@ describe('buildAlterTableStatements', () => {
     });
 
     describe('rename column', () => {
-      it('应该生成 RENAME COLUMN 语句', () => {
+      it('RENAME COLUMN, 属性改动对新列名逐条 ALTER; 只改名时不出 ALTER', () => {
         const changes = emptyChanges({
-          renamedColumns: [{ from: 'old_name', to: 'new_name' }],
+          renamedColumns: [{ from: 'old_name', to: 'new_name' }, { from: 'a', to: 'b' }],
+          modifiedColumns: [mod('new_name', {}), mod('b', { comment: 'x' })],
         });
-        const stmts = buildAlterTableStatements(driver, 'users', changes);
-        expect(stmts).toEqual([
+        expect(buildAlterTableStatements(driver, 'users', changes)).toEqual([
           'ALTER TABLE "users" RENAME COLUMN "old_name" TO "new_name";',
+          'ALTER TABLE "users" RENAME COLUMN "a" TO "b";',
+          'COMMENT ON COLUMN "users"."b" IS \'x\';',
         ]);
       });
     });

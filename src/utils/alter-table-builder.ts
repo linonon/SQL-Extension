@@ -42,23 +42,44 @@ function buildDefaultClause(driverType: string, value: string): string {
 const MYSQL_STRING_TYPE = /^\s*(?:(?:var)?char|(?:tiny|medium|long)?text|enum|set)\b/i;
 const MYSQL_CHARSET_CLAUSE = /\b(?:collate|character\s+set|charset)\b/i;
 
-// MySQL MODIFY COLUMN 的完整列定义: 类型, COLLATE, NULL / NOT NULL, DEFAULT, EXTRA 里的列属性 (auto_increment, on update ...), COMMENT.
+// MySQL 生成列的 EXTRA (DEFAULT_GENERATED 是表达式默认值的标记, 不算)
+const MYSQL_GENERATED_COLUMN = /\b(VIRTUAL|STORED) GENERATED\b/i;
+
+// 未改动的默认值按原列元信息写回: 值本身分不清字面量和表达式 (字面量 'TRUE' / 'now()' 与表达式同形).
+// 表达式 (EXTRA 带 DEFAULT_GENERATED) 能裸写的裸写, 其余加括号; 5.7 的 CURRENT_TIMESTAMP 没有该标记, 按 datetime / timestamp 类型认;
+// 位串裸写; 其余都是字面量, 加引号 (数值加引号照样存, SHOW CREATE 本身就打印成 DEFAULT '1')
+function mysqlOriginalDefault(value: string, mod: ModifyColumnDef): string {
+  if (/\bDEFAULT_GENERATED\b/i.test(mod.extra)) {
+    return MYSQL_BARE_EXPRESSION_DEFAULT.test(value) ? `DEFAULT ${value}` : `DEFAULT (${value})`;
+  }
+  if ((/^\s*(datetime|timestamp)\b/i.test(mod.dataType) && /^CURRENT_TIMESTAMP(\(\d*\))?$/i.test(value))
+    || (/^\s*bit\b/i.test(mod.dataType) && /^b'[01]*'$/i.test(value))
+    || (/^\s*(var)?binary\b/i.test(mod.dataType) && /^x'[0-9a-f]*'$/i.test(value))) {
+    return `DEFAULT ${value}`;
+  }
+  return `DEFAULT ${quoteLiteral('mysql', value)}`;
+}
+
+// MySQL MODIFY / CHANGE COLUMN 的完整列定义: 类型, COLLATE, 生成列表达式, NULL / NOT NULL, DEFAULT, EXTRA 里的列属性 (auto_increment, on update ...), COMMENT.
 // 原列的 collation 在新类型仍是字符串类型时写回, 不写就回落到表默认 (COLLATE 已隐含字符集).
-// 未改动的默认值若是表达式 (EXTRA 带 DEFAULT_GENERATED) 按表达式写回: information_schema 里表达式中的引号是 \' 转义形式,
-// 先还原; DEFAULT_GENERATED 本身只是元信息, 不写
+// 生成列写回 GENERATED ALWAYS AS (expr) VIRTUAL | STORED, 没有 DEFAULT; DEFAULT_GENERATED 与生成列标记只是元信息, 不写
 function mysqlColumnDefinition(mod: ModifyColumnDef): string {
   const parts = [mod.dataType];
   if (mod.collation && MYSQL_STRING_TYPE.test(mod.dataType) && !MYSQL_CHARSET_CLAUSE.test(mod.dataType)) {
     parts.push(`COLLATE ${mod.collation}`);
   }
-  parts.push(mod.nullable ? 'NULL' : 'NOT NULL');
-  if (mod.defaultValue !== null) {
-    const generated = /\bDEFAULT_GENERATED\b/i.test(mod.extra) && !mod.changed.includes('defaultValue');
-    parts.push(generated && !MYSQL_BARE_EXPRESSION_DEFAULT.test(mod.defaultValue)
-      ? `DEFAULT (${mod.defaultValue.replace(/\\'/g, "'")})`
-      : buildDefaultClause('mysql', mod.defaultValue));
+  // 缺表达式时不当生成列处理: EXTRA 原样写出让语句报错, 不会静默变成普通列
+  const generated = mod.generationExpression ? MYSQL_GENERATED_COLUMN.exec(mod.extra) : null;
+  if (generated) {
+    parts.push(`GENERATED ALWAYS AS (${mod.generationExpression}) ${generated[1]}`);
   }
-  const extra = mod.extra.replace(/\bDEFAULT_GENERATED\b/gi, '').trim();
+  parts.push(mod.nullable ? 'NULL' : 'NOT NULL');
+  if (mod.defaultValue !== null && !generated) {
+    parts.push(mod.changed.includes('defaultValue')
+      ? buildDefaultClause('mysql', mod.defaultValue)
+      : mysqlOriginalDefault(mod.defaultValue, mod));
+  }
+  const extra = mod.extra.replace(generated ? MYSQL_GENERATED_COLUMN : /\bDEFAULT_GENERATED\b/i, '').trim();
   if (extra) { parts.push(extra); }
   if (mod.comment) { parts.push(`COMMENT ${quoteLiteral('mysql', mod.comment)}`); }
   return parts.join(' ');
@@ -94,11 +115,15 @@ export function buildAlterTableStatements(
     statements.push(`ALTER TABLE ${tbl} DROP COLUMN ${escId(driverType, colName)};`);
   }
 
-  // Rename columns (MySQL 8+ 与 PG 语法一致)
+  // Rename columns: MySQL 用 CHANGE COLUMN 带完整定义一条语句改名 (5.7 没有 RENAME COLUMN), 该列的属性改动一并写入;
+  // PG 与没带完整定义的 MySQL 改名用 RENAME COLUMN
   for (const rename of changes.renamedColumns) {
     const oldName = escId(driverType, rename.from);
     const newName = escId(driverType, rename.to);
-    statements.push(`ALTER TABLE ${tbl} RENAME COLUMN ${oldName} TO ${newName};`);
+    const def = driverType === 'mysql' ? changes.modifiedColumns.find((m) => m.name === rename.to) : undefined;
+    statements.push(def
+      ? `ALTER TABLE ${tbl} CHANGE COLUMN ${oldName} ${newName} ${mysqlColumnDefinition(def)};`
+      : `ALTER TABLE ${tbl} RENAME COLUMN ${oldName} TO ${newName};`);
   }
 
   // Modify columns
@@ -107,6 +132,8 @@ export function buildAlterTableStatements(
     const colName = escId(driverType, mod.name);
 
     if (driverType === 'mysql') {
+      // 改名的列已由 CHANGE COLUMN 整列写出
+      if (changes.renamedColumns.some((r) => r.to === mod.name)) { continue; }
       // MODIFY COLUMN 整列重写: 没写出的属性 (NOT NULL / DEFAULT / AUTO_INCREMENT / COMMENT) 都会丢, 所以总是写完整定义
       statements.push(`ALTER TABLE ${tbl} MODIFY COLUMN ${colName} ${mysqlColumnDefinition(mod)};`);
     } else {

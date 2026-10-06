@@ -12,10 +12,34 @@ const TYPE_NAMES = Types as unknown as Record<number, string | undefined>;
 // 返回结果集的查询按值数组取行 (rowsAsArray), 再由 toQueryResult 按去重后的列名组装: 同名列不互相覆盖
 const asArrays = (sql: string): mysql.QueryOptions => ({ sql, rowsAsArray: true });
 
-// MariaDB (10.2.7+) 的 COLUMN_DEFAULT 把字符串字面量带引号返回 ('it''s'), MySQL 返回原值: 统一成原值,
-// 编辑表时按原值显示, 写回时再按字面量转义. 引号与反斜杠按 MariaDB 的写法双写
-function unquoteDefault(value: string): string {
-  return /^'(?:[^'\\]|''|\\.)*'$/.test(value) ? value.slice(1, -1).replace(/''|\\\\/g, (m) => m[0]) : value;
+// information_schema 的默认值与生成列表达式统一成 SQL 原文, 表达式默认值统一由 EXTRA 的 DEFAULT_GENERATED 标出
+// (编辑表按原文显示, 写回时字面量再转义, 表达式原样写):
+// - MySQL 8: 表达式文本 (表达式默认值, 生成列表达式) 按字符串字面量转义过 (\\ 与 \'), 逐个 \x 还原成 x; 字面量默认值是原值. 5.7 都是原文
+// - MariaDB (10.2.7+): 字面量带引号 ('it''s', 引号与反斜杠双写), 去引号; 不带引号的 NULL 即 DEFAULT NULL;
+//   其余不带引号的非数值是表达式, 没有 DEFAULT_GENERATED, 补上
+function columnText(row: Record<string, unknown>): Pick<DetailedColumnInfo, 'defaultValue' | 'extra' | 'generationExpression'> {
+  const version = String(row.version ?? '');
+  const mariadb = /mariadb/i.test(version);
+  const unescape = (text: string) => (!mariadb && parseInt(version, 10) >= 8 ? text.replace(/\\(.)/g, '$1') : text);
+  let defaultValue = row.defaultValue != null ? String(row.defaultValue) : null;
+  let extra = String(row.extra ?? '');
+  if (defaultValue !== null && mariadb) {
+    if (/^'(?:[^'\\]|''|\\.)*'$/.test(defaultValue)) {
+      defaultValue = defaultValue.slice(1, -1).replace(/''|\\\\/g, (m) => m[0]);
+    } else if (defaultValue === 'NULL') {
+      defaultValue = null;
+    } else if (!/^-?\d+(\.\d+)?$/.test(defaultValue)) {
+      extra = `DEFAULT_GENERATED ${extra}`.trim();
+    }
+  } else if (defaultValue !== null && /\bDEFAULT_GENERATED\b/i.test(extra)) {
+    defaultValue = unescape(defaultValue);
+  } else if (defaultValue !== null && !mariadb && parseInt(version, 10) >= 8
+    && /^0x[0-9a-f]*$/i.test(defaultValue) && /^\s*(var)?binary\b/i.test(String(row.dataType ?? ''))) {
+    // MySQL 8 把 BINARY / VARBINARY 的字面默认值报成十六进制 (0x6162); 转成 x'..' 字面量, 改列时原样写回
+    defaultValue = `x'${defaultValue.slice(2)}'`;
+  }
+  const expression = row.generationExpression ? unescape(String(row.generationExpression)) : '';
+  return { defaultValue, extra, ...(expression ? { generationExpression: expression } : {}) };
 }
 
 export class MySQLDriver implements IDatabaseDriver {
@@ -153,13 +177,16 @@ export class MySQLDriver implements IDatabaseDriver {
   }
 
   async getDetailedColumns(database: string, table: string): Promise<DetailedColumnInfo[]> {
+    // collation 只在与表默认不同时返回: 改列时不写 COLLATE 即回落到表默认, SHOW CREATE 不会因此多出显式的 CHARACTER SET / COLLATE
     const rows = await this.query(
-      `SELECT COLUMN_NAME as name, COLUMN_TYPE as dataType, IS_NULLABLE as nullable,
-              COLUMN_KEY as columnKey, COLUMN_DEFAULT as defaultValue, EXTRA as extra,
-              COLUMN_COMMENT as comment, COLLATION_NAME as collation
-       FROM information_schema.COLUMNS
-       WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
-       ORDER BY ORDINAL_POSITION`,
+      `SELECT c.COLUMN_NAME as name, c.COLUMN_TYPE as dataType, c.IS_NULLABLE as nullable,
+              c.COLUMN_KEY as columnKey, c.COLUMN_DEFAULT as defaultValue, c.EXTRA as extra,
+              c.COLUMN_COMMENT as comment, c.GENERATION_EXPRESSION as generationExpression, VERSION() as version,
+              CASE WHEN c.COLLATION_NAME <> t.TABLE_COLLATION THEN c.COLLATION_NAME END as collation
+       FROM information_schema.COLUMNS c
+       JOIN information_schema.TABLES t ON t.TABLE_SCHEMA = c.TABLE_SCHEMA AND t.TABLE_NAME = c.TABLE_NAME
+       WHERE c.TABLE_SCHEMA = ? AND c.TABLE_NAME = ?
+       ORDER BY c.ORDINAL_POSITION`,
       [database, table]
     );
     return rows.map((row: Record<string, unknown>) => ({
@@ -167,8 +194,7 @@ export class MySQLDriver implements IDatabaseDriver {
       dataType: String(row.dataType),
       nullable: row.nullable === 'YES',
       isPrimaryKey: row.columnKey === 'PRI',
-      defaultValue: row.defaultValue != null ? unquoteDefault(String(row.defaultValue)) : null,
-      extra: String(row.extra ?? ''),
+      ...columnText(row),
       comment: String(row.comment ?? ''),
       ...(row.collation != null ? { collation: String(row.collation) } : {}),
     }));

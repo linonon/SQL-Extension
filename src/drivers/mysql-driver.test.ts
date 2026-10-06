@@ -244,20 +244,55 @@ describe('MySQLDriver', () => {
   });
 
   describe('getDetailedColumns', () => {
-    it('带 collation; MariaDB 带引号的字符串默认值还原成原值, 表达式与 MySQL 原值不动', async () => {
-      const row = (defaultValue: string | null, collation: string | null) => ({
-        name: 'c', dataType: 'varchar(8)', nullable: 'YES', columnKey: '', defaultValue, extra: '', comment: '', collation,
-      });
-      mockPool.query.mockResolvedValue([[
-        row("'it''s a\\\\b'", 'utf8mb4_bin'), row('current_timestamp()', null), row('abc', 'utf8mb4_bin'), row(null, null),
-      ], []]);
+    const connectWith = async (rows: Record<string, unknown>[]) => {
+      mockPool.query.mockResolvedValue([rows, []]);
       await driver.connect({
         id: 'test-id', name: 'test', driverType: 'mysql', host: 'localhost', port: 3306, username: 'root', password: 'secret', database: '',
       });
+    };
+    const row = (version: string, defaultValue: string | null, extra = '', generationExpression = '', collation: string | null = null) => ({
+      name: 'c', dataType: 'varchar(8)', nullable: 'YES', columnKey: '', defaultValue, extra, comment: '', generationExpression, version, collation,
+    });
 
+    it('collation 只取与表默认不同的 (SQL 里和 TABLE_COLLATION 比较)', async () => {
+      await connectWith([row('8.0.46', null, '', '', 'utf8mb4_bin'), row('8.0.46', null)]);
       const cols = await driver.getDetailedColumns('db', 't');
-      expect(cols.map((c) => c.defaultValue)).toEqual(["it's a\\b", 'current_timestamp()', 'abc', null]);
-      expect(cols.map((c) => c.collation)).toEqual(['utf8mb4_bin', undefined, 'utf8mb4_bin', undefined]);
+      expect(cols.map((c) => c.collation)).toEqual(['utf8mb4_bin', undefined]);
+      const sql = mockPool.query.mock.calls.at(-1)[0];
+      expect(sql).toContain('CASE WHEN c.COLLATION_NAME <> t.TABLE_COLLATION THEN c.COLLATION_NAME END');
+    });
+
+    it('MySQL 8: 表达式默认值与生成列表达式的 \\x 转义还原, 字面量默认值原样', async () => {
+      await connectWith([
+        row('8.0.46', "concat(_utf8mb4\\'a\\\\\\\\b\\',_utf8mb4\\'it\\\\\\'s\\')", 'DEFAULT_GENERATED'),
+        row('8.0.46', "a\\b'c"),
+        row('8.0.46', null, 'VIRTUAL GENERATED', "concat(`a`,_utf8mb4\\'\\\\\\'\\')"),
+      ]);
+      const cols = await driver.getDetailedColumns('db', 't');
+      expect(cols.map((c) => c.defaultValue)).toEqual(["concat(_utf8mb4'a\\\\b',_utf8mb4'it\\'s')", "a\\b'c", null]);
+      expect(cols.map((c) => c.generationExpression)).toEqual([undefined, undefined, "concat(`a`,_utf8mb4'\\'')"]);
+    });
+
+    it('MySQL 8: BINARY / VARBINARY 的十六进制默认值转成 x 字面量, 5.7 与字符串列原样', async () => {
+      const bin = (version: string, defaultValue: string, dataType = 'varbinary(16)') => ({ ...row(version, defaultValue), dataType });
+      await connectWith([bin('8.0.46', '0x6162'), bin('8.0.46', '0x00ff', 'binary(2)'), bin('5.7.44', '0x6162'), row('8.0.46', '0x6162')]);
+      const cols = await driver.getDetailedColumns('db', 't');
+      expect(cols.map((c) => c.defaultValue)).toEqual(["x'6162'", "x'00ff'", '0x6162', '0x6162']);
+    });
+
+    it('MySQL 5.7: 生成列表达式是原文, 不还原; 像带引号的字面量也不去引号', async () => {
+      await connectWith([row('5.7.44-log', null, 'VIRTUAL GENERATED', "concat(`a`,'\\'')"), row('5.7.44-log', "'x'")]);
+      const cols = await driver.getDetailedColumns('db', 't');
+      expect(cols.map((c) => [c.defaultValue, c.generationExpression])).toEqual([[null, "concat(`a`,'\\'')"], ["'x'", undefined]]);
+    });
+
+    it('MariaDB: 字面量去引号, 不带引号的 NULL 是 DEFAULT NULL, 表达式补 DEFAULT_GENERATED, 数值不动', async () => {
+      const v = '10.6.16-MariaDB';
+      await connectWith([row(v, "'it''s a\\\\b'"), row(v, 'NULL'), row(v, 'current_timestamp()', 'on update current_timestamp()'), row(v, '0.00'), row(v, null)]);
+      const cols = await driver.getDetailedColumns('db', 't');
+      expect(cols.map((c) => [c.defaultValue, c.extra])).toEqual([
+        ["it's a\\b", ''], [null, ''], ['current_timestamp()', 'DEFAULT_GENERATED on update current_timestamp()'], ['0.00', ''], [null, ''],
+      ]);
     });
   });
 

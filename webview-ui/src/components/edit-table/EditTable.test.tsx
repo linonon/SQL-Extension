@@ -23,4 +23,18 @@ describe('EditTable', () => {
       { name: 'code', dataType: 'varchar(8)', nullable: false, defaultValue: '', comment: '编码', extra: '', changed: ['comment'] },
     ]);
   });
+
+  it('改名的列属性没改也发完整定义 (MySQL 写 CHANGE COLUMN), 带原列的 collation 与生成列表达式', () => {
+    const original: DetailedColumnInfo[] = [
+      { name: 'nick', dataType: 'varchar(32)', nullable: true, isPrimaryKey: false, defaultValue: 'x', extra: '', comment: 'n', collation: 'utf8mb4_bin' },
+      { name: 'gen', dataType: 'int', nullable: true, isPrimaryKey: false, defaultValue: null, extra: 'VIRTUAL GENERATED', comment: '', generationExpression: '(`a` * 2)' },
+    ];
+    const columns = original.map(toEditable);
+    const changes = buildChanges(original, [{ ...columns[0], name: 'nickname' }, { ...columns[1], comment: 'g' }]);
+    expect(changes.renamedColumns).toEqual([{ from: 'nick', to: 'nickname' }]);
+    expect(changes.modifiedColumns).toEqual([
+      { name: 'nickname', dataType: 'varchar(32)', nullable: true, defaultValue: 'x', comment: 'n', extra: '', collation: 'utf8mb4_bin', changed: [] },
+      { name: 'gen', dataType: 'int', nullable: true, defaultValue: null, comment: 'g', extra: 'VIRTUAL GENERATED', generationExpression: '(`a` * 2)', changed: ['comment'] },
+    ]);
+  });
 });
