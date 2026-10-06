@@ -67,6 +67,33 @@ export function splitSqlStatements(sql: string): string[] {
   return parts.map((p) => p.trim()).filter((p) => stripCommentsAndStrings(p).length > 0);
 }
 
+export const OPEN_TRANSACTION_WARNING =
+  'Open transaction was rolled back when the session closed: each execution runs on its own connection, put COMMIT in the same execution.';
+
+// MySQL executeBatch 结束即销毁会话: 已执行的语句留下未结束的事务 (BEGIN / START TRANSACTION 之后没有 COMMIT / ROLLBACK,
+// 或 autocommit 关掉后又执行了语句), 这个事务已被服务端回滚, 返回提示文本.
+// 只看语句开头的关键字 (best-effort, 不认 DDL 的隐式提交). PG 看服务端返回的命令标签, 不走这里
+export function openTransactionWarning(executed: readonly string[]): string | undefined {
+  let open = false;
+  let autocommitOff = false;
+  for (const stmt of executed) {
+    const s = stripCommentsAndStrings(stmt);
+    const autocommit = /^SET\s+(?:(?:SESSION|LOCAL)\s+|@@(?:(?:SESSION|LOCAL)\.)?)?autocommit\s*:?=\s*(\w+)/i.exec(s);
+    if (autocommit) {
+      autocommitOff = /^(0|OFF|FALSE)$/i.test(autocommit[1]);
+      // autocommit 置回 1 会提交当前事务
+      if (!autocommitOff) { open = false; }
+    } else if (/^(BEGIN|START\s+TRANSACTION)\b/i.test(s)) {
+      open = true;
+    } else if (/^(COMMIT|END|ROLLBACK)\b/i.test(s) && !/^ROLLBACK\s+(WORK\s+)?TO\b/i.test(s)) {
+      open = false;
+    } else if (autocommitOff) {
+      open = true;
+    }
+  }
+  return open ? OPEN_TRANSACTION_WARNING : undefined;
+}
+
 // 脚本中任一条语句命中即需确认. 逐条判断, 避免别条的 WHERE/前缀掩盖某条整表操作
 // (PG simple query protocol 单字符串可执行多语句; 去掉字符串/注释后按 ; 切分是安全的).
 export function isWholeTableWrite(sql: string): boolean {

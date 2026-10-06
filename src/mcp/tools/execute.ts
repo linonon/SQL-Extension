@@ -4,7 +4,7 @@ import type { IpcClient } from '../ipc-client.js';
 import { forwardQuery } from './query.js';
 
 const DB_EXECUTE_DESCRIPTION = [
-  'Execute write operations and DDL. Query format by database type:',
+  'Execute write operations and DDL. SQL: one statement per call, each on its own autocommitted session; USE / SET / BEGIN do not carry over to the next call (multi-statement transactions are not supported). Query format by database type:',
   '- MySQL/PostgreSQL: SQL string, e.g. "INSERT INTO users (name) VALUES (\'foo\')", "DROP TABLE ..."',
   '- Redis: command string, e.g. "SET key val EX 60", "DEL key1", "FLUSHDB"',
   '- MongoDB: JSON, e.g. {"collection":"users","method":"insertOne","document":{"name":"foo"}}',
@@ -21,7 +21,7 @@ export function registerExecuteTools(server: McpServer, ipc: IpcClient): void {
       inputSchema: {
         connectionId: z.string().describe('Connection ID from db_list_connections (connects automatically on first use)'),
         query: z.string().describe('Query string (format depends on database type)'),
-        database: z.string().optional().describe('MySQL: schema to USE (defaults to the connection\'s database; required if the connection has none; use information_schema for server-level statements). PostgreSQL: ignored, bound to the connection\'s database. MongoDB: required unless the connection has a default. Redis: db index 0-15 (default: connection\'s db).'),
+        database: z.string().optional().describe('MySQL: schema to USE (defaults to the connection\'s database; required if the connection has none; use information_schema for server-level statements). PostgreSQL: database to run in (defaults to the connection\'s database; only the public schema). MongoDB: required unless the connection has a default. Redis: db index 0-15 (default: connection\'s db).'),
       },
       annotations: {
         readOnlyHint: false,

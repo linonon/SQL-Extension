@@ -76,10 +76,7 @@ describe('MySQLDriver', () => {
           database: 'testdb',
         })
       ).rejects.toThrow('Connection refused');
-
-      // 注: 当前实现在连接验证失败时没有清理 pool, 这是 bug
-      // 理想情况下应该是 false, 但当前实现会留下 pool
-      // 这个测试主要验证错误被正确抛出
+      expect(driver.isConnected()).toBe(false);
     });
   });
 
@@ -404,6 +401,104 @@ describe('MySQLDriver', () => {
       const result = await driver.execute('SELECT a.id, b.name FROM t a JOIN t b ON a.parent_id = b.id');
 
       expect(result.columns.map((c) => c.source)).toEqual([undefined, undefined]);
+    });
+  });
+
+  describe('executeBatch (单连接执行器)', () => {
+    const cfg = {
+      id: 'test-id', name: 'test', driverType: 'mysql' as const, host: 'localhost', port: 3306,
+      username: 'root', password: 'secret', database: 'testdb',
+    };
+    const header = (affectedRows: number) => [{ affectedRows }, undefined];
+
+    it('一条专用连接: USE 一次, 按序执行, 遇错即停, 结束后销毁不归还', async () => {
+      const conn = {
+        threadId: 42, release: vi.fn(), destroy: vi.fn(),
+        query: vi.fn()
+          .mockResolvedValueOnce(header(0)) // USE
+          .mockResolvedValueOnce(header(0)) // USE other (批内切库对后续语句生效)
+          .mockResolvedValueOnce(header(3))
+          .mockRejectedValueOnce(new Error('boom')),
+      };
+      mockPool.getConnection.mockResolvedValue({ release: vi.fn() });
+      await driver.connect(cfg);
+      mockPool.getConnection.mockResolvedValue(conn);
+
+      const out = await driver.executeBatch(['USE other', 'UPDATE t SET a=1', 'BAD', 'SELECT 1'], 'app').promise;
+
+      expect(mockPool.getConnection).toHaveBeenCalledTimes(2);
+      expect(conn.query.mock.calls.map((c) => c[0])).toEqual(['USE `app`', 'USE other', 'UPDATE t SET a=1', 'BAD']);
+      expect(out.results.map((r) => [r.sql, r.affectedRows])).toEqual([['USE other', 0], ['UPDATE t SET a=1', 3]]);
+      expect(out.error).toEqual({ index: 2, cause: new Error('boom') });
+      expect(conn.destroy).toHaveBeenCalledTimes(1);
+      expect(conn.release).not.toHaveBeenCalled();
+    });
+
+    it('BEGIN 之后没有 COMMIT: 回带事务已回滚的提示', async () => {
+      const conn = { threadId: 1, destroy: vi.fn(), query: vi.fn().mockResolvedValue(header(1)) };
+      mockPool.getConnection.mockResolvedValue({ release: vi.fn() });
+      await driver.connect(cfg);
+      mockPool.getConnection.mockResolvedValue(conn);
+
+      expect((await driver.executeBatch(['BEGIN', 'UPDATE t SET a=1']).promise).warning).toMatch(/rolled back/);
+      expect((await driver.executeBatch(['START TRANSACTION', 'UPDATE t SET a=1', 'COMMIT']).promise).warning).toBeUndefined();
+    });
+
+    it('cancel 只 KILL 本连接的 threadId; 执行结束后 cancel 是 no-op', async () => {
+      let finish!: () => void;
+      const conn = {
+        threadId: 77, destroy: vi.fn(),
+        query: vi.fn(() => new Promise((r) => { finish = () => r(header(0)); })),
+      };
+      mockPool.getConnection.mockResolvedValue({ release: vi.fn() });
+      await driver.connect(cfg);
+      mockPool.getConnection.mockResolvedValue(conn);
+      mockPool.query.mockResolvedValue([[], []]);
+
+      const run = driver.executeBatch(['SELECT SLEEP(10)', 'SELECT 2']);
+      await vi.waitFor(() => expect(conn.query).toHaveBeenCalledTimes(1));
+      run.cancel();
+      expect(mockPool.query).toHaveBeenCalledWith('KILL QUERY 77');
+      finish();
+      const out = await run.promise;
+      // 被取消后不再执行下一条
+      expect(conn.query).toHaveBeenCalledTimes(1);
+      expect(out.error?.index).toBe(1);
+
+      mockPool.query.mockClear();
+      run.cancel();
+      const done = driver.executeBatch(['SELECT 1']);
+      await vi.waitFor(() => expect(conn.query).toHaveBeenCalledTimes(2));
+      finish();
+      await done.promise;
+      done.cancel();
+      expect(mockPool.query).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('executeReadOnly', () => {
+    it('专用连接上先设服务端超时再开只读事务; 不支持该变量的服务器照常执行', async () => {
+      const conn = {
+        destroy: vi.fn(),
+        query: vi.fn()
+          .mockResolvedValueOnce([{ affectedRows: 0 }, undefined]) // USE
+          .mockRejectedValueOnce(new Error("Unknown system variable 'max_execution_time'"))
+          .mockResolvedValue([[{ n: 1 }], []]),
+      };
+      mockPool.getConnection.mockResolvedValue({ release: vi.fn() });
+      await driver.connect({
+        id: 'test-id', name: 'test', driverType: 'mysql', host: 'localhost', port: 3306,
+        username: 'root', password: 'secret', database: 'testdb',
+      });
+      mockPool.getConnection.mockResolvedValue(conn);
+
+      const result = await driver.executeReadOnly('SELECT 1', 'app');
+
+      expect(conn.query.mock.calls.map((c) => c[0])).toEqual([
+        'USE `app`', 'SET SESSION max_execution_time = 30000', 'START TRANSACTION READ ONLY', 'SELECT 1',
+      ]);
+      expect(result.rows).toEqual([{ n: 1 }]);
+      expect(conn.destroy).toHaveBeenCalled();
     });
   });
 

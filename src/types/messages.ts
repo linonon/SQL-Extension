@@ -59,7 +59,7 @@ export interface StatementResult {
 // Extension -> Webview
 export type ExtensionMessage =
   | { type: 'queryResult'; requestId: number; columns: ColumnInfo[]; rows: Record<string, unknown>[]; affectedRows: number; executionTime: number; error?: string }
-  | { type: 'queryBatchResult'; requestId: number; statements: StatementResult[] }
+  | { type: 'queryBatchResult'; requestId: number; statements: StatementResult[]; warning?: string }
   | { type: 'columnsResult'; requestId: number; columns: ColumnInfo[] }
   | { type: 'batchUpdateResult'; success: boolean; error?: string }
   | { type: 'insertRowResult'; success: boolean; error?: string }

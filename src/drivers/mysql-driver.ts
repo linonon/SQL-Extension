@@ -1,7 +1,8 @@
 import mysql from 'mysql2/promise';
 import type { ConnectionConfig } from '../types/connection.js';
 import type { IDatabaseDriver } from '../types/driver.js';
-import type { ColumnInfo, DetailedColumnInfo, QueryResult, TableInfo } from '../types/query.js';
+import type { BatchOutcome, ColumnInfo, DetailedColumnInfo, QueryResult, StatementOutcome, TableInfo } from '../types/query.js';
+import { openTransactionWarning } from '../utils/destructive-sql.js';
 
 export class MySQLDriver implements IDatabaseDriver {
   readonly driverType = 'mysql';
@@ -197,6 +198,8 @@ export class MySQLDriver implements IDatabaseDriver {
       if (database) {
         await conn.query(`USE \`${database.replace(/`/g, '``')}\``);
       }
+      // 服务端超时 (只作用于 SELECT); MariaDB 等没有这个变量时忽略
+      try { await conn.query('SET SESSION max_execution_time = 30000'); } catch { /* 变量不存在 */ }
       await conn.query('START TRANSACTION READ ONLY');
       const start = Date.now();
       const [result, fields] = await conn.query(sql);
@@ -207,35 +210,67 @@ export class MySQLDriver implements IDatabaseDriver {
     }
   }
 
+  // 接口兼容: 单条语句走 executeBatch. 不支持 params (带参数用 execute)
   executeCancellable(sql: string, params?: unknown[], database?: string): {
     promise: Promise<QueryResult>;
     cancel: () => void;
   } {
-    this.assertConnected();
-    let cancelled = false;
-    let connectionThreadId: number | undefined;
+    if (params?.length) { throw new Error('MySQLDriver.executeCancellable does not take params, use execute()'); }
+    const { promise, cancel } = this.executeBatch([sql], database);
+    return {
+      promise: promise.then((o) => {
+        if (o.error) { throw o.error.cause; }
+        return o.results[0];
+      }),
+      cancel,
+    };
+  }
 
-    const promise = (async () => {
-      const conn = await this.pool!.getConnection();
-      connectionThreadId = conn.threadId;
+  executeBatch(statements: readonly string[], database?: string): {
+    promise: Promise<BatchOutcome>;
+    cancel: () => void;
+  } {
+    this.assertConnected();
+    const pool = this.pool!;
+    let threadId: number | undefined;
+    let cancelled = false;
+    let done = false;
+
+    const promise = (async (): Promise<BatchOutcome> => {
+      const results: StatementOutcome[] = [];
+      let conn: mysql.PoolConnection | undefined;
       try {
-        // 切换到目标 database, 确保用户 SQL 不需要 database 前缀
+        conn = await pool.getConnection();
+        threadId = conn.threadId;
         if (database) {
           await conn.query(`USE \`${database.replace(/`/g, '``')}\``);
         }
-        const start = Date.now();
-        const [result, fields] = await conn.query(sql, params);
-        return this.toQueryResult(result, fields, Date.now() - start);
+        for (const sql of statements) {
+          // 语句之间被取消: KILL QUERY 打在空闲连接上不生效, 由这里停下
+          if (cancelled) { throw new Error('Query cancelled'); }
+          const start = Date.now();
+          const [result, fields] = await conn.query(sql);
+          results.push({ sql, ...this.toQueryResult(result, fields, Date.now() - start) });
+        }
+        return { results, warning: openTransactionWarning(statements) };
+      } catch (cause) {
+        return {
+          results,
+          error: { index: results.length, cause },
+          warning: openTransactionWarning(statements.slice(0, results.length)),
+        };
       } finally {
-        conn.release();
+        done = true;
+        // 销毁而非归还: USE / 未提交事务 / SET 等会话状态不能留给 UI 和 agent 共用的池
+        conn?.destroy();
       }
     })();
 
     const cancel = () => {
-      if (cancelled) { return; }
+      if (done || cancelled) { return; }
       cancelled = true;
-      if (connectionThreadId != null) {
-        this.pool!.query(`KILL QUERY ${connectionThreadId}`).catch((err: Error) => { console.error('[MySQLDriver] Cancel query failed:', err.message); });
+      if (threadId != null) {
+        pool.query(`KILL QUERY ${threadId}`).catch((err: Error) => { console.error('[MySQLDriver] Cancel query failed:', err.message); });
       }
     };
 

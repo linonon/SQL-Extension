@@ -216,6 +216,8 @@ export class TableViewProvider implements vscode.Disposable {
     );
 
     panel.onDidDispose(() => {
+      // 关 panel 时 webview 直接销毁, 卸载 effect 不跑, 由这里取消仍在执行的查询 (已结束时 cancel 为 no-op)
+      this.pendingCancels.get(panel)?.();
       this.pendingCancels.delete(panel);
       this.panels.delete(panelKey);
       cancelAiAsk(panel);

@@ -4,7 +4,7 @@ import type { IpcClient } from '../ipc-client.js';
 import { makeError, toErrorMessage, type ToolResult } from './mcp-result.js';
 
 const DB_READ_DESCRIPTION = [
-  'Execute read-only queries (SQL runs in a read-only transaction; results capped at 500 rows). Use db_schema to discover databases/tables/columns. Query format by database type:',
+  'Execute read-only queries (SQL runs in a read-only transaction; results capped at 500 rows; SQL and MongoDB reads time out after 30s on the server). Use db_schema to discover databases/tables/columns. Query format by database type:',
   '- MySQL/PostgreSQL: one SELECT/SHOW/DESCRIBE/EXPLAIN/WITH statement, e.g. "SELECT * FROM users LIMIT 10" (no INTO)',
   '- Redis: command string, e.g. "GET key1", "HGETALL myhash"',
   '- MongoDB: JSON, e.g. {"collection":"users","method":"find","filter":{}}',
@@ -34,7 +34,7 @@ export function registerReadTools(server: McpServer, ipc: IpcClient): void {
       inputSchema: {
         connectionId: z.string().describe('Connection ID from db_list_connections (connects automatically on first use)'),
         query: z.string().describe('Query string (format depends on database type)'),
-        database: z.string().optional().describe('MySQL: schema to USE (defaults to the connection\'s database; required if the connection has none; use information_schema for server-level statements). PostgreSQL: ignored, bound to the connection\'s database. MongoDB: required unless the connection has a default. Redis: db index 0-15 (default: connection\'s db).'),
+        database: z.string().optional().describe('MySQL: schema to USE (defaults to the connection\'s database; required if the connection has none; use information_schema for server-level statements). PostgreSQL: database to run in (defaults to the connection\'s database; only the public schema). MongoDB: required unless the connection has a default. Redis: db index 0-15 (default: connection\'s db).'),
       },
       annotations: {
         readOnlyHint: true,

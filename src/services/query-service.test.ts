@@ -29,7 +29,8 @@ describe('QueryService', () => {
       expect(result.affectedRows).toBe(1);
       expect(mockDriver.execute).toHaveBeenCalledWith(
         'INSERT INTO `testdb`.`users` (`name`, `age`) VALUES (?, ?)',
-        ['Alice', 30]
+        ['Alice', 30],
+        'testdb'
       );
     });
 
@@ -48,7 +49,8 @@ describe('QueryService', () => {
 
       expect(mockDriver.execute).toHaveBeenCalledWith(
         'INSERT INTO "users" ("name", "age") VALUES ($1, $2)',
-        ['Bob', 25]
+        ['Bob', 25],
+        'testdb'
       );
     });
   });
@@ -76,7 +78,8 @@ describe('QueryService', () => {
         { primaryKeys: { id: 2 }, changes: { name: 'B' } },
       ]);
 
-      expect(mockDriver.transaction).toHaveBeenCalledTimes(1);
+      // PG 据 database 选库的 pool
+      expect(mockDriver.transaction).toHaveBeenCalledWith(expect.any(Function), 'testdb');
       expect(exec).toHaveBeenNthCalledWith(1, 'UPDATE `testdb`.`users` SET `name` = ? WHERE `id` = ?', ['A', 1]);
       expect(exec).toHaveBeenNthCalledWith(2, 'UPDATE `testdb`.`users` SET `name` = ? WHERE `id` = ?', ['B', 2]);
     });
@@ -118,7 +121,7 @@ describe('QueryService', () => {
       await service.batchUpdate(mockDriver, 'testdb', 'users', [
         { primaryKeys: { id: 1 }, changes: { name: 'A' } },
       ]);
-      expect(mockDriver.execute).toHaveBeenCalledWith('UPDATE `testdb`.`users` SET `name` = ? WHERE `id` = ?', ['A', 1]);
+      expect(mockDriver.execute).toHaveBeenCalledWith('UPDATE `testdb`.`users` SET `name` = ? WHERE `id` = ?', ['A', 1], 'testdb');
     });
   });
 });

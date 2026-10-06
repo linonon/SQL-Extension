@@ -29,7 +29,13 @@ export function escapeIdentifier(driverType: string, name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
 }
 
-// MySQL 用 qualified name (database.table), PG 连接已绑定 database 不需要
+// PG 列默认值 nextval('<seq>'::regclass) 里的序列名, 返回可直接拼进 SQL 的标识符文本 (保留 "..." 引用与 schema 前缀)
+export function pgSequenceOfDefault(columnDefault: unknown): string | undefined {
+  const m = /^nextval\('(.+)'::regclass\)$/.exec(String(columnDefault ?? ''));
+  return m ? m[1].replace(/''/g, "'") : undefined;
+}
+
+// MySQL 用 qualified name (database.table); PG 由 driver 按 database 选该库的 pool 执行, 不需要
 function qualifyTable(driverType: string, table: string, database?: string): string {
   if (database && driverType === 'mysql') {
     return `${escapeIdentifier(driverType, database)}.${escapeIdentifier(driverType, table)}`;

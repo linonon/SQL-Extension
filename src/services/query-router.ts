@@ -28,6 +28,21 @@ const MAX_LIMIT = 500;
 
 const FORBIDDEN_STAGES = new Set(['$out', '$merge']);
 
+// db_read 的服务端超时, 与 MySQL / PG driver.executeReadOnly 里设置的 30s 一致
+const READ_TIMEOUT_MS = 30_000;
+
+// 服务端超时错误换成可操作的提示, 其余错误原样抛出
+function rethrowReadTimeout(err: unknown): never {
+  const e = err as { errno?: number; code?: unknown; message?: string } | null;
+  const timedOut = e?.errno === 3024 // MySQL ER_QUERY_TIMEOUT (max_execution_time)
+    || (e?.code === '57014' && /statement timeout/i.test(e.message ?? '')) // PG statement_timeout (57014 也用于手动取消)
+    || e?.code === 50; // MongoDB MaxTimeMSExpired
+  if (timedOut) {
+    throw new Error('Query exceeded the 30s read timeout. Narrow it (filter on an indexed column, smaller range or LIMIT) and retry.');
+  }
+  throw err;
+}
+
 // 0 / 负数 / 非整数都会让驱动取消上限, 一律回落到 MAX_LIMIT
 const capLimit = (n: unknown): number =>
   Number.isInteger(n) && (n as number) > 0 ? Math.min(n as number, MAX_LIMIT) : MAX_LIMIT;
@@ -93,9 +108,8 @@ async function routeSQL(
     query = enforceLimit(query, undefined, driverType === 'mysql');
   }
 
-  // MySQL 池连接会残留 UI 编辑器的 USE, 不带库执行落在哪个 schema 不确定 (读写同理)
-  const isMysql = driverType === 'mysql';
-  if (isMysql && !database) {
+  // MySQL 连接可以不配默认库, 不带库时未限定的表名落不到任何 schema; PG 缺省走连接配置的库
+  if (driverType === 'mysql' && !database) {
     return makeError(
       'database is required for MySQL (the connection has no default). Pass any existing schema, e.g. information_schema, for server-level statements.',
       ErrorCode.MISSING_DATABASE,
@@ -103,16 +117,19 @@ async function routeSQL(
   }
 
   const driver = drivers.getDriver(connectionId);
-  if (mode === 'read' && !driver.executeReadOnly) {
-    return makeError(`Driver '${driverType}' has no read-only execution.`, ErrorCode.UNSUPPORTED_COMMAND);
+  if (mode === 'read' ? !driver.executeReadOnly : !driver.executeBatch) {
+    return makeError(`Driver '${driverType}' cannot run this mode.`, ErrorCode.UNSUPPORTED_COMMAND);
   }
   let result: QueryResult;
+  let warning: string | undefined;
   if (mode === 'read') {
-    result = await driver.executeReadOnly!(query, isMysql ? database : undefined);
-  } else if (isMysql) {
-    result = await driver.executeCancellable(query, undefined, database).promise;
+    result = await driver.executeReadOnly!(query, database).catch(rethrowReadTimeout);
   } else {
-    result = await driver.execute(query);
+    // 专用连接执行完即销毁: agent 的 USE / BEGIN / SET 不会留在 UI 共用的池里
+    const outcome = await driver.executeBatch!([query], database).promise;
+    if (outcome.error) { throw outcome.error.cause; }
+    result = outcome.results[outcome.results.length - 1];
+    warning = outcome.warning;
   }
 
   return makeResult({
@@ -121,6 +138,7 @@ async function routeSQL(
     rowCount: result.rows.length,
     affectedRows: result.affectedRows,
     executionTime: result.executionTime,
+    ...(warning ? { warning } : {}),
   });
 }
 
@@ -252,10 +270,11 @@ async function routeMongo(
       break;
   }
 
-  const result = await driver.dispatchToCollection(
-    database, params.collection, params.method, args,
-    safeLimit ? { limit: safeLimit } : undefined,
-  );
+  const result = mode === 'read'
+    ? await driver.dispatchToCollection(
+      database, params.collection, params.method, args, { limit: safeLimit, maxTimeMS: READ_TIMEOUT_MS },
+    ).catch(rethrowReadTimeout)
+    : await driver.dispatchToCollection(database, params.collection, params.method, args);
 
   if ('affectedRows' in result) {
     return makeResult({ affectedRows: result.affectedRows });

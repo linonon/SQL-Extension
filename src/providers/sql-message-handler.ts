@@ -59,7 +59,7 @@ export async function handleSqlMessage(
           const driver = ctx.getDriver();
           const batchQuery = buildBatchDelete(driver.driverType, message.table, message.primaryKeys, message.database);
           if (batchQuery.sql) {
-            await driver.execute(batchQuery.sql, batchQuery.params);
+            await driver.execute(batchQuery.sql, batchQuery.params, message.database);
           }
           ctx.post({ type: 'deleteRowsResult', success: true });
         } catch (err) {
@@ -127,22 +127,21 @@ export async function handleSqlMessage(
       case 'alterTable': {
         const driver = ctx.getDriver();
         const stmts = buildAlterTableStatements(driver.driverType, message.table, message.changes);
-        let executed = 0;
         try {
-          for (const stmt of stmts) {
-            const { promise } = driver.executeCancellable(stmt, undefined, message.database);
-            await promise;
-            executed++;
+          const { error } = await batchExecutor(driver)(stmts, message.database).promise;
+          if (error) {
+            const base = sanitizeErrorMessage(error.cause);
+            // 多条 DDL 非原子 (MySQL DDL 隐式提交无法回滚): 明确回报已执行/未执行边界,
+            // 防用户基于陈旧结构重试重复已落库的改动
+            const detail = stmts.length > 1
+              ? `${base} (已执行 ${error.index}/${stmts.length} 条, 表结构可能部分变更)`
+              : base;
+            ctx.post({ type: 'alterTableResult', success: false, error: detail });
+          } else {
+            ctx.post({ type: 'alterTableResult', success: true });
           }
-          ctx.post({ type: 'alterTableResult', success: true });
         } catch (err) {
-          const base = err instanceof Error ? err.message : String(err);
-          // 多条 DDL 非原子 (MySQL DDL 隐式提交无法回滚): 明确回报已执行/未执行边界,
-          // 防用户基于陈旧结构重试重复已落库的改动
-          const detail = stmts.length > 1
-            ? `${base} (已执行 ${executed}/${stmts.length} 条, 表结构可能部分变更)`
-            : base;
-          ctx.post({ type: 'alterTableResult', success: false, error: detail });
+          ctx.post({ type: 'alterTableResult', success: false, error: sanitizeErrorMessage(err) });
         }
         // 无论成败都刷新列信息, 让 UI 基线与 DB 实际状态一致
         try {
@@ -281,16 +280,34 @@ export async function handleSqlMessage(
         if (!uris || uris.length === 0) { return true; }
         const fileContent = await vscode.workspace.fs.readFile(uris[0]);
         const sql = Buffer.from(fileContent).toString('utf-8');
+        // 自家 dump 以 DROP TABLE IF EXISTS 开头, 导入到已有的表上会先删表
+        if (isWholeTableWrite(sql)) {
+          const confirm = await vscode.window.showWarningMessage(
+            'This SQL file contains a destructive operation (DROP/TRUNCATE, or DELETE/UPDATE without WHERE). Import anyway?',
+            { modal: true },
+            'Import'
+          );
+          if (confirm !== 'Import') { return true; }
+        }
         const driver = ctx.getDriver();
         try {
-          const { promise } = driver.executeCancellable(sql, undefined, database);
-          const result = await promise;
-          vscode.window.showInformationMessage(`SQL imported. Affected rows: ${result.affectedRows}`);
-          // 刷新左侧列表
+          const stmts = statementsFor(driver, sql);
+          const { results, error, warning } = await batchExecutor(driver)(stmts, database).promise;
+          if (error) {
+            // MySQL 逐条 autocommit, 失败点之前的语句已生效; PG 整段在隐式事务里, 出错整段回滚
+            const at = stmts.length > 1
+              ? ` at statement ${error.index + 1}/${stmts.length}${error.index > 0 ? ' (earlier statements were applied)' : ''}`
+              : '';
+            vscode.window.showErrorMessage(`Import failed${at}: ${sanitizeErrorMessage(error.cause)}`);
+          } else {
+            const affected = results.reduce((n, r) => n + r.affectedRows, 0);
+            vscode.window.showInformationMessage(`SQL imported. Affected rows: ${affected}${warning ? `. ${warning}` : ''}`);
+          }
+          // 刷新左侧列表 (失败时前面的语句也可能已建表)
           const databases = await listDatabasesWithTables(driver);
           ctx.post({ type: 'databaseTableList', databases });
         } catch (err) {
-          vscode.window.showErrorMessage(`Import failed: ${err instanceof Error ? err.message : String(err)}`);
+          vscode.window.showErrorMessage(`Import failed: ${sanitizeErrorMessage(err)}`);
         }
         return true;
       }
@@ -305,15 +322,25 @@ export async function handleSqlMessage(
   }
 }
 
-// executeQuery 的执行体, 返回待发的回执 (queryResult / queryBatchResult, 不含 requestId).
+// MySQL 在客户端按 ; 切分 (mysql2 未开 multipleStatements); PG 整段交给 simple protocol 由服务端切分,
+// 客户端切不对 dollar-quoted 函数体和 standard_conforming_strings 下以反斜杠结尾的字符串
+function statementsFor(driver: IDatabaseDriver, sql: string): string[] {
+  return driver.driverType === 'mysql' ? splitSqlStatements(sql) : [sql];
+}
+
+function batchExecutor(driver: IDatabaseDriver): NonNullable<IDatabaseDriver['executeBatch']> {
+  if (!driver.executeBatch) {
+    throw new Error(`Driver '${driver.driverType}' cannot execute SQL statements`);
+  }
+  return driver.executeBatch.bind(driver);
+}
+
+// executeQuery 的执行体, 返回待发的 queryBatchResult (不含 requestId).
+// 整次执行在一条专用连接上跑完 (executeBatch), 编辑器里的 USE / BEGIN 对同一次执行的后续语句生效.
 // cancel 槽位每个 panel 一个: 执行结束只清自己放进去的 cancel, 晚结束的旧执行不能清掉新执行的
 async function runQuery(sql: string, db: string, ctx: SqlMessageContext): Promise<object> {
-  const releaseCancel = (cancel: () => void) => {
-    if (ctx.pendingCancels.get(ctx.panel) === cancel) { ctx.pendingCancels.delete(ctx.panel); }
-  };
   // 破坏性操作确认网: DROP/TRUNCATE 及无 WHERE 的整表 DELETE/UPDATE
   const driver = ctx.getDriver();
-  const isMysql = driver.driverType === 'mysql';
   if (isWholeTableWrite(sql)) {
     const confirm = await vscode.window.showWarningMessage(
       'This query contains a destructive operation (DROP/TRUNCATE, or DELETE/UPDATE without WHERE). Continue?',
@@ -321,84 +348,59 @@ async function runQuery(sql: string, db: string, ctx: SqlMessageContext): Promis
       'Execute'
     );
     if (confirm !== 'Execute') {
-      return isMysql
-        ? { type: 'queryBatchResult', statements: [] }
-        : { type: 'queryResult', columns: [], rows: [], affectedRows: 0, executionTime: 0 };
+      return { type: 'queryBatchResult', statements: [] };
     }
   }
 
-  // 非 MySQL: 保持单次 queryResult
-  if (!isMysql) {
-    const { promise, cancel } = driver.executeCancellable(sql, undefined, db);
-    ctx.pendingCancels.set(ctx.panel, cancel);
-    try {
-      const result = await promise;
-      return {
-        type: 'queryResult',
-        columns: result.columns,
-        rows: result.rows,
-        affectedRows: result.affectedRows,
-        executionTime: result.executionTime,
-      };
-    } catch (err) {
-      return {
-        type: 'queryResult',
-        columns: [], rows: [], affectedRows: 0, executionTime: 0,
-        error: sanitizeErrorMessage(err),
-      };
-    } finally {
-      releaseCancel(cancel);
+  const stmts = statementsFor(driver, sql);
+  const { promise, cancel } = batchExecutor(driver)(stmts, db);
+  ctx.pendingCancels.set(ctx.panel, cancel);
+  try {
+    const { results, error, warning } = await promise;
+    const statements: StatementResult[] = results.map((r, i) => ({
+      index: i + 1,
+      sql: r.sql,
+      status: 'ok',
+      executionTime: r.executionTime,
+      affectedRows: r.affectedRows,
+      columns: r.columns,
+      rows: r.rows,
+    }));
+    if (error) {
+      statements.push({ index: statements.length + 1, sql: stmts[error.index], status: 'error', error: sanitizeErrorMessage(error.cause) });
+      for (const stmt of stmts.slice(error.index + 1)) {
+        statements.push({ index: statements.length + 1, sql: stmt, status: 'skipped' });
+      }
     }
+    return { type: 'queryBatchResult', statements, warning };
+  } finally {
+    if (ctx.pendingCancels.get(ctx.panel) === cancel) { ctx.pendingCancels.delete(ctx.panel); }
   }
-
-  // MySQL: 按 ; 切分后顺序执行, 遇错即停, 回 queryBatchResult
-  const stmts = splitSqlStatements(sql);
-  const statements: StatementResult[] = [];
-  let stopped = false;
-  for (let i = 0; i < stmts.length; i++) {
-    const stmt = stmts[i];
-    const index = i + 1;
-    if (stopped) {
-      statements.push({ index, sql: stmt, status: 'skipped' });
-      continue;
-    }
-    const { promise, cancel } = driver.executeCancellable(stmt, undefined, db);
-    ctx.pendingCancels.set(ctx.panel, cancel);
-    try {
-      const result = await promise;
-      statements.push({
-        index,
-        sql: stmt,
-        status: 'ok',
-        executionTime: result.executionTime,
-        affectedRows: result.affectedRows,
-        columns: result.columns,
-        rows: result.rows,
-      });
-    } catch (err) {
-      statements.push({
-        index,
-        sql: stmt,
-        status: 'error',
-        error: sanitizeErrorMessage(err),
-      });
-      stopped = true;
-    } finally {
-      releaseCancel(cancel);
-    }
-  }
-  return { type: 'queryBatchResult', statements };
 }
 
-// db-browser 左侧列表: 列出所有 database 及其 table
+// PG 按库建连接, 连不上某个库时的 SQLSTATE: 无 CONNECT 权限 / 库已不存在 / pg_hba 拒绝 (如云托管的管理库)
+const UNREACHABLE_DATABASE_CODES = new Set(['42501', '3D000', '28000']);
+
+// db-browser 左侧列表: 列出所有 database 及其 table.
+// 最多 4 个库并发: PG 每个库要新开一条连接, 库多时不能一次占满服务端 max_connections
 async function listDatabasesWithTables(
   driver: IDatabaseDriver
 ): Promise<{ name: string; tables: { name: string; rowCount: number }[] }[]> {
   const dbNames = await driver.listDatabases();
-  return Promise.all(
-    dbNames.map(async (name) => {
-      const tables = await driver.listTables(name);
-      return { name, tables: tables.map((t) => ({ name: t.name, rowCount: t.rowCount })) };
-    })
-  );
+  const out: { name: string; tables: { name: string; rowCount: number }[] }[] = new Array(dbNames.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < dbNames.length) {
+      const i = next++;
+      const name = dbNames[i];
+      // 连不上的库列成空库, 不拖垮整个列表; 其他错误照常抛出
+      const tables = await driver.listTables(name).catch((err: unknown) => {
+        if (UNREACHABLE_DATABASE_CODES.has(String((err as { code?: unknown } | null)?.code))) { return []; }
+        throw err;
+      });
+      out[i] = { name, tables: tables.map((t) => ({ name: t.name, rowCount: t.rowCount })) };
+    }
+  };
+  await Promise.all(Array.from({ length: 4 }, worker));
+  return out;
 }

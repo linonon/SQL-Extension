@@ -98,6 +98,8 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
   const [selectedText, setSelectedText] = useState('');
   const [selectionStart, setSelectionStart] = useState(0);
   const [batchStatements, setBatchStatements] = useState<StatementResult[] | null>(null);
+  // 执行结束时会话随连接销毁带来的提示 (如未提交的事务已被回滚)
+  const [batchWarning, setBatchWarning] = useState<string | null>(null);
   const [sortState, setSortState] = useState<SortState | null>(null);
   const [showAsk, setShowAsk] = useState(false);
   const postMessage = usePostMessage();
@@ -118,6 +120,7 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
     lastSqlRef.current = sql;
     setExecuting(true);
     setResult(null);
+    setBatchWarning(null);
     postMessage({ type: 'executeQuery', requestId: queryIdRef.current, database, sql });
   }, [database, postMessage]);
 
@@ -126,6 +129,7 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
     if (message.type === 'columnsResult' && message.requestId !== columnsIdRef.current) return;
     if (message.type === 'queryBatchResult') {
       setBatchStatements(message.statements);
+      setBatchWarning(message.warning ?? null);
       const derived = lastResultSetFromBatch(message.statements);
       setResult(derived);
       setExecuting(false);
@@ -195,6 +199,13 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
       postMessage({ type: 'listColumns', requestId: columnsIdRef.current, database, table });
     }
   }, [table, database, postMessage]);
+
+  // db-browser 切表会卸载编辑器: 卸载时还在执行的查询已无人接收回执, 让宿主取消它, 不在库上空跑
+  const executingRef = useRef(false);
+  executingRef.current = executing;
+  useEffect(() => () => {
+    if (executingRef.current) postMessage({ type: 'cancelQuery' });
+  }, [postMessage]);
 
   // mount 时自动执行一次 (Table 点击场景)
   useEffect(() => {
@@ -389,6 +400,7 @@ export function QueryEditor({ database, driverType, initialSql, autoExecute, tab
           <div className="query-loading-spinner" />
         </div>
       )}
+      {batchWarning && <div className="query-batch-warning">{batchWarning}</div>}
       {batchStatements && batchStatements.length > 1 && (
         <StatementSummaryList statements={batchStatements} />
       )}

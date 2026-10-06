@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isWholeTableWrite, splitSqlStatements } from './destructive-sql';
+import { isWholeTableWrite, openTransactionWarning, splitSqlStatements } from './destructive-sql';
 
 describe('isWholeTableWrite', () => {
   it('DROP / TRUNCATE 总是需要确认', () => {
@@ -71,5 +71,30 @@ describe('splitSqlStatements', () => {
 
   it('全空白返回空数组', () => {
     expect(splitSqlStatements('   ;  ;')).toEqual([]);
+  });
+});
+
+describe('openTransactionWarning', () => {
+  it('BEGIN / START TRANSACTION 之后没有 COMMIT / ROLLBACK / END 才提示', () => {
+    expect(openTransactionWarning(['BEGIN', 'UPDATE t SET a = 1'])).toMatch(/rolled back/);
+    expect(openTransactionWarning(['-- tx\nstart transaction', 'DELETE FROM t WHERE id = 1'])).toMatch(/rolled back/);
+    expect(openTransactionWarning(['BEGIN', 'UPDATE t SET a = 1', 'COMMIT'])).toBeUndefined();
+    expect(openTransactionWarning(['BEGIN', 'ROLLBACK'])).toBeUndefined();
+    expect(openTransactionWarning(['BEGIN', 'END'])).toBeUndefined();
+    expect(openTransactionWarning(['UPDATE t SET note = \'BEGIN\' WHERE id = 1'])).toBeUndefined();
+  });
+
+  it('autocommit 关掉后执行过语句, 到结束仍没提交才提示', () => {
+    expect(openTransactionWarning(['SET autocommit = 0', 'UPDATE t SET x = 1 WHERE id = 1'])).toMatch(/rolled back/);
+    expect(openTransactionWarning(['SET @@session.autocommit=OFF', 'UPDATE t SET x = 1 WHERE id = 1', 'COMMIT'])).toBeUndefined();
+    // COMMIT 之后的语句又隐式开了新事务
+    expect(openTransactionWarning(['SET autocommit = 0', 'UPDATE t SET x = 1', 'COMMIT', 'DELETE FROM t WHERE id = 2'])).toMatch(/rolled back/);
+    // 置回 1 会提交当前事务
+    expect(openTransactionWarning(['SET SESSION autocommit = 0', 'UPDATE t SET x = 1', 'SET autocommit = 1'])).toBeUndefined();
+    expect(openTransactionWarning(['SET autocommit = 0'])).toBeUndefined();
+  });
+
+  it('ROLLBACK TO SAVEPOINT 不结束事务', () => {
+    expect(openTransactionWarning(['BEGIN', 'SAVEPOINT s', 'ROLLBACK TO SAVEPOINT s'])).toMatch(/rolled back/);
   });
 });

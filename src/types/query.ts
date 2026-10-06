@@ -23,6 +23,19 @@ export interface QueryResult {
   readonly executionTime: number;
 }
 
+// executeBatch 里一条成功语句的结果. sql 是对应的语句原文; PG 一段文本产出多条结果而无法对应原文时为命令标签 (如 INSERT)
+export interface StatementOutcome extends QueryResult {
+  readonly sql: string;
+}
+
+// 一次 executeBatch 的结果: results 按序是成功语句的结果; error.index 是失败的那条输入语句, 其后的输入语句未执行
+export interface BatchOutcome {
+  readonly results: readonly StatementOutcome[];
+  readonly error?: { readonly index: number; readonly cause: unknown };
+  // 批内显式开启的事务到结束仍未提交 / 回滚: 会话随连接销毁, 服务端已回滚
+  readonly warning?: string;
+}
+
 export interface DetailedColumnInfo extends ColumnInfo {
   readonly comment: string;
 }

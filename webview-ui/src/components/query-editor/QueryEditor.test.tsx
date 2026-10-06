@@ -358,6 +358,30 @@ describe('QueryEditor', () => {
     expect(screen.getByTestId('query-results')).toHaveAttribute('data-editable', 'true');
   });
 
+  it('db-browser 切表卸载编辑器: 查询还在跑就发 cancelQuery, 已结束则不发', () => {
+    const first = render(<QueryEditor connectionId="c" database="db" table="a" initialSql="SELECT * FROM a" autoExecute />);
+    first.unmount();
+    expect(mockPostMessage).toHaveBeenLastCalledWith({ type: 'cancelQuery' });
+
+    mockPostMessage.mockClear();
+    const second = render(<QueryEditor connectionId="c" database="db" table="b" initialSql="SELECT * FROM b" autoExecute />);
+    send({ type: 'queryBatchResult', requestId: lastId('executeQuery'), statements: [] });
+    second.unmount();
+    expect(mockPostMessage).not.toHaveBeenCalledWith({ type: 'cancelQuery' });
+  });
+
+  it('queryBatchResult 带的提示 (事务已回滚) 显示出来, 下次执行清掉', () => {
+    render(<QueryEditor connectionId="c" database="db" initialSql="BEGIN" autoExecute />);
+    send({
+      type: 'queryBatchResult', requestId: lastId('executeQuery'),
+      statements: [{ index: 1, sql: 'BEGIN', status: 'ok', affectedRows: 0, executionTime: 1 }],
+      warning: 'Open transaction was rolled back when the session closed',
+    });
+    expect(screen.getByText(/Open transaction was rolled back/)).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Execute'));
+    expect(screen.queryByText(/Open transaction was rolled back/)).not.toBeInTheDocument();
+  });
+
   it('结果不是 panel 表的行: 网格只读并给出原因, Insert 仍可用', () => {
     render(<QueryEditor connectionId="c" database="db" table="users" initialSql="SELECT * FROM users" autoExecute />);
     send({ type: 'columnsResult', requestId: lastId('listColumns'), columns: [col('id', { isPrimaryKey: true }), col('status')] });

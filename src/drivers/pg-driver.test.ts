@@ -10,10 +10,14 @@ const mockPool = {
   on: vi.fn(),
 };
 
+// 每个 new pg.Pool 记下构造参数; 方法共用 mockPool 的 vi.fn, 用 mock.contexts 区分调用落在哪个 pool
+const pools = vi.hoisted(() => ({ instances: [] as { opts: { database?: string; host?: string; port?: number } }[] }));
+
 vi.mock('pg', () => {
   return {
     default: {
       Pool: class MockPool {
+        constructor(public opts: { database?: string }) { pools.instances.push(this); }
         connect = mockPool.connect;
         query = mockPool.query;
         end = mockPool.end;
@@ -43,6 +47,185 @@ describe('PgDriver', () => {
   beforeEach(() => {
     driver = new PgDriver();
     vi.clearAllMocks();
+    pools.instances.length = 0;
+  });
+
+  const cfg = {
+    id: 'test-id', name: 'test', driverType: 'postgresql' as const, host: '127.0.0.1', port: 50123,
+    username: 'postgres', password: 'secret', database: 'app_prod',
+  };
+  const dbOf = (fn: { mock: { contexts: unknown[] } }) =>
+    fn.mock.contexts.map((p) => (p as { opts: { database?: string } }).opts.database);
+
+  describe('按库建 pool', () => {
+    it('两个库两个 pool, 各方法的查询落到目标库; 缺省用配置库; disconnect 关掉全部', async () => {
+      mockPool.connect.mockResolvedValue({ release: vi.fn() });
+      mockPool.query.mockResolvedValue({ rows: [], fields: [], rowCount: 0 });
+      await driver.connect(cfg);
+
+      await driver.listTables('app_staging');
+      await driver.listColumns('app_staging', 'users');
+      await driver.execute('UPDATE users SET a = 1 WHERE id = $1', [1], 'app_staging');
+      await driver.execute('SELECT 1');
+      await driver.listDatabases();
+
+      // 新 pool 沿用连接参数 (SSH tunnel 时就是本地转发端口), 只换 database
+      // 其他库的空闲连接很快关掉 (列出全部库时每库一条连接)
+      expect(pools.instances.map((p) => p.opts)).toEqual([
+        expect.objectContaining({ host: '127.0.0.1', port: 50123, database: 'app_prod', idleTimeoutMillis: 30000 }),
+        expect.objectContaining({ host: '127.0.0.1', port: 50123, database: 'app_staging', idleTimeoutMillis: 1000 }),
+      ]);
+      expect(dbOf(mockPool.query)).toEqual(['app_staging', 'app_staging', 'app_staging', 'app_prod', 'app_prod']);
+
+      await driver.disconnect();
+      expect(mockPool.end).toHaveBeenCalledTimes(2);
+      expect(driver.isConnected()).toBe(false);
+    });
+
+    it('连接验证失败: 清掉 pool, 状态为未连接', async () => {
+      mockPool.connect.mockRejectedValueOnce(new Error('Connection refused'));
+      await expect(driver.connect(cfg)).rejects.toThrow('Connection refused');
+      expect(driver.isConnected()).toBe(false);
+      expect(mockPool.end).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('executeBatch (单连接执行器)', () => {
+    it('多语句文本的结果数组逐条映射; 用目标库的 pool, 连接用完销毁', async () => {
+      mockPool.connect.mockResolvedValue({ release: vi.fn() });
+      await driver.connect(cfg);
+      const client = {
+        processID: 9,
+        release: vi.fn(),
+        query: vi.fn().mockResolvedValueOnce([
+          { command: 'INSERT', rows: [], fields: [], rowCount: 2 },
+          { command: 'SELECT', rows: [{ n: 1 }], fields: [{ name: 'n', tableID: 0, columnID: 0, dataTypeID: 23 }], rowCount: 1 },
+        ]),
+      };
+      mockPool.connect.mockResolvedValue(client);
+
+      const out = await driver.executeBatch(['INSERT INTO t VALUES (1), (2); SELECT 1 AS n'], 'app_staging').promise;
+
+      expect(out.results.map((r) => [r.sql, r.affectedRows, r.rows])).toEqual([
+        ['INSERT INTO t VALUES (1), (2)', 2, []],
+        ['SELECT 1 AS n', 1, [{ n: 1 }]],
+      ]);
+      expect(out.error).toBeUndefined();
+      expect(dbOf(mockPool.connect).at(-1)).toBe('app_staging');
+      expect(client.release).toHaveBeenCalledWith(true);
+    });
+
+    it('BEGIN 未提交给出提示; 出错回带输入下标, 没有部分结果', async () => {
+      mockPool.connect.mockResolvedValue({ release: vi.fn() });
+      await driver.connect(cfg);
+      const client = {
+        processID: 9,
+        release: vi.fn(),
+        query: vi.fn()
+          .mockResolvedValueOnce([{ command: 'BEGIN', rows: [], fields: [], rowCount: null }, { command: 'UPDATE', rows: [], fields: [], rowCount: 1 }])
+          .mockRejectedValueOnce(new Error('syntax error')),
+      };
+      mockPool.connect.mockResolvedValue(client);
+
+      const ok = await driver.executeBatch(['BEGIN; UPDATE t SET a = 1']).promise;
+      expect(ok.warning).toMatch(/rolled back/);
+
+      const bad = await driver.executeBatch(['SELEC 1']).promise;
+      expect(bad.results).toEqual([]);
+      expect(bad.error).toEqual({ index: 0, cause: new Error('syntax error') });
+      expect(client.release).toHaveBeenCalledTimes(2);
+      expect(client.release).toHaveBeenLastCalledWith(true);
+    });
+
+    it('事务是否收尾看服务端命令标签, 不在客户端切分文本', async () => {
+      mockPool.connect.mockResolvedValue({ release: vi.fn() });
+      await driver.connect(cfg);
+      const tag = (command: string) => ({ command, rows: [], fields: [], rowCount: 0 });
+      const client = {
+        processID: 9,
+        release: vi.fn(),
+        query: vi.fn()
+          // PG 里 'C:\' 是完整字符串, MySQL 规则的切分会把后面的 COMMIT 吞进字符串
+          .mockResolvedValueOnce([tag('BEGIN'), tag('INSERT'), tag('COMMIT')])
+          // ABORT 的标签是 ROLLBACK
+          .mockResolvedValueOnce([tag('START'), tag('ROLLBACK')])
+          .mockResolvedValueOnce([tag('START'), tag('DELETE')]),
+      };
+      mockPool.connect.mockResolvedValue(client);
+
+      expect((await driver.executeBatch(["BEGIN; INSERT INTO t VALUES ('C:\\'); COMMIT;"]).promise).warning).toBeUndefined();
+      expect((await driver.executeBatch(['START TRANSACTION; ABORT']).promise).warning).toBeUndefined();
+      expect((await driver.executeBatch(['START TRANSACTION; DELETE FROM t WHERE id = 1']).promise).warning).toMatch(/rolled back/);
+    });
+
+    it('executeCancellable 不接受 params', async () => {
+      mockPool.connect.mockResolvedValue({ release: vi.fn() });
+      await driver.connect(cfg);
+      expect(() => driver.executeCancellable('SELECT $1', [1])).toThrow(/use execute/);
+    });
+
+    it('cancel 只取消本连接的 pid; 执行结束后 cancel 是 no-op', async () => {
+      mockPool.connect.mockResolvedValue({ release: vi.fn() });
+      await driver.connect(cfg);
+      let finish!: () => void;
+      const client = {
+        processID: 4321,
+        release: vi.fn(),
+        query: vi.fn(() => new Promise((r) => { finish = () => r({ command: 'SELECT', rows: [], fields: [], rowCount: 0 }); })),
+      };
+      mockPool.connect.mockResolvedValue(client);
+      mockPool.query.mockResolvedValue({ rows: [], fields: [], rowCount: 0 });
+
+      const run = driver.executeBatch(['SELECT pg_sleep(10)']);
+      await vi.waitFor(() => expect(client.query).toHaveBeenCalled());
+      run.cancel();
+      expect(mockPool.query).toHaveBeenCalledWith('SELECT pg_cancel_backend(4321)');
+      finish();
+      await run.promise;
+
+      mockPool.query.mockClear();
+      run.cancel();
+      expect(mockPool.query).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('executeReadOnly', () => {
+    it('目标库的只读事务里设 statement_timeout, 连接用完销毁', async () => {
+      mockPool.connect.mockResolvedValue({ release: vi.fn() });
+      await driver.connect(cfg);
+      const client = { release: vi.fn(), query: vi.fn().mockResolvedValue({ rows: [{ n: 1 }], fields: [], rowCount: 1 }) };
+      mockPool.connect.mockResolvedValue(client);
+
+      const result = await driver.executeReadOnly('SELECT 1', 'app_staging');
+
+      expect(client.query.mock.calls.map((c) => c[0])).toEqual([
+        'BEGIN READ ONLY',
+        'SET LOCAL statement_timeout = 30000',
+        { text: 'SELECT 1', queryMode: 'extended' },
+      ]);
+      expect(result.rows).toEqual([{ n: 1 }]);
+      expect(dbOf(mockPool.connect).at(-1)).toBe('app_staging');
+      expect(client.release).toHaveBeenCalledWith(true);
+    });
+  });
+
+  describe('getTableDDL', () => {
+    it('序列默认值引用的序列先 CREATE SEQUENCE IF NOT EXISTS', async () => {
+      mockPool.connect.mockResolvedValue({ release: vi.fn() });
+      await driver.connect(cfg);
+      mockPool.query
+        .mockResolvedValueOnce({ rows: [
+          { column_name: 'id', data_type: 'integer', udt_name: 'int4', is_nullable: 'NO', column_default: "nextval('\"T_id_seq\"'::regclass)" },
+          { column_name: 'name', data_type: 'text', udt_name: 'text', is_nullable: 'YES', column_default: null },
+        ] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] });
+
+      expect(await driver.getTableDDL('app_prod', 'T')).toBe(
+        'CREATE SEQUENCE IF NOT EXISTS "T_id_seq";\n'
+        + 'CREATE TABLE "T" (\n  "id" int4 NOT NULL DEFAULT nextval(\'"T_id_seq"\'::regclass),\n  "name" text\n);',
+      );
+    });
   });
 
   describe('connect', () => {
@@ -84,10 +267,6 @@ describe('PgDriver', () => {
           database: 'testdb',
         })
       ).rejects.toThrow('Connection refused');
-
-      // 注: 当前实现在连接验证失败时没有清理 pool, 这是 bug
-      // 理想情况下应该是 false, 但当前实现会留下 pool
-      // 这个测试主要验证错误被正确抛出
     });
   });
 

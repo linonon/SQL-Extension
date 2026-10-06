@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { DumpService } from './dump-service';
 import { createMockDriver as createBaseMockDriver } from '../__mocks__/mock-driver';
 import type { IDatabaseDriver } from '../types/driver';
+import { splitSqlStatements } from '../utils/destructive-sql';
 
 function createMockDriver(driverType: string = 'mysql'): IDatabaseDriver {
   const driver = createBaseMockDriver({ driverType });
@@ -293,5 +294,68 @@ describe('DumpService', () => {
       const result = await service.dumpStructAndData(driver, 'testdb', 'test_table');
       expect(result).toContain('(NULL)');
     });
+  });
+});
+
+describe('dump / import 往返', () => {
+  const columns = ['id', 's', 'p', 'n', 'z', 'b', 'j', 'o'].map((name) => ({
+    name, dataType: 'x', nullable: true, isPrimaryKey: name === 'id', defaultValue: null, extra: '',
+  }));
+  const row = {
+    id: 1,
+    s: "it's",
+    p: 'C:\\dir\\', // 以反斜杠结尾
+    n: 'line1\nline2;', // 换行 + 分号
+    z: null,
+    b: Buffer.from([0x00, 0xff, 0x27]), // 二进制, 含引号字节
+    j: '{"q":"it\'s","p":"a\\\\b"}', // JSON 列原文 (jsonStrings)
+    o: { k: 1 }, // 对象值按 JSON 写出
+  };
+
+  async function dump(driverType: string, ddl: string): Promise<{ sql: string; driver: IDatabaseDriver }> {
+    const driver = createBaseMockDriver({ driverType });
+    driver.getTableDDL.mockResolvedValue(ddl);
+    driver.listColumns.mockResolvedValue(columns);
+    driver.execute
+      .mockResolvedValueOnce({ columns: [], rows: [{ cnt: '1' }], affectedRows: 0, executionTime: 0 })
+      .mockResolvedValueOnce({ columns: [], rows: [row], affectedRows: 0, executionTime: 0 });
+    return { sql: await new DumpService().dumpStructAndData(driver, 'db', 't'), driver };
+  }
+
+  it('MySQL: 反斜杠加倍, Buffer 为 X 字面量, 按主键分页, 能被 splitSqlStatements 切回原语句', async () => {
+    // SHOW CREATE TABLE 不带结尾分号
+    const ddl = 'CREATE TABLE `t` (\n  `id` int NOT NULL,\n  PRIMARY KEY (`id`)\n) ENGINE=InnoDB';
+    const { sql, driver } = await dump('mysql', ddl);
+    const insert = 'INSERT INTO `t` (`id`, `s`, `p`, `n`, `z`, `b`, `j`, `o`) VALUES\n'
+      + "(1, 'it''s', 'C:\\\\dir\\\\', 'line1\nline2;', NULL, X'00ff27', '{\"q\":\"it''s\",\"p\":\"a\\\\\\\\b\"}', '{\"k\":1}')";
+
+    const stmts = splitSqlStatements(sql);
+    expect(stmts).toHaveLength(3);
+    expect(stmts[0]).toMatch(/^-- Dump from SQL Extension[\s\S]*\nDROP TABLE IF EXISTS `t`$/);
+    expect(stmts[1]).toBe(ddl);
+    expect(stmts[2]).toBe(insert);
+    expect(driver.execute).toHaveBeenLastCalledWith('SELECT * FROM `db`.`t` ORDER BY `id` LIMIT 1000 OFFSET 0', undefined, 'db');
+  });
+
+  it('PostgreSQL: 只双写单引号 (反斜杠原样), Buffer 为 bytea hex, 查询落到目标库', async () => {
+    const { sql, driver } = await dump('postgresql', 'CREATE TABLE "t" (\n  "id" int4 NOT NULL\n);');
+    expect(sql).toContain('INSERT INTO "t" ("id", "s", "p", "n", "z", "b", "j", "o") VALUES\n'
+      + "(1, 'it''s', 'C:\\dir\\', 'line1\nline2;', NULL, '\\x00ff27'::bytea, '{\"q\":\"it''s\",\"p\":\"a\\\\b\"}', '{\"k\":1}');");
+    expect(driver.execute).toHaveBeenLastCalledWith('SELECT * FROM "t" ORDER BY "id" LIMIT 1000 OFFSET 0', undefined, 'db');
+  });
+
+  it('PostgreSQL: 序列列在数据之后把序列推到 MAX, 只进不退', async () => {
+    const driver = createBaseMockDriver({ driverType: 'postgresql' });
+    driver.getTableDDL.mockResolvedValue('CREATE SEQUENCE IF NOT EXISTS "T_id_seq";\nCREATE TABLE "T" ("id" int4);');
+    driver.listColumns.mockResolvedValue([
+      { name: 'id', dataType: 'integer', nullable: false, isPrimaryKey: true, defaultValue: "nextval('\"T_id_seq\"'::regclass)", extra: '' },
+    ]);
+    driver.execute
+      .mockResolvedValueOnce({ columns: [], rows: [{ cnt: '1' }], affectedRows: 0, executionTime: 0 })
+      .mockResolvedValueOnce({ columns: [], rows: [{ id: 7 }], affectedRows: 0, executionTime: 0 });
+
+    const sql = await new DumpService().dumpStructAndData(driver, 'db', 'T');
+
+    expect(sql.trimEnd()).toMatch(/INSERT INTO "T" \("id"\) VALUES\n\(7\);\n\nSELECT setval\('"T_id_seq"', GREATEST\(MAX\("id"\), \(SELECT last_value FROM "T_id_seq"\)\)\) FROM "T";$/);
   });
 });

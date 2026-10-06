@@ -10,7 +10,7 @@ export class QueryService {
     row: Record<string, unknown>
   ): Promise<QueryResult> {
     const query = buildInsert(driver.driverType, table, row, database);
-    return driver.execute(query.sql, query.params);
+    return driver.execute(query.sql, query.params, database);
   }
 
   // 批量更新做成原子操作: 整批在单个事务内执行, 任一行失败则全部回滚.
@@ -39,10 +39,10 @@ export class QueryService {
       }
     };
     if (driver.transaction) {
-      await driver.transaction(run);
+      await driver.transaction(run, database);
     } else {
       // 无事务能力的 driver 退化为逐条 (SQL driver 均实现 transaction, 此为防御兜底)
-      await run((sql, params) => driver.execute(sql, params));
+      await run((sql, params) => driver.execute(sql, params, database));
     }
   }
 }

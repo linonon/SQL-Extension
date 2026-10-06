@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { handleSqlMessage, type SqlMessageContext } from './sql-message-handler';
 import type { IDatabaseDriver } from '../types/driver';
 import type { WebviewMessage } from '../types/messages';
+import type { StatementOutcome } from '../types/query';
 import * as vscode from 'vscode';
 
 function createMysqlDriver(queue: Array<
@@ -21,18 +22,23 @@ function createMysqlDriver(queue: Array<
     getTableDDL: vi.fn().mockResolvedValue(''),
     getDetailedColumns: vi.fn().mockResolvedValue([]),
     execute: vi.fn(),
-    executeCancellable: vi.fn((sql: string) => {
-      const item = queue[i++];
-      if (item instanceof Error) {
-        return { promise: Promise.reject(item), cancel: vi.fn() };
+    executeCancellable: vi.fn(),
+    // 每条语句依次消费 queue 的一项, 遇 Error 即停 (与真 executor 的遇错即停一致)
+    executeBatch: vi.fn((statements: readonly string[]) => {
+      const results: StatementOutcome[] = [];
+      for (let k = 0; k < statements.length; k++) {
+        const item = queue[i++] ?? { columns: [], rows: [], affectedRows: 0, executionTime: 0 };
+        if (item instanceof Error) {
+          return { promise: Promise.resolve({ results, error: { index: k, cause: item } }), cancel: vi.fn() };
+        }
+        results.push({ ...item, sql: statements[k] } as StatementOutcome);
       }
-      return {
-        promise: Promise.resolve(item ?? { columns: [], rows: [], affectedRows: 0, executionTime: 0 }),
-        cancel: vi.fn(),
-      };
+      return { promise: Promise.resolve({ results }), cancel: vi.fn() };
     }),
   } as unknown as IDatabaseDriver;
 }
+
+const batchCalls = (driver: IDatabaseDriver) => (driver.executeBatch as ReturnType<typeof vi.fn>).mock.calls;
 
 function createCtx(driver: IDatabaseDriver, posts: unknown[]): SqlMessageContext {
   return {
@@ -56,11 +62,11 @@ describe('handleSqlMessage executeQuery mysql batch', () => {
     const driver = createMysqlDriver([]);
     const sql = `SELECT * FROM \`admin_url_key\` WHERE id = 15 AND name = "Log List" LIMIT 50 OFFSET 0; UPDATE t SET note = 'a;b', v = 'it\\'s' WHERE id = 1 -- c;d`;
     await handleSqlMessage({ type: 'executeQuery', database: 'db', sql } as WebviewMessage, createCtx(driver, posts));
-    const sent = (driver.executeCancellable as ReturnType<typeof vi.fn>).mock.calls.map(c => c[0]);
-    expect(sent).toEqual([
+    // 一次执行只调一次 executor, 切分后的原文按序交给同一条连接, 库取 panel 绑定的库
+    expect(batchCalls(driver)).toEqual([[[
       'SELECT * FROM `admin_url_key` WHERE id = 15 AND name = "Log List" LIMIT 50 OFFSET 0',
       "UPDATE t SET note = 'a;b', v = 'it\\'s' WHERE id = 1 -- c;d",
-    ]);
+    ], 'AGENT_NEW']]);
   });
 
   it('两条都成功时回 queryBatchResult', async () => {
@@ -79,7 +85,7 @@ describe('handleSqlMessage executeQuery mysql batch', () => {
     };
     expect(batch.statements).toHaveLength(2);
     expect(batch.statements.every((s) => s.status === 'ok')).toBe(true);
-    expect(driver.executeCancellable).toHaveBeenCalledTimes(2);
+    expect(driver.executeBatch).toHaveBeenCalledTimes(1);
   });
 
   it('第二条失败则后续 skipped', async () => {
@@ -98,19 +104,38 @@ describe('handleSqlMessage executeQuery mysql batch', () => {
     expect(batch.statements.map((s) => s.status)).toEqual(['ok', 'error', 'skipped']);
   });
 
-  it('非 mysql 仍回 queryResult', async () => {
+  it('PG 整段不切分, 服务端返回的每个结果是一条 statement', async () => {
     const posts: unknown[] = [];
-    const driver = createMysqlDriver([
-      { columns: [], rows: [{ x: 1 }], affectedRows: 0, executionTime: 1 },
-    ]);
+    const driver = createMysqlDriver([]);
     (driver as { driverType: string }).driverType = 'postgresql';
-    await handleSqlMessage(
-      { type: 'executeQuery', database: 'db', sql: 'SELECT 1; SELECT 2;' } as WebviewMessage,
-      createCtx(driver, posts),
-    );
-    expect(posts.some((p) => (p as { type: string }).type === 'queryResult')).toBe(true);
-    expect(posts.some((p) => (p as { type: string }).type === 'queryBatchResult')).toBe(false);
-    expect(driver.executeCancellable).toHaveBeenCalledTimes(1);
+    const sql = 'SELECT 1; DO $$ BEGIN PERFORM 1; END $$;';
+    (driver.executeBatch as ReturnType<typeof vi.fn>).mockReturnValue({
+      promise: Promise.resolve({ results: [
+        { sql: 'SELECT 1', columns: [{ name: 'x' }], rows: [{ x: 1 }], affectedRows: 1, executionTime: 1 },
+        { sql: 'DO', columns: [], rows: [], affectedRows: 0, executionTime: 1 },
+      ] }),
+      cancel: vi.fn(),
+    });
+    await handleSqlMessage({ type: 'executeQuery', requestId: 1, database: 'db', sql }, createCtx(driver, posts));
+    expect(batchCalls(driver)).toEqual([[[sql], 'AGENT_NEW']]);
+    expect(posts).toEqual([expect.objectContaining({
+      type: 'queryBatchResult',
+      statements: [
+        expect.objectContaining({ index: 1, sql: 'SELECT 1', status: 'ok', rows: [{ x: 1 }] }),
+        expect.objectContaining({ index: 2, sql: 'DO', status: 'ok' }),
+      ],
+    })]);
+  });
+
+  it('executor 的未提交事务提示带进回执', async () => {
+    const posts: unknown[] = [];
+    const driver = createMysqlDriver([]);
+    (driver.executeBatch as ReturnType<typeof vi.fn>).mockReturnValue({
+      promise: Promise.resolve({ results: [], warning: 'rolled back' }),
+      cancel: vi.fn(),
+    });
+    await handleSqlMessage({ type: 'executeQuery', requestId: 1, database: 'db', sql: 'BEGIN' }, createCtx(driver, posts));
+    expect(posts).toEqual([expect.objectContaining({ type: 'queryBatchResult', warning: 'rolled back' })]);
   });
 });
 
@@ -139,9 +164,9 @@ describe('handleSqlMessage 回执身份与 cancel 槽位', () => {
   it('旧执行晚结束不清掉新执行的 cancel', async () => {
     const runs: Array<{ resolve: () => void; cancel: () => void }> = [];
     const driver = createMysqlDriver([]);
-    (driver.executeCancellable as ReturnType<typeof vi.fn>).mockImplementation(() => {
+    (driver.executeBatch as ReturnType<typeof vi.fn>).mockImplementation(() => {
       let resolve!: () => void;
-      const promise = new Promise((r) => { resolve = () => r({ columns: [], rows: [], affectedRows: 0, executionTime: 0 }); });
+      const promise = new Promise((r) => { resolve = () => r({ results: [] }); });
       const run = { resolve, cancel: vi.fn() };
       runs.push(run);
       return { promise, cancel: run.cancel };
@@ -190,5 +215,92 @@ describe('handleSqlMessage dumpTable', () => {
     expect(writeFile).not.toHaveBeenCalled();
     expect(info).toHaveBeenCalledWith('Dump cancelled');
     expect(posts).toEqual([]);
+  });
+});
+
+describe('handleSqlMessage importSql', () => {
+  const pick = async (sql: string) => {
+    vi.spyOn(vscode.window, 'showOpenDialog').mockResolvedValue([vscode.Uri.file('/tmp/d.sql')] as never);
+    vi.spyOn(vscode.workspace.fs, 'readFile').mockResolvedValue(Buffer.from(sql, 'utf-8') as never);
+  };
+
+  it('MySQL: 按 ; 切分后一次交给 executor, 失败时报出第几条', async () => {
+    const dump = "DROP TABLE IF EXISTS `t`;\nCREATE TABLE `t` (id int);\nINSERT INTO `t` (`id`) VALUES (1),\n(2);\n";
+    await pick(dump);
+    const driver = createMysqlDriver([
+      { columns: [], rows: [], affectedRows: 0, executionTime: 1 },
+      new Error('boom'),
+    ]);
+    const err = vi.spyOn(vscode.window, 'showErrorMessage');
+    const warn = vi.spyOn(vscode.window, 'showWarningMessage').mockResolvedValue('Import' as never);
+    const posts: unknown[] = [];
+    await handleSqlMessage({ type: 'importSql', database: 'db1' } as WebviewMessage, createCtx(driver, posts));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('destructive'), { modal: true }, 'Import');
+    expect(batchCalls(driver)).toEqual([[[
+      'DROP TABLE IF EXISTS `t`',
+      'CREATE TABLE `t` (id int)',
+      'INSERT INTO `t` (`id`) VALUES (1),\n(2)',
+    ], 'db1']]);
+    expect(err).toHaveBeenCalledWith('Import failed at statement 2/3 (earlier statements were applied): boom');
+    // 失败也刷新左侧列表: 前面的语句可能已建表
+    expect(posts).toEqual([expect.objectContaining({ type: 'databaseTableList' })]);
+  });
+
+  it('含 DROP 的文件在 modal 里取消: 不执行, 不刷新', async () => {
+    await pick('DROP TABLE IF EXISTS `t`;\nCREATE TABLE `t` (id int);\n');
+    vi.spyOn(vscode.window, 'showWarningMessage').mockResolvedValue(undefined as never);
+    const driver = createMysqlDriver([]);
+    const posts: unknown[] = [];
+    await handleSqlMessage({ type: 'importSql', database: 'db1' } as WebviewMessage, createCtx(driver, posts));
+    expect(driver.executeBatch).not.toHaveBeenCalled();
+    expect(posts).toEqual([]);
+  });
+
+  it('PG: 整段文本交给 simple protocol, 不在客户端切分', async () => {
+    // 以反斜杠结尾的 PG 字符串会让 MySQL 风格的切分器吞掉后面的语句
+    const dump = "INSERT INTO \"t\" (\"p\") VALUES ('C:\\');\nINSERT INTO \"t\" (\"p\") VALUES ('x');\n";
+    await pick(dump);
+    const driver = createMysqlDriver([{ columns: [], rows: [], affectedRows: 2, executionTime: 1 }]);
+    (driver as { driverType: string }).driverType = 'postgresql';
+    const info = vi.spyOn(vscode.window, 'showInformationMessage');
+    await handleSqlMessage({ type: 'importSql', database: 'db1' } as WebviewMessage, createCtx(driver, []));
+    expect(batchCalls(driver)).toEqual([[[dump], 'db1']]);
+    expect(info).toHaveBeenCalledWith('SQL imported. Affected rows: 2');
+  });
+});
+
+describe('handleSqlMessage listDatabasesAndTables', () => {
+  const pgError = (code: string) => Object.assign(new Error(`pg ${code}`), { code });
+
+  it('最多 4 个库并发; 连不上的库 (权限 / 已删 / pg_hba) 列成空库', async () => {
+    const driver = createMysqlDriver([]);
+    const names = ['a', 'b', 'c', 'd', 'e', 'f', 'g'];
+    (driver.listDatabases as ReturnType<typeof vi.fn>).mockResolvedValue(names);
+    let inFlight = 0;
+    let peak = 0;
+    (driver.listTables as ReturnType<typeof vi.fn>).mockImplementation(async (db: string) => {
+      peak = Math.max(peak, ++inFlight);
+      await new Promise((r) => setTimeout(r, 1));
+      inFlight--;
+      if (db === 'b') { throw pgError('42501'); }
+      if (db === 'c') { throw pgError('28000'); }
+      return [{ name: `${db}_t`, rowCount: 1 }];
+    });
+    const posts: unknown[] = [];
+    await handleSqlMessage({ type: 'listDatabasesAndTables' } as WebviewMessage, createCtx(driver, posts));
+    expect(peak).toBe(4);
+    const [msg] = posts as { databases: { name: string; tables: unknown[] }[] }[];
+    expect(msg.databases.map((d) => [d.name, d.tables.length])).toEqual([
+      ['a', 1], ['b', 0], ['c', 0], ['d', 1], ['e', 1], ['f', 1], ['g', 1],
+    ]);
+  });
+
+  it('其他错误不吞, 走列表的 error 回执', async () => {
+    const driver = createMysqlDriver([]);
+    (driver.listDatabases as ReturnType<typeof vi.fn>).mockResolvedValue(['a', 'b']);
+    (driver.listTables as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Connection terminated'));
+    const posts: unknown[] = [];
+    await handleSqlMessage({ type: 'refreshDatabases' } as WebviewMessage, createCtx(driver, posts));
+    expect(posts).toEqual([{ type: 'databaseTableList', databases: [], error: 'Connection terminated' }]);
   });
 });

@@ -236,10 +236,12 @@ export class MongoDriver implements IDatabaseDriver {
     collection: string,
     method: string,
     args: readonly unknown[],
-    options?: { limit?: number; autoConvertIds?: boolean },
+    options?: { limit?: number; autoConvertIds?: boolean; maxTimeMS?: number },
   ): Promise<DispatchResult> {
     this.assertConnected();
     const coll = this.client!.db(database).collection(collection);
+    // 服务端超时只加在读方法 (find / aggregate / countDocuments) 上
+    const timeout = options?.maxTimeMS ? { maxTimeMS: options.maxTimeMS } : {};
     // 把 filter 还原成 BSON. autoConvertIds (24-hex 字符串 -> ObjectId) 是查询编辑器手敲裸字符串的
     // 便利; CRUD 路径 (filter 经 buildIdFilter 已显式带类型) 传 autoConvertIds:false 跳过它,
     // 否则真字符串 _id (恰好 24-hex) 会被误转成 ObjectId 而匹配不上.
@@ -253,7 +255,7 @@ export class MongoDriver implements IDatabaseDriver {
         const filter = toFilter(args[0]);
         const opts = (args[1] ?? {}) as { projection?: Document };
         const limit = options?.limit ?? 1000;
-        const docs = await coll.find(filter, { projection: opts.projection }).limit(limit).toArray();
+        const docs = await coll.find(filter, { projection: opts.projection, ...timeout }).limit(limit).toArray();
         return { docs };
       }
       case 'findOne': {
@@ -306,12 +308,12 @@ export class MongoDriver implements IDatabaseDriver {
       case 'aggregate': {
         const pipeline = convertEjsonToBson(args[0] ?? []) as Record<string, unknown>[];
         // 行数上限下推到服务端, 避免先把整个结果集拉进内存
-        const docs = await coll.aggregate(options?.limit ? [...pipeline, { $limit: options.limit }] : pipeline).toArray();
+        const docs = await coll.aggregate(options?.limit ? [...pipeline, { $limit: options.limit }] : pipeline, timeout).toArray();
         return { docs };
       }
       case 'countDocuments': {
         const filter = toFilter(args[0]);
-        const count = await coll.countDocuments(filter);
+        const count = await coll.countDocuments(filter, timeout);
         return { docs: [{ count }] };
       }
       case 'createIndex': {

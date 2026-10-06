@@ -65,6 +65,7 @@ export const window = {
   showWarningMessage: async () => undefined,
   showErrorMessage: async () => undefined,
   showSaveDialog: async () => undefined,
+  showOpenDialog: async () => undefined,
   withProgress: async (_opts: unknown, task: Function) => task({ report: () => {} }, { isCancellationRequested: false }),
 };
 
@@ -84,5 +85,6 @@ export const workspace = {
   workspaceFolders: undefined,
   fs: {
     writeFile: async () => {},
+    readFile: async () => new Uint8Array(),
   },
 };

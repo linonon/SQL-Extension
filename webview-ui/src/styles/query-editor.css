@@ -48,6 +48,14 @@
   color: var(--vscode-descriptionForeground);
 }
 
+.query-batch-warning {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  font-size: 12px;
+  color: var(--vscode-editorWarning-foreground, #cca700);
+  background: color-mix(in srgb, var(--vscode-inputValidation-warningBackground, #352a05) 40%, transparent);
+}
+
 .statement-summary-list {
   border-bottom: 1px solid var(--vscode-panel-border);
   max-height: 220px;
