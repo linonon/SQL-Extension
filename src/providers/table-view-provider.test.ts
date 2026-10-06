@@ -113,8 +113,10 @@ describe('TableViewProvider schema 缓存', () => {
 
     driver = { driverType: 'mysql', listSchemaColumns };
     listSchemaColumns.mockRejectedValueOnce(new Error('gone'));
+    const err = vi.spyOn(vscode.window, 'showErrorMessage');
     await b.send({ type: 'requestSchema', database: 'game' });
-    expect(b.posted).toContainEqual({ type: 'error', message: 'gone' });
+    expect(err).toHaveBeenCalledWith('Failed to load schema for autocomplete: gone');
+    expect(b.posted).not.toContainEqual(expect.objectContaining({ type: 'error' }));
     await b.send({ type: 'requestSchema', database: 'game' });
     expect(listSchemaColumns).toHaveBeenCalledTimes(4);
   });

@@ -324,22 +324,6 @@ export class PgDriver implements IDatabaseDriver {
     }
   }
 
-  // 接口兼容: 走 executeBatch, 返回最后一条结果. 不支持 params (带参数用 execute)
-  executeCancellable(sql: string, params?: unknown[], database?: string): {
-    promise: Promise<QueryResult>;
-    cancel: () => void;
-  } {
-    if (params?.length) { throw new Error('PgDriver.executeCancellable does not take params, use execute()'); }
-    const { promise, cancel } = this.executeBatch([sql], database);
-    return {
-      promise: promise.then((o) => {
-        if (o.error) { throw o.error.cause; }
-        return o.results[o.results.length - 1];
-      }),
-      cancel,
-    };
-  }
-
   executeBatch(statements: readonly string[], database?: string, options?: { readonly readOnly?: boolean }): {
     promise: Promise<BatchOutcome>;
     cancel: () => void;
@@ -399,7 +383,11 @@ export class PgDriver implements IDatabaseDriver {
       if (done || cancelled) { return; }
       cancelled = true;
       if (pid != null) {
-        pool.query(`SELECT pg_cancel_backend(${pid})`).catch((err: Error) => { console.error('[PgDriver] Cancel query failed:', err.message); });
+        // 另开一条连接发 (参数同池): 池可能被执行中的查询占满, pool.query 要排队到它们结束
+        const killer = new pg.Client(pool.options);
+        killer.connect()
+          .then(() => killer.query(`SELECT pg_cancel_backend(${pid})`).finally(() => killer.end()))
+          .catch((err: Error) => { console.error('[PgDriver] Cancel query failed:', err.message); });
       }
     };
 

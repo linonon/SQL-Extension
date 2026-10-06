@@ -2,6 +2,17 @@ import { describe, it, expect, vi } from 'vitest';
 import { convertShellToJson, stripShellTypes, jsonToShell } from './mongo-shell-to-json';
 
 describe('convertShellToJson', () => {
+  it('字符串值里形似 shell 写法的文本原样保留; 字符串外的照常转换 (编辑器 jsonToShell -> convertShellToJson 往返)', () => {
+    // 文档的 ObjectId 以 shell 写法字符串到达 webview
+    const doc = { _id: 'ObjectId("abc123456789012345678901")', note: 'call Long(5) or ISODate("x") here, NumberInt(3)' };
+    const shell = jsonToShell(JSON.stringify(doc, null, 2));
+    expect(shell).toContain('"_id": ObjectId("abc123456789012345678901")');
+    expect(JSON.parse(convertShellToJson(shell))).toEqual({
+      _id: { $oid: 'abc123456789012345678901' },
+      note: 'call Long(5) or ISODate("x") here, NumberInt(3)',
+    });
+  });
+
   it('ObjectId -> $oid Extended JSON', () => {
     expect(convertShellToJson('ObjectId("abc123456789012345678901")'))
       .toBe('{"$oid":"abc123456789012345678901"}');

@@ -56,6 +56,14 @@ import { convertShellToJson, convertEjsonToBson, assertValidBson } from './mongo
 import { ObjectId, Long, Int32, Decimal128, MinKey, MaxKey, Binary, UUID, Timestamp } from 'mongodb';
 
 describe('convertShellToJson', () => {
+  it('字符串值里形似 shell 写法的文本原样保留, 字符串外的照常转换', () => {
+    const filter = '{"note": "see Long(5) and \\"ObjectId(\\"abc123456789012345678901\\")\\"", "uid": NumberLong(7)}';
+    expect(JSON.parse(convertShellToJson(filter))).toEqual({
+      note: 'see Long(5) and "ObjectId("abc123456789012345678901")"',
+      uid: { $numberLong: '7' },
+    });
+  });
+
   it('ObjectId("...") 转为 {"$oid":"..."}', () => {
     const result = convertShellToJson('ObjectId("abc123456789012345678901")');
     expect(result).toBe('{"$oid":"abc123456789012345678901"}');

@@ -41,6 +41,17 @@ describe('isWholeTableWrite', () => {
     expect(isWholeTableWrite("UPDATE t SET a = 'x\\' WHERE id = 1", 'postgresql')).toBe(false);
   });
 
+  it('ALTER TABLE 删列 / 约束 / 分区需要确认 (与 Edit Table 删列一致); 只改列属性的 DROP DEFAULT / NOT NULL 不打扰', () => {
+    expect(isWholeTableWrite('ALTER TABLE t DROP COLUMN c', 'mysql')).toBe(true);
+    expect(isWholeTableWrite('alter table `t` add column x int, drop `c`', 'mysql')).toBe(true);
+    expect(isWholeTableWrite('ALTER TABLE t DROP PARTITION p0', 'mysql')).toBe(true);
+    expect(isWholeTableWrite('ALTER TABLE t TRUNCATE PARTITION p0', 'mysql')).toBe(true);
+    expect(isWholeTableWrite('ALTER TABLE IF EXISTS "t" DROP CONSTRAINT t_pk', 'postgresql')).toBe(true);
+    expect(isWholeTableWrite('ALTER TABLE t ALTER COLUMN c DROP DEFAULT', 'mysql')).toBe(false);
+    expect(isWholeTableWrite('ALTER TABLE t ALTER COLUMN c DROP NOT NULL', 'postgresql')).toBe(false);
+    expect(isWholeTableWrite("ALTER TABLE t ADD COLUMN drop_flag INT COMMENT 'drop me'", 'mysql')).toBe(false);
+  });
+
   it('SELECT 不需要确认', () => {
     expect(isWholeTableWrite('SELECT * FROM users', 'mysql')).toBe(false);
   });

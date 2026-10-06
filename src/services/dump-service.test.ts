@@ -189,6 +189,28 @@ describe('DumpService', () => {
         .rejects.toThrow('Dump cancelled');
       expect((driver.execute as any).mock.calls.length).toBe(3);
     });
+
+    it('一页按字节数拆成多条 INSERT, 每条不超过 1MB; 单行超限时自成一条', async () => {
+      const driver = createMockDriver('mysql');
+      // 多字节字符按 UTF-8 字节计: 300K 个 "中" 约 900KB
+      const big = '中'.repeat(300_000);
+      const rows = [{ id: 1, v: big }, { id: 2, v: big }, { id: 3, v: 'x'.repeat(2_000_000) }, { id: 4, v: 'a' }, { id: 5, v: 'b' }];
+      (driver.execute as any)
+        .mockResolvedValueOnce({ columns: [], rows: [{ cnt: '5' }], affectedRows: 0, executionTime: 0 })
+        .mockResolvedValueOnce({ columns: [], rows, affectedRows: 0, executionTime: 0 });
+      (driver.listColumns as any).mockResolvedValue([
+        { name: 'id', dataType: 'int', nullable: false, isPrimaryKey: true, defaultValue: null, extra: '' },
+        { name: 'v', dataType: 'longtext', nullable: true, isPrimaryKey: false, defaultValue: null, extra: '' },
+      ]);
+
+      const sql = await service.dumpStructAndData(driver, 'testdb', 'users');
+      const inserts = splitSqlStatements(sql, 'mysql').filter((s) => s.startsWith('INSERT'));
+
+      expect(inserts.map((s) => (s.match(/^\(\d+, /gm) ?? []).map((m) => m.slice(1, -2)))).toEqual([['1'], ['2'], ['3'], ['4', '5']]);
+      for (const s of inserts.filter((s) => !s.includes("(3, 'x"))) {
+        expect(Buffer.byteLength(s)).toBeLessThanOrEqual(1024 * 1024 + 100);
+      }
+    });
   });
 
   describe('escapeValue (通过 dump 输出间接测试)', () => {

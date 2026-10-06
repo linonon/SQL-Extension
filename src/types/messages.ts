@@ -68,7 +68,8 @@ export interface StatementResult {
 export type ExtensionMessage =
   | { type: 'queryResult'; requestId: number; columns: ColumnInfo[]; rows: Record<string, unknown>[]; affectedRows: number; executionTime: number; error?: string }
   | { type: 'queryBatchResult'; requestId: number; statements: StatementResult[]; warning?: string }
-  | { type: 'columnsResult'; requestId: number; columns: ColumnInfo[] }
+  // error: 取表结构失败 (columns 为空)
+  | { type: 'columnsResult'; requestId: number; columns: ColumnInfo[]; error?: string }
   | { type: 'batchUpdateResult'; success: boolean; error?: string }
   | { type: 'insertRowResult'; success: boolean; error?: string }
   // cancelled: 用户在确认框里取消, 没有删
@@ -87,7 +88,8 @@ export type ExtensionMessage =
   // previewAlterTable 的回执: ddl 为空串表示没有改动
   | { type: 'alterTablePreview'; ddl: string }
   // scanned: 本次请求扫过的 key 数估值; keys 为空且 done 为 false 表示这一段没匹配到, 可从 cursor 接着扫
-  | { type: 'redisScanResult'; requestId: number; keys: readonly RedisKeyInfo[]; cursor: string; done: boolean; scanned: number }
+  // error: 这次 SCAN 失败 (其余字段无意义)
+  | { type: 'redisScanResult'; requestId: number; keys: readonly RedisKeyInfo[]; cursor: string; done: boolean; scanned: number; error?: string }
   | { type: 'redisValueResult'; key: string; database: number; keyType: RedisKeyType; value: RedisValue; ttl: number }
   | { type: 'redisOperationResult'; success: boolean; error?: string }
   | { type: 'redisDbList'; databases: readonly { readonly index: number; readonly keyCount: number }[] }

@@ -685,9 +685,9 @@ describe('handleRedisMessage', () => {
 
   describe('错误处理', () => {
     it('driver 抛错时发 redisOperationResult { success: false }', async () => {
-      (driver.scan as any).mockRejectedValue(new Error('Connection lost'));
+      (driver.getKeyType as any).mockRejectedValue(new Error('Connection lost'));
 
-      const msg = { type: 'redisScan', database: 0, pattern: '*', cursor: '0', count: 100 } as WebviewMessage;
+      const msg = { type: 'redisGetValue', database: 0, key: 'k' } as WebviewMessage;
       const handled = await handleRedisMessage(msg, driver, postMessage);
 
       expect(handled).toBe(true);
@@ -695,6 +695,17 @@ describe('handleRedisMessage', () => {
         type: 'redisOperationResult',
         success: false,
         error: 'Connection lost',
+      });
+    });
+
+    it('SCAN 失败回带 requestId 的 redisScanResult (webview 只结束这一次扫描)', async () => {
+      (driver.scan as any).mockRejectedValue(new Error('Connection lost'));
+
+      const msg = { type: 'redisScan', requestId: 9, database: 0, pattern: '*', cursor: '42', count: 100 } as WebviewMessage;
+      await handleRedisMessage(msg, driver, postMessage);
+
+      expect(postMessage).toHaveBeenCalledWith({
+        type: 'redisScanResult', requestId: 9, keys: [], cursor: '42', done: false, scanned: 0, error: 'Connection lost',
       });
     });
   });

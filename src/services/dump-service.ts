@@ -3,6 +3,8 @@ import { pgSequenceOfDefault } from '../utils/sql-builder.js';
 import { sqlLiteral } from '../utils/sql-literal.js';
 
 const PAGE_SIZE = 1000;
+// 单条 INSERT 的字节上限, 同 mysqldump 的 net_buffer_length: 远低于 max_allowed_packet 的常见默认值
+const MAX_INSERT_BYTES = 1024 * 1024;
 
 export class DumpService {
   async dumpStruct(
@@ -45,6 +47,7 @@ export class DumpService {
     const pk = columns.filter((c) => c.isPrimaryKey).map((c) => quote(c.name));
     const orderBy = pk.length > 0 ? ` ORDER BY ${pk.join(', ')}` : '';
 
+    const insertHead = `INSERT INTO ${quote(table)} (${colNames.join(', ')}) VALUES\n`;
     const parts: string[] = [structSql, ''];
     let offset = 0;
 
@@ -63,12 +66,22 @@ export class DumpService {
         break;
       }
 
-      const valueRows = result.rows.map((row) => {
-        const values = columns.map((col) => sqlLiteral(row[col.name], mysql));
-        return `(${values.join(', ')})`;
-      });
-
-      parts.push(`INSERT INTO ${quote(table)} (${colNames.join(', ')}) VALUES\n${valueRows.join(',\n')};\n`);
+      // 按字节数分条, 每条 INSERT 至少一行: 一页行数固定, 大行一页能超过服务端 max_allowed_packet (5.7 默认 4MB)
+      let chunk: string[] = [];
+      let bytes = 0;
+      const flush = () => {
+        parts.push(`${insertHead}${chunk.join(',\n')};\n`);
+        chunk = [];
+        bytes = 0;
+      };
+      for (const row of result.rows) {
+        const tuple = `(${columns.map((col) => sqlLiteral(row[col.name], mysql)).join(', ')})`;
+        const size = Buffer.byteLength(tuple) + 2;
+        if (chunk.length > 0 && bytes + size > MAX_INSERT_BYTES) { flush(); }
+        chunk.push(tuple);
+        bytes += size;
+      }
+      flush();
 
       offset += result.rows.length;
       onProgress?.(Math.min(offset, total), total);

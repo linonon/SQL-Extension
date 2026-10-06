@@ -465,6 +465,21 @@ describe('QueryEditor', () => {
     expect(grid).toHaveAttribute('data-sources', 'orders,orders');
   });
 
+  it('取表结构失败: 在跑的查询不受影响 (仍可 Cancel), 结果网格只读并说明原因', () => {
+    render(<QueryEditor connectionId="c" database="db" table="users" initialSql="SELECT * FROM users" autoExecute />);
+    send({ type: 'columnsResult', requestId: lastId('listColumns'), columns: [], error: 'no such table' });
+    expect(screen.getByText('Cancel')).toBeInTheDocument();
+
+    const src = { schema: 'db', table: 'users' };
+    send({
+      type: 'queryResult', requestId: lastId('executeQuery'),
+      columns: [col('id', { source: src })], rows: [{ id: 1 }], affectedRows: 0, executionTime: 1,
+    });
+    const grid = screen.getByTestId('query-results');
+    expect(grid).toHaveAttribute('data-editable', 'false');
+    expect(grid).toHaveAttribute('data-readonly', 'Read-only: could not load the structure of users: no such table');
+  });
+
   it('只读连接: 本表的结果也不可编辑 / 插入, badge 标出 (read-only)', () => {
     render(
       <ReadOnlyContext.Provider value={true}>

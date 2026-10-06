@@ -213,6 +213,7 @@ describe('isDestructiveRequest (db_execute 执行前确认)', () => {
     ['mysql', 'UPDATE t SET a = 1', true],
     ['mysql', 'DELETE FROM t WHERE id = 1', false],
     ['mysql', 'INSERT INTO t VALUES (1)', false],
+    ['postgresql', 'ALTER TABLE t DROP COLUMN c', true],
     // 多语句由路由直接拒绝, 不先问
     ['mysql', 'DROP TABLE a; DROP TABLE b', false],
     ['postgresql', 'DO $$ BEGIN PERFORM 1; DELETE FROM users; END $$', true],
@@ -224,6 +225,10 @@ describe('isDestructiveRequest (db_execute 执行前确认)', () => {
     ['mongodb', '{"collection":"u","method":"deleteMany","filter":{"_all":true}}', true],
     ['mongodb', '{"collection":"u","method":"updateMany","filter":{"_all":true},"update":{"$set":{"a":1}}}', true],
     ['mongodb', '{"collection":"u","method":"dropIndex","indexName":"a_1"}', true],
+    // $out 整个替换目标集合, $merge 改写目标集合
+    ['mongodb', '{"collection":"u","method":"aggregate","pipeline":[{"$match":{}},{"$out":"users"}]}', true],
+    ['mongodb', '{"collection":"u","method":"aggregate","pipeline":[{"$merge":{"into":"users"}}]}', true],
+    ['mongodb', '{"collection":"u","method":"aggregate","pipeline":[{"$match":{"a":1}},{"$limit":5}]}', false],
     ['mongodb', '{"collection":"u","method":"deleteMany","filter":{"a":1}}', false],
     // _all 混入其他条件由路由拒绝, 不先问
     ['mongodb', '{"collection":"u","method":"deleteMany","filter":{"_all":true,"uid":5}}', false],

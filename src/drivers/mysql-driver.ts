@@ -15,13 +15,19 @@ const asArrays = (sql: string): mysql.QueryOptions => ({ sql, rowsAsArray: true 
 export class MySQLDriver implements IDatabaseDriver {
   readonly driverType = 'mysql';
   private pool: mysql.Pool | null = null;
+  // 连接参数 (SSH tunnel 时是本地转发端口): cancel 的 KILL QUERY 另开一条连接发, 不排在可能被占满的池后面
+  private server: mysql.ConnectionOptions | null = null;
 
   async connect(config: ConnectionConfig & { readonly password: string }): Promise<void> {
-    this.pool = mysql.createPool({
+    this.server = {
       host: config.host,
       port: config.port,
       user: config.username,
       password: config.password,
+      connectTimeout: 5000,
+    };
+    this.pool = mysql.createPool({
+      ...this.server,
       database: config.database,
       // DATE/DATETIME/TIMESTAMP 以 MySQL 原生字符串返回 (如 "2018-12-11 15:00:00"),
       // 而非 JS Date. 避免 Date -> JSON 变成 ISO ("...T...Z") 后写回 MySQL 被拒,
@@ -33,9 +39,14 @@ export class MySQLDriver implements IDatabaseDriver {
       bigNumberStrings: true,
       // JSON 列以原文字符串返回, 网格显示 / 编辑 / Clone / CSV 都是真 JSON 而非 [object Object]
       jsonStrings: true,
+      // DOUBLE 按服务端文本精确解析: mysql2 默认的文本解析会丢掉最短往返表示的最后一位 (2.3333333333333335 -> 2.333333333333333)
+      typeCast: (field, next) => {
+        if (field.type !== 'DOUBLE') { return next(); }
+        const text = field.string();
+        return text === null ? null : Number(text);
+      },
       connectionLimit: 5,
       idleTimeout: 30000,
-      connectTimeout: 5000,
       enableKeepAlive: true,
       keepAliveInitialDelay: 30000,
     });
@@ -46,6 +57,7 @@ export class MySQLDriver implements IDatabaseDriver {
     } catch (err) {
       try { await this.pool.end(); } catch { /* 清理 pool 时忽略错误 */ }
       this.pool = null;
+      this.server = null;
       throw err;
     }
   }
@@ -54,6 +66,7 @@ export class MySQLDriver implements IDatabaseDriver {
     if (this.pool) {
       try { await this.pool.end(); } catch { /* 清理时忽略: server 可能已关闭 idle 连接 */ }
       this.pool = null;
+      this.server = null;
     }
   }
 
@@ -219,8 +232,9 @@ export class MySQLDriver implements IDatabaseDriver {
     }
   }
 
-  // 写语句 (含 WITH ... DELETE / EXPLAIN ANALYZE DML) 被只读事务拒绝; 多语句由 mysql2 默认
-  // multipleStatements=false 拒绝. DDL 会隐式提交绕过只读事务, 由调用方的前缀白名单挡住.
+  // 会话级只读 + 只读事务: 写语句 (含 WITH ... DELETE / EXPLAIN ANALYZE DML) 与 DDL 都由数据库拒绝
+  // (DDL 隐式提交后开始的下一个事务仍是只读); 多语句由 mysql2 默认 multipleStatements=false 拒绝.
+  // 调用方的前缀白名单是第二层
   async executeReadOnly(sql: string, database?: string): Promise<QueryResult> {
     this.assertConnected();
     const conn = await this.pool!.getConnection();
@@ -230,6 +244,7 @@ export class MySQLDriver implements IDatabaseDriver {
       }
       // 服务端超时 (只作用于 SELECT); MariaDB 等没有这个变量时忽略
       try { await conn.query('SET SESSION max_execution_time = 30000'); } catch { /* 变量不存在 */ }
+      await conn.query('SET SESSION TRANSACTION READ ONLY');
       await conn.query('START TRANSACTION READ ONLY');
       const start = Date.now();
       const [result, fields] = await conn.query(asArrays(sql));
@@ -240,28 +255,13 @@ export class MySQLDriver implements IDatabaseDriver {
     }
   }
 
-  // 接口兼容: 单条语句走 executeBatch. 不支持 params (带参数用 execute)
-  executeCancellable(sql: string, params?: unknown[], database?: string): {
-    promise: Promise<QueryResult>;
-    cancel: () => void;
-  } {
-    if (params?.length) { throw new Error('MySQLDriver.executeCancellable does not take params, use execute()'); }
-    const { promise, cancel } = this.executeBatch([sql], database);
-    return {
-      promise: promise.then((o) => {
-        if (o.error) { throw o.error.cause; }
-        return o.results[0];
-      }),
-      cancel,
-    };
-  }
-
   executeBatch(statements: readonly string[], database?: string, options?: { readonly readOnly?: boolean }): {
     promise: Promise<BatchOutcome>;
     cancel: () => void;
   } {
     this.assertConnected();
     const pool = this.pool!;
+    const server = this.server!;
     let threadId: number | undefined;
     let cancelled = false;
     let done = false;
@@ -305,7 +305,10 @@ export class MySQLDriver implements IDatabaseDriver {
       if (done || cancelled) { return; }
       cancelled = true;
       if (threadId != null) {
-        pool.query(`KILL QUERY ${threadId}`).catch((err: Error) => { console.error('[MySQLDriver] Cancel query failed:', err.message); });
+        const id = threadId;
+        mysql.createConnection(server)
+          .then((c) => c.query(`KILL QUERY ${id}`).finally(() => c.end()))
+          .catch((err: Error) => { console.error('[MySQLDriver] Cancel query failed:', err.message); });
       }
     };
 

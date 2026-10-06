@@ -380,6 +380,23 @@ describe('RedisBrowser', () => {
     await waitFor(() => expect(screen.getByTestId('redis-key-list').getAttribute('data-scanning')).toBe('false'));
   });
 
+  it('SCAN 失败只认当前这次: 被新搜索取代的旧扫描失败不结束 Scanning 也不报错', async () => {
+    render(<RedisBrowser connectionId="conn1" database={0} />);
+    const stale = lastScanId();
+    fireEvent.click(screen.getByTestId('search'));
+    const scanFailed = (requestId: number) => window.dispatchEvent(new MessageEvent('message', { data: {
+      type: 'redisScanResult', requestId, keys: [], cursor: '0', done: false, scanned: 0, error: 'Connection lost',
+    } satisfies ExtensionMessage }));
+
+    scanFailed(stale);
+    expect(screen.getByTestId('redis-key-list').getAttribute('data-scanning')).toBe('true');
+    expect(screen.queryByRole('alert')).toBeNull();
+
+    scanFailed(lastScanId());
+    expect(await screen.findByRole('alert')).toHaveTextContent('Scan failed: Connection lost');
+    expect(screen.getByTestId('redis-key-list').getAttribute('data-scanning')).toBe('false');
+  });
+
   it('操作失败行内显示 (webview 里 alert 不弹), 下一次成功后清掉', async () => {
     const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
     render(<RedisBrowser connectionId="conn1" database={0} />);

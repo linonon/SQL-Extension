@@ -85,8 +85,14 @@ export async function handleSqlMessage(
       }
 
       case 'listColumns': {
-        const cols = await ctx.getDriver().listColumns(message.database, message.table);
-        ctx.post({ type: 'columnsResult', requestId: message.requestId, columns: cols });
+        // 失败也回 columnsResult 带 requestId: 笼统 error 会结束编辑器里同时在跑的查询的 loading
+        const { requestId } = message;
+        try {
+          const columns = await ctx.getDriver().listColumns(message.database, message.table);
+          ctx.post({ type: 'columnsResult', requestId, columns });
+        } catch (err) {
+          ctx.post({ type: 'columnsResult', requestId, columns: [], error: sanitizeErrorMessage(err) });
+        }
         return true;
       }
 
@@ -243,8 +249,14 @@ export async function handleSqlMessage(
 
       case 'requestSchema':
       case 'refreshSchema': {
-        // 自动补全只用列名
-        const schema = await ctx.getSchema(message.database, message.type === 'refreshSchema');
+        // 自动补全只用列名. 失败用通知报告, 不回笼统 error: 那会结束编辑器里同时在跑的查询的 loading
+        let schema: Record<string, SchemaColumn[]>;
+        try {
+          schema = await ctx.getSchema(message.database, message.type === 'refreshSchema');
+        } catch (err) {
+          void vscode.window.showErrorMessage(`Failed to load schema for autocomplete: ${sanitizeErrorMessage(err)}`);
+          return true;
+        }
         ctx.post({ type: 'schemaInfo', schema: Object.fromEntries(Object.entries(schema).map(([t, cols]) => [t, cols.map((c) => c.name)])) });
         return true;
       }
@@ -318,7 +330,7 @@ export async function handleSqlMessage(
         // 自家 dump 以 DROP TABLE IF EXISTS 开头, 导入到已有的表上会先删表
         if (isWholeTableWrite(sql, driver.driverType)) {
           const confirm = await vscode.window.showWarningMessage(
-            'This SQL file contains a destructive operation (DROP/TRUNCATE, or DELETE/UPDATE without WHERE). Import anyway?',
+            'This SQL file contains a destructive operation (DROP/TRUNCATE, ALTER TABLE ... DROP, or DELETE/UPDATE without WHERE). Import anyway?',
             { modal: true },
             'Import'
           );
@@ -337,11 +349,14 @@ export async function handleSqlMessage(
             const affected = results.reduce((n, r) => n + r.affectedRows, 0);
             vscode.window.showInformationMessage(`SQL imported. Affected rows: ${affected}${warning ? `. ${warning}` : ''}`);
           }
-          // 刷新左侧列表 (失败时前面的语句也可能已建表)
-          const databases = await listDatabasesWithTables(driver);
-          ctx.post({ type: 'databaseTableList', databases });
         } catch (err) {
           vscode.window.showErrorMessage(`Import failed: ${sanitizeErrorMessage(err)}`);
+        }
+        // 刷新左侧列表 (失败时前面的语句也可能已建表). 刷新失败报在列表里, 导入结果仍是唯一的通知
+        try {
+          ctx.post({ type: 'databaseTableList', databases: await listDatabasesWithTables(driver) });
+        } catch (err) {
+          ctx.post({ type: 'databaseTableList', databases: [], error: sanitizeErrorMessage(err) });
         }
         return true;
       }
@@ -373,11 +388,11 @@ async function runQuery(
   db: string,
   ctx: SqlMessageContext
 ): Promise<{ type: 'queryBatchResult'; statements: StatementResult[]; warning?: string }> {
-  // 破坏性操作确认网: DROP/TRUNCATE 及无 WHERE 的整表 DELETE/UPDATE
+  // 破坏性操作确认网: DROP/TRUNCATE, ALTER TABLE ... DROP 及无 WHERE 的整表 DELETE/UPDATE
   const driver = ctx.getDriver();
   if (isWholeTableWrite(sql, driver.driverType)) {
     const confirm = await vscode.window.showWarningMessage(
-      'This query contains a destructive operation (DROP/TRUNCATE, or DELETE/UPDATE without WHERE). Continue?',
+      'This query contains a destructive operation (DROP/TRUNCATE, ALTER TABLE ... DROP, or DELETE/UPDATE without WHERE). Continue?',
       { modal: true },
       'Execute'
     );

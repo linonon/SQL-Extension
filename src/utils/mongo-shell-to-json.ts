@@ -80,6 +80,13 @@ const SHELL_PATTERNS: ReadonlyArray<{
   },
 ];
 
+// 每个 shell 写法前并上 JSON 字符串字面量分支: 字符串整段原样放回, 只改写字符串之外的 shell 写法
+const STRING_LITERAL = /"(?:[^"\\]|\\.)*"/.source;
+const SHELL_OUTSIDE_STRINGS = SHELL_PATTERNS.map(({ pattern, replace }) => ({
+  pattern: new RegExp(`${STRING_LITERAL}|${pattern.source}`, 'g'),
+  replace: (m: string) => (m.startsWith('"') ? m : m.replace(pattern, replace)),
+}));
+
 // 字符串字面量整体匹配 (跳过其中的数字), 或前后不接标识符 / 小数点 / 指数的裸整数
 const STRING_OR_INTEGER = /"(?:[^"\\]|\\.)*"|(?<![\w$.+-])-?\d+(?![\w$.])/g;
 
@@ -99,8 +106,8 @@ function wrapUnsafeIntegers(json: string): string {
  */
 export function convertShellToJson(input: string): string {
   let result = input;
-  for (const { pattern, replace } of SHELL_PATTERNS) {
-    result = result.replace(pattern, replace as (...args: string[]) => string);
+  for (const { pattern, replace } of SHELL_OUTSIDE_STRINGS) {
+    result = result.replace(pattern, replace);
   }
   return wrapUnsafeIntegers(result);
 }

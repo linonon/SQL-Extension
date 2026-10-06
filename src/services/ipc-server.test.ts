@@ -44,7 +44,6 @@ function makeConnectionManager() {
     getDriver: vi.fn().mockReturnValue({
       execute: vi.fn(),
       executeReadOnly: vi.fn().mockResolvedValue(result),
-      executeCancellable: vi.fn().mockReturnValue({ promise: Promise.resolve(result), cancel: () => {} }),
       executeBatch: vi.fn().mockReturnValue({ promise: Promise.resolve({ results: [{ ...result, sql: 'x' }] }), cancel: () => {} }),
     }),
   } as any;

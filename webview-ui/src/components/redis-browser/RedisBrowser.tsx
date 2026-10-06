@@ -125,6 +125,10 @@ export function RedisBrowser({ database: initialDb, separator = ':' }: RedisBrow
       case 'redisScanResult': {
         if (message.requestId !== scanIdRef.current) { break; }
         setScanning(false);
+        if (message.error !== undefined) {
+          setOpError(`Scan failed: ${message.error}`);
+          break;
+        }
         setScanned((prev) => prev + message.scanned);
         setHasMore(!message.done);
         setCursor(message.cursor);
@@ -215,8 +219,6 @@ export function RedisBrowser({ database: initialDb, separator = ':' }: RedisBrow
       }
       case 'redisOperationResult': {
         if (!message.success) {
-          // SCAN 失败也走这里, 结束 Scanning 状态
-          setScanning(false);
           setOpError(`Operation failed: ${message.error ?? 'Unknown error'}`);
           break;
         }

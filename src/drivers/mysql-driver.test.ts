@@ -11,11 +11,19 @@ vi.mock('mysql2/promise', () => {
     on: vi.fn(),
   };
 
+  // cancel 另开的短连接
+  const mockKillConn = {
+    query: vi.fn(),
+    end: vi.fn(),
+  };
+
   return {
     default: {
       createPool: vi.fn(() => mockPool),
+      createConnection: vi.fn(async () => mockKillConn),
     },
     __mockPool: mockPool,
+    __mockKillConn: mockKillConn,
   };
 });
 
@@ -57,6 +65,24 @@ describe('MySQLDriver', () => {
       expect(mysql.default.createPool).toHaveBeenCalledWith(expect.objectContaining({
         supportBigNumbers: true, bigNumberStrings: true, jsonStrings: true,
       }));
+    });
+
+    it('typeCast: DOUBLE 按服务端文本转数字 (不丢最后一位), NULL 为 null, 其他类型走默认解析', async () => {
+      mockPool.getConnection.mockResolvedValue({ release: vi.fn() });
+      await driver.connect({
+        id: 'test-id', name: 'test', driverType: 'mysql', host: 'localhost', port: 3306,
+        username: 'root', password: 'secret', database: 'testdb',
+      });
+      const mysql = await import('mysql2/promise');
+      const { typeCast } = vi.mocked(mysql.default.createPool).mock.calls[0][0] as { typeCast: (field: unknown, next: () => unknown) => unknown };
+      const next = vi.fn(() => 'default');
+
+      expect(typeCast({ type: 'DOUBLE', string: () => '2.3333333333333335' }, next)).toBe(2.3333333333333335);
+      expect(typeCast({ type: 'DOUBLE', string: () => '-1.7976931348623157e308' }, next)).toBe(-1.7976931348623157e308);
+      expect(typeCast({ type: 'DOUBLE', string: () => null }, next)).toBeNull();
+      expect(next).not.toHaveBeenCalled();
+      expect(typeCast({ type: 'FLOAT', string: () => '1.5' }, next)).toBe('default');
+      expect(typeCast({ type: 'LONGLONG', string: () => '9007199254740993' }, next)).toBe('default');
     });
 
     it('连接失败时应该抛出错误', async () => {
@@ -502,7 +528,11 @@ describe('MySQLDriver', () => {
       expect((await driver.executeBatch(['START TRANSACTION', 'UPDATE t SET a=1', 'COMMIT']).promise).warning).toBeUndefined();
     });
 
-    it('cancel 只 KILL 本连接的 threadId; 执行结束后 cancel 是 no-op', async () => {
+    it('cancel 在另开的短连接上 KILL 本连接的 threadId (不经可能被占满的池); 执行结束后 cancel 是 no-op', async () => {
+      const mysql = await import('mysql2/promise');
+      const killConn = (mysql as any).__mockKillConn;
+      killConn.query.mockResolvedValue([{ affectedRows: 0 }, undefined]);
+      killConn.end.mockResolvedValue(undefined);
       let finish!: () => void;
       const conn = {
         threadId: 77, destroy: vi.fn(),
@@ -511,31 +541,35 @@ describe('MySQLDriver', () => {
       mockPool.getConnection.mockResolvedValue({ release: vi.fn() });
       await driver.connect(cfg);
       mockPool.getConnection.mockResolvedValue(conn);
-      mockPool.query.mockResolvedValue([[], []]);
 
       const run = driver.executeBatch(['SELECT SLEEP(10)', 'SELECT 2']);
       await vi.waitFor(() => expect(conn.query).toHaveBeenCalledTimes(1));
       run.cancel();
-      expect(mockPool.query).toHaveBeenCalledWith('KILL QUERY 77');
+      expect(mysql.default.createConnection).toHaveBeenCalledWith({
+        host: 'localhost', port: 3306, user: 'root', password: 'secret', connectTimeout: 5000,
+      });
+      await vi.waitFor(() => expect(killConn.end).toHaveBeenCalled());
+      expect(killConn.query).toHaveBeenCalledWith('KILL QUERY 77');
+      expect(mockPool.query).not.toHaveBeenCalled();
       finish();
       const out = await run.promise;
       // 被取消后不再执行下一条
       expect(conn.query).toHaveBeenCalledTimes(1);
       expect(out.error?.index).toBe(1);
 
-      mockPool.query.mockClear();
+      vi.mocked(mysql.default.createConnection).mockClear();
       run.cancel();
       const done = driver.executeBatch(['SELECT 1']);
       await vi.waitFor(() => expect(conn.query).toHaveBeenCalledTimes(2));
       finish();
       await done.promise;
       done.cancel();
-      expect(mockPool.query).not.toHaveBeenCalled();
+      expect(mysql.default.createConnection).not.toHaveBeenCalled();
     });
   });
 
   describe('executeReadOnly', () => {
-    it('专用连接上先设服务端超时再开只读事务; 不支持该变量的服务器照常执行', async () => {
+    it('专用连接上先设服务端超时, 再把会话设为只读 (DDL 也被拒), 再开只读事务; 不支持超时变量的服务器照常执行', async () => {
       const conn = {
         destroy: vi.fn(),
         query: vi.fn()
@@ -553,7 +587,8 @@ describe('MySQLDriver', () => {
       const result = await driver.executeReadOnly('SELECT 1', 'app');
 
       expect(conn.query.mock.calls.map((c) => c[0])).toEqual([
-        'USE `app`', 'SET SESSION max_execution_time = 30000', 'START TRANSACTION READ ONLY', { sql: 'SELECT 1', rowsAsArray: true },
+        'USE `app`', 'SET SESSION max_execution_time = 30000', 'SET SESSION TRANSACTION READ ONLY', 'START TRANSACTION READ ONLY',
+        { sql: 'SELECT 1', rowsAsArray: true },
       ]);
       expect(result.rows).toEqual([{ n: 1 }]);
       expect(conn.destroy).toHaveBeenCalled();

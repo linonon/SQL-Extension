@@ -116,15 +116,24 @@ export async function handleRedisMessage(
   try {
     switch (message.type) {
       case 'redisScan': {
-        const result = await driver.scan(message.database, message.pattern, message.cursor, message.count);
-        postMessage({
-          type: 'redisScanResult',
-          requestId: message.requestId,
-          keys: result.keys,
-          cursor: result.cursor,
-          done: result.cursor === '0',
-          scanned: result.scanned,
-        });
+        // 失败也回 redisScanResult 带 requestId: webview 只让当前这次扫描的失败结束 Scanning
+        const { requestId } = message;
+        try {
+          const result = await driver.scan(message.database, message.pattern, message.cursor, message.count);
+          postMessage({
+            type: 'redisScanResult',
+            requestId,
+            keys: result.keys,
+            cursor: result.cursor,
+            done: result.cursor === '0',
+            scanned: result.scanned,
+          });
+        } catch (err) {
+          postMessage({
+            type: 'redisScanResult', requestId, keys: [], cursor: message.cursor, done: false, scanned: 0,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
         return true;
       }
 

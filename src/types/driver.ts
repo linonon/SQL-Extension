@@ -42,12 +42,4 @@ export interface IDatabaseDriver {
     cancel: () => void;
   };
 
-  executeCancellable(
-    sql: string,
-    params?: unknown[],
-    database?: string,
-  ): {
-    promise: Promise<QueryResult>;
-    cancel: () => void;
-  };
 }

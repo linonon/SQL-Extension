@@ -22,7 +22,6 @@ function createMysqlDriver(queue: Array<
     getTableDDL: vi.fn().mockResolvedValue(''),
     getDetailedColumns: vi.fn().mockResolvedValue([]),
     execute: vi.fn(),
-    executeCancellable: vi.fn(),
     // 每条语句依次消费 queue 的一项, 遇 Error 即停 (与真 executor 的遇错即停一致)
     executeBatch: vi.fn((statements: readonly string[]) => {
       const results: StatementOutcome[] = [];
@@ -212,6 +211,20 @@ describe('handleSqlMessage 回执身份与 cancel 槽位', () => {
     ]);
   });
 
+  it('listColumns / requestSchema 失败不回笼统 error (会结束同时在跑的查询): 表结构回带 id 的 columnsResult, schema 走通知', async () => {
+    const posts: unknown[] = [];
+    const driver = createMysqlDriver([]);
+    (driver.listColumns as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('no such table'));
+    const err = vi.spyOn(vscode.window, 'showErrorMessage').mockClear();
+    const ctx = { ...createCtx(driver, posts), getSchema: async () => { throw new Error('denied'); } };
+
+    await handleSqlMessage({ type: 'listColumns', requestId: 21, database: 'db', table: 't' }, ctx);
+    await handleSqlMessage({ type: 'requestSchema', database: 'db' }, ctx);
+
+    expect(posts).toEqual([{ type: 'columnsResult', requestId: 21, columns: [], error: 'no such table' }]);
+    expect(err).toHaveBeenCalledWith('Failed to load schema for autocomplete: denied');
+  });
+
   it('旧执行晚结束不清掉新执行的 cancel', async () => {
     const runs: Array<{ resolve: () => void; cancel: () => void }> = [];
     const driver = createMysqlDriver([]);
@@ -307,6 +320,19 @@ describe('handleSqlMessage importSql', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('destructive'), { modal: true }, 'Import');
     expect(driver.executeBatch).not.toHaveBeenCalled();
     expect(posts).toEqual([]);
+  });
+
+  it('导入成功后刷新列表失败: 只有导入结果一条通知, 刷新失败报在列表里', async () => {
+    await pick('INSERT INTO t (id) VALUES (1);\n');
+    const driver = createMysqlDriver([{ columns: [], rows: [], affectedRows: 1, executionTime: 1 }]);
+    (driver.listDatabases as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('gone'));
+    const info = vi.spyOn(vscode.window, 'showInformationMessage').mockClear();
+    const err = vi.spyOn(vscode.window, 'showErrorMessage').mockClear();
+    const posts: unknown[] = [];
+    await handleSqlMessage({ type: 'importSql', database: 'db1' } as WebviewMessage, createCtx(driver, posts));
+    expect(info).toHaveBeenCalledWith('SQL imported. Affected rows: 1');
+    expect(err).not.toHaveBeenCalled();
+    expect(posts).toEqual([{ type: 'databaseTableList', databases: [], error: 'gone' }]);
   });
 
   it('PG: 整段文本交给 simple protocol, 不在客户端切分', async () => {

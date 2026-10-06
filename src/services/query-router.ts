@@ -62,9 +62,9 @@ export interface DriverSource {
   getRabbitMQDriver(id: string): IRabbitMQDriver;
 }
 
-// db_execute 里执行前要用户确认的破坏性请求: SQL 的 DROP / TRUNCATE / 无 WHERE 的 DELETE / UPDATE,
-// Redis 清库, Mongo 整集合的批量删改 ({_all: true}) 与删索引. 解析失败或会被路由直接拒绝的请求
-// (SQL 多语句, Mongo 空 filter 批量操作, _all 混入其他条件) 不算, 由路由照常回错误
+// db_execute 里执行前要用户确认的破坏性请求: SQL 的 DROP / TRUNCATE / ALTER TABLE ... DROP / 无 WHERE 的 DELETE / UPDATE,
+// Redis 清库, Mongo 整集合的批量删改 ({_all: true}), 删索引, 带 $out / $merge 的 aggregate (覆盖或改写目标集合).
+// 解析失败或会被路由直接拒绝的请求 (SQL 多语句, Mongo 空 filter 批量操作, _all 混入其他条件) 不算, 由路由照常回错误
 export function isDestructiveRequest(driverType: string, query: string): boolean {
   try {
     switch (driverType) {
@@ -78,10 +78,11 @@ export function isDestructiveRequest(driverType: string, query: string): boolean
         return cmd === 'FLUSHDB' || cmd === 'FLUSHALL';
       }
       case 'mongodb': {
-        const { method, filter } = parseMongoQuery(query);
+        const { method, filter, pipeline } = parseMongoQuery(query);
         return method === 'dropIndex'
           || ((method === 'deleteMany' || method === 'updateMany')
-            && filter?._all === true && Object.keys(filter).length === 1);
+            && filter?._all === true && Object.keys(filter).length === 1)
+          || (method === 'aggregate' && (pipeline ?? []).some((stage) => Object.keys(stage).some((k) => FORBIDDEN_STAGES.has(k))));
       }
       default:
         return false;

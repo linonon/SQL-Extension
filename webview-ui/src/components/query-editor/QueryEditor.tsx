@@ -110,6 +110,8 @@ export function QueryEditor({ connectionName, database, driverType, initialSql, 
   const [schema, setSchema] = useState<Record<string, string[]>>({});
   const [showHistory, setShowHistory] = useState(false);
   const [fullColumns, setFullColumns] = useState<ColumnInfo[]>([]);
+  // 取表结构 (listColumns) 失败的错误: 网格据此说明为什么只读
+  const [columnsError, setColumnsError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   // 保存(批量更新/插入)失败的错误: 单独存, 不并入 result.error, 以免覆盖整个结果表丢失数据+未保存编辑
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -188,6 +190,7 @@ export function QueryEditor({ connectionName, database, driverType, initialSql, 
     }
     if (message.type === 'columnsResult') {
       setFullColumns(message.columns);
+      setColumnsError(message.error ?? null);
     }
     if (message.type === 'batchUpdateResult') {
       setSaving(false);
@@ -307,9 +310,11 @@ export function QueryEditor({ connectionName, database, driverType, initialSql, 
   // 仅 db-browser 点表 (有 table) 时判定: 只读连接一律只读, 否则等表结构到达按结果来源判定; PG 的 db-browser 只列 public schema 的表
   const lockReason = table && result && readOnly
     ? 'Read-only: connection is read-only'
-    : table && fullColumns.length > 0 && result
-      ? readOnlyReason(result.columns, fullColumns, driverType === 'postgresql' ? 'public' : database, table)
-      : undefined;
+    : table && result && columnsError
+      ? `Read-only: could not load the structure of ${table}: ${columnsError}`
+      : table && fullColumns.length > 0 && result
+        ? readOnlyReason(result.columns, fullColumns, driverType === 'postgresql' ? 'public' : database, table)
+        : undefined;
   const editable = lockReason === null;
   // Insert / Clone 显式写 panel 表, 不依赖结果来源, 只要求表有主键
   const canInsert = !readOnly && !!table && fullColumns.some((c) => c.isPrimaryKey);

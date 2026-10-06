@@ -27,10 +27,6 @@ export function createMockDriver(overrides: Partial<Mocked<IDatabaseDriver>> = {
       promise: Promise.resolve({ results: [] }),
       cancel: vi.fn(),
     })),
-    executeCancellable: vi.fn<IDatabaseDriver['executeCancellable']>().mockImplementation(() => ({
-      promise: Promise.resolve(emptyResult()),
-      cancel: vi.fn(),
-    })),
     ...overrides,
   };
 }

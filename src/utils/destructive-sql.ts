@@ -1,14 +1,19 @@
 // raw SQL 编辑器的破坏性操作确认网 (best-effort 启发式, 非完整解析器).
-// 目标: 在执行前提示用户确认 DROP/TRUNCATE, 以及无 WHERE 的整表 DELETE/UPDATE.
+// 目标: 在执行前提示用户确认 DROP/TRUNCATE, ALTER TABLE 删列 / 约束 / 分区, 以及无 WHERE 的整表 DELETE/UPDATE.
 // 注意: 这是 UX 防误删/误改护栏, 不是安全边界 (用户本就能自由写 SQL).
 
 // 单条语句是否为需要确认的破坏性写操作:
 // - DROP / TRUNCATE: 总是
+// - ALTER TABLE 带 DROP (列 / 索引 / 约束 / 分区) 或 TRUNCATE PARTITION: 与 Edit Table 删列同样确认;
+//   ALTER COLUMN 的 DROP DEFAULT / NOT NULL / EXPRESSION / IDENTITY 只改列属性, 不算
 // - DELETE FROM / UPDATE: 仅当本语句无 WHERE 子句 (整表操作) 时
 function isDestructiveStatement(stmt: string): boolean {
   const s = stmt.trim();
   if (/^(DROP|TRUNCATE)\b/i.test(s)) {
     return true;
+  }
+  if (/^ALTER\s+TABLE\b/i.test(s)) {
+    return /\bDROP\b(?!\s+(?:DEFAULT|NOT\s+NULL|EXPRESSION|IDENTITY)\b)|\bTRUNCATE\s+PARTITION\b/i.test(s);
   }
   if (/^(DELETE\s+FROM|UPDATE)\b/i.test(s)) {
     return !/\bWHERE\b/i.test(s);

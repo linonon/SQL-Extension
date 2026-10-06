@@ -11,7 +11,7 @@ const DB_EXECUTE_DESCRIPTION = [
   '- Kafka: JSON, e.g. {"action":"produce","topic":"t1","key":"k","value":"v"}',
   '- RabbitMQ: not supported yet',
   'Connections marked readOnly: true in db_list_connections reject every db_execute call with code READONLY_VIOLATION before connecting; use db_read there.',
-  'Destructive requests (SQL DROP / TRUNCATE / DELETE or UPDATE without WHERE, Redis FLUSHDB / FLUSHALL, MongoDB dropIndex or deleteMany / updateMany with {"_all": true}) wait for the user to approve them in VS Code; denied or unanswered within 60s, they fail with code NOT_CONFIRMED and nothing runs.',
+  'Destructive requests (SQL DROP / TRUNCATE / ALTER TABLE ... DROP / DELETE or UPDATE without WHERE, Redis FLUSHDB / FLUSHALL, MongoDB dropIndex, deleteMany / updateMany with {"_all": true}, or aggregate with $out / $merge) wait for the user to approve them in VS Code; denied or unanswered within 60s, they fail with code NOT_CONFIRMED and nothing runs.',
   RESULT_SHAPE,
 ].join('\n');
 

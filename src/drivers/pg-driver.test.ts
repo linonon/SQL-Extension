@@ -12,16 +12,25 @@ const mockPool = {
 
 // 每个 new pg.Pool 记下构造参数; 方法共用 mockPool 的 vi.fn, 用 mock.contexts 区分调用落在哪个 pool
 const pools = vi.hoisted(() => ({ instances: [] as { opts: { database?: string; host?: string; port?: number } }[] }));
+// cancel 另开的短连接: 记下构造参数, 方法共用
+const killer = vi.hoisted(() => ({ opts: [] as unknown[], connect: vi.fn(), query: vi.fn(), end: vi.fn() }));
 
 vi.mock('pg', () => {
   return {
     default: {
       Pool: class MockPool {
         constructor(public opts: { database?: string }) { pools.instances.push(this); }
+        get options() { return this.opts; }
         connect = mockPool.connect;
         query = mockPool.query;
         end = mockPool.end;
         on = mockPool.on;
+      },
+      Client: class MockClient {
+        constructor(opts: unknown) { killer.opts.push(opts); }
+        connect = killer.connect;
+        query = killer.query;
+        end = killer.end;
       },
       types: {
         builtins: { DATE: 1082, TIMESTAMP: 1114, TIMESTAMPTZ: 1184, JSON: 114, JSONB: 3802 },
@@ -169,13 +178,7 @@ describe('PgDriver', () => {
       expect((await driver.executeBatch(['START TRANSACTION; DELETE FROM t WHERE id = 1']).promise).warning).toMatch(/rolled back/);
     });
 
-    it('executeCancellable 不接受 params', async () => {
-      mockPool.connect.mockResolvedValue({ release: vi.fn() });
-      await driver.connect(cfg);
-      expect(() => driver.executeCancellable('SELECT $1', [1])).toThrow(/use execute/);
-    });
-
-    it('cancel 只取消本连接的 pid; 执行结束后 cancel 是 no-op', async () => {
+    it('cancel 在另开的短连接上取消本连接的 pid (不经可能被占满的池); 执行结束后 cancel 是 no-op', async () => {
       mockPool.connect.mockResolvedValue({ release: vi.fn() });
       await driver.connect(cfg);
       let finish!: () => void;
@@ -185,18 +188,24 @@ describe('PgDriver', () => {
         query: vi.fn(() => new Promise((r) => { finish = () => r({ command: 'SELECT', rows: [], fields: [], rowCount: 0 }); })),
       };
       mockPool.connect.mockResolvedValue(client);
-      mockPool.query.mockResolvedValue({ rows: [], fields: [], rowCount: 0 });
+      killer.opts.length = 0;
+      killer.connect.mockResolvedValue(undefined);
+      killer.query.mockResolvedValue({ rows: [], fields: [], rowCount: 0 });
+      killer.end.mockResolvedValue(undefined);
 
-      const run = driver.executeBatch(['SELECT pg_sleep(10)']);
+      const run = driver.executeBatch(['SELECT pg_sleep(10)'], 'app_staging');
       await vi.waitFor(() => expect(client.query).toHaveBeenCalled());
       run.cancel();
-      expect(mockPool.query).toHaveBeenCalledWith('SELECT pg_cancel_backend(4321)');
+      // 参数同执行所在库的 pool (SSH tunnel 时是本地转发端口)
+      expect(killer.opts).toEqual([expect.objectContaining({ host: '127.0.0.1', port: 50123, user: 'postgres', password: 'secret', database: 'app_staging' })]);
+      await vi.waitFor(() => expect(killer.end).toHaveBeenCalled());
+      expect(killer.query).toHaveBeenCalledWith('SELECT pg_cancel_backend(4321)');
+      expect(mockPool.query).not.toHaveBeenCalled();
       finish();
       await run.promise;
 
-      mockPool.query.mockClear();
       run.cancel();
-      expect(mockPool.query).not.toHaveBeenCalled();
+      expect(killer.opts).toHaveLength(1);
     });
   });
 
@@ -644,7 +653,7 @@ describe('PgDriver', () => {
     });
   });
 
-  describe('executeCancellable 结果列来源 (source)', () => {
+  describe('executeBatch 结果列来源 (source)', () => {
     it('按 tableID/columnID 查 catalog, 只给未改名的原始列挂 schema.table', async () => {
       const client = {
         release: vi.fn(),
@@ -671,7 +680,7 @@ describe('PgDriver', () => {
         username: 'postgres', password: 'secret', database: 'testdb',
       });
 
-      const result = await driver.executeCancellable('SELECT id, name AS nick, 2 AS n FROM users').promise;
+      const result = (await driver.executeBatch(['SELECT id, name AS nick, 2 AS n FROM users']).promise).results[0];
 
       expect(client.query).toHaveBeenLastCalledWith(expect.stringContaining('pg_attribute'), [[16384]]);
       expect(result.columns.map((c) => c.source)).toEqual([{ schema: 'public', table: 'users' }, undefined, undefined]);
@@ -691,7 +700,7 @@ describe('PgDriver', () => {
         username: 'postgres', password: 'secret', database: 'testdb',
       });
 
-      const result = await driver.executeCancellable('SELECT id FROM users').promise;
+      const result = (await driver.executeBatch(['SELECT id FROM users']).promise).results[0];
 
       expect(result.rows).toEqual([{ id: 1 }]);
       expect(result.columns[0].source).toBeUndefined();
@@ -722,7 +731,7 @@ describe('PgDriver', () => {
         username: 'postgres', password: 'secret', database: 'testdb',
       });
 
-      const result = await driver.executeCancellable('SELECT u.id, o.id FROM t_user u JOIN t_order o ON o.uid = u.id').promise;
+      const result = (await driver.executeBatch(['SELECT u.id, o.id FROM t_user u JOIN t_order o ON o.uid = u.id']).promise).results[0];
 
       expect(result.rows).toEqual([{ id: 1, 'id (2)': 99 }]);
       expect(result.columns.map((c) => [c.name, c.source])).toEqual([['id', { schema: 'public', table: 't_user' }], ['id (2)', undefined]]);
