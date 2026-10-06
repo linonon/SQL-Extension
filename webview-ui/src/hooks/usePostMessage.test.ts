@@ -74,6 +74,13 @@ describe('usePostMessage', () => {
         username: 'root',
         password: 'secret',
         database: 'test',
+        sshEnabled: false,
+        sshHost: '',
+        sshPort: 22,
+        sshUsername: '',
+        sshAuthType: 'password',
+        sshPassword: '',
+        sshPrivateKeyPath: '',
       },
     };
 
@@ -97,6 +104,13 @@ describe('usePostMessage', () => {
         username: 'postgres',
         password: 'pass',
         database: 'mydb',
+        sshEnabled: false,
+        sshHost: '',
+        sshPort: 22,
+        sshUsername: '',
+        sshAuthType: 'password',
+        sshPassword: '',
+        sshPrivateKeyPath: '',
       },
     };
 

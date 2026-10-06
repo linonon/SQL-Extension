@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
 import { handleRedisMessage, parseCommandArgs, exportRedisKeys, importRedisKeys } from './redis-message-handler';
 import type { IRedisDriver } from '../types/redis-driver';
 import type { WebviewMessage } from '../types/messages';
@@ -9,6 +9,7 @@ function createMockDriver(): IRedisDriver {
     connect: vi.fn(),
     disconnect: vi.fn(),
     isConnected: vi.fn().mockReturnValue(true),
+    ping: vi.fn(),
     selectDatabase: vi.fn(),
     listDatabases: vi.fn().mockResolvedValue([]),
     scan: vi.fn().mockResolvedValue({ cursor: '0', keys: [] }),
@@ -68,7 +69,7 @@ describe('parseCommandArgs', () => {
 
 describe('handleRedisMessage', () => {
   let driver: IRedisDriver;
-  let postMessage: ReturnType<typeof vi.fn>;
+  let postMessage: Mock<(msg: unknown) => void>;
 
   beforeEach(() => {
     driver = createMockDriver();

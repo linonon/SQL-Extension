@@ -185,5 +185,27 @@ describe('KafkaDriver', () => {
         headers: { 'x-id': 'abc' },
       }]);
     });
+
+    it('重复 header key (kafkajs 解码为数组) 逐个解码后拼接', async () => {
+      await driver.connect(TEST_CONFIG);
+      mockConsumer.run.mockImplementation(async ({ eachBatch }: { eachBatch: Function }) => {
+        await eachBatch({
+          batch: {
+            partition: 0,
+            messages: [{
+              offset: '1',
+              key: null,
+              value: Buffer.from('v'),
+              timestamp: '0',
+              headers: { trace: [Buffer.from('a'), 'b'], empty: undefined },
+            }],
+          },
+        });
+      });
+
+      const [msg] = await driver.fetchMessages('topic-a', 0, '1', 1);
+
+      expect(msg.headers).toEqual({ trace: 'a, b', empty: '' });
+    });
   });
 });

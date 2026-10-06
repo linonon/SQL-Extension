@@ -1,24 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { DumpService } from './dump-service';
+import { createMockDriver as createBaseMockDriver } from '../__mocks__/mock-driver';
 import type { IDatabaseDriver } from '../types/driver';
 
 function createMockDriver(driverType: string = 'mysql'): IDatabaseDriver {
-  return {
-    driverType,
-    connect: vi.fn(),
-    disconnect: vi.fn(),
-    isConnected: vi.fn().mockReturnValue(true),
-    listDatabases: vi.fn().mockResolvedValue([]),
-    listTables: vi.fn().mockResolvedValue([]),
-    listColumns: vi.fn().mockResolvedValue([]),
-    getTableDDL: vi.fn().mockResolvedValue('CREATE TABLE `users` (`id` int PRIMARY KEY);'),
-    getDetailedColumns: vi.fn().mockResolvedValue([]),
-    execute: vi.fn().mockResolvedValue({ columns: [], rows: [], affectedRows: 0, executionTime: 0 }),
-    executeCancellable: vi.fn().mockReturnValue({
-      promise: Promise.resolve({ columns: [], rows: [], affectedRows: 0, executionTime: 0 }),
-      cancel: vi.fn(),
-    }),
-  };
+  const driver = createBaseMockDriver({ driverType });
+  driver.getTableDDL.mockResolvedValue('CREATE TABLE `users` (`id` int PRIMARY KEY);');
+  return driver;
 }
 
 describe('DumpService', () => {

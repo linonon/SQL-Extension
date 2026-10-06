@@ -115,7 +115,9 @@ export class KafkaDriver implements IKafkaDriver {
               const headers: Record<string, string> = {};
               if (msg.headers) {
                 for (const [k, v] of Object.entries(msg.headers)) {
-                  headers[k] = v ? Buffer.from(v).toString('utf-8') : '';
+                  // 同一 header key 出现多次时 kafkajs 解码成数组
+                  const parts = Array.isArray(v) ? v : [v];
+                  headers[k] = parts.map((p) => (p ? p.toString() : '')).join(', ');
                 }
               }
 

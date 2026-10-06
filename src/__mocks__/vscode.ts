@@ -37,6 +37,9 @@ export class ThemeIcon {
 }
 
 export class Uri {
+  static file(fsPath: string): Uri {
+    return new Uri(fsPath);
+  }
   static joinPath(base: Uri, ...parts: string[]): Uri {
     return new Uri(`${base.path}/${parts.join('/')}`);
   }

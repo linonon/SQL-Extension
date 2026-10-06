@@ -1,4 +1,4 @@
-import { MongoClient, ObjectId } from 'mongodb';
+import { MongoClient, ObjectId, type CollectionInfo, type Document, type Sort } from 'mongodb';
 import { EJSON } from 'bson';
 import type { ConnectionConfig } from '../types/connection.js';
 import type { IDatabaseDriver } from '../types/driver.js';
@@ -79,7 +79,7 @@ export class MongoDriver implements IDatabaseDriver {
     this.assertConnected();
     const db = this.client!.db(database);
     try {
-      const info = await db.listCollections({ name: collection }).next();
+      const info = await db.listCollections<CollectionInfo>({ name: collection }).next();
       if (info?.options?.validator) {
         return JSON.stringify(info.options.validator, null, 2);
       }
@@ -148,7 +148,7 @@ export class MongoDriver implements IDatabaseDriver {
     const f = autoConvertIds(convertEjsonToBson(filter ?? {}) as Record<string, unknown>);
     const cursor = coll.find(f);
     if (sort && Object.keys(sort).length > 0) {
-      cursor.sort(convertEjsonToBson(sort) as Record<string, number>);
+      cursor.sort(convertEjsonToBson(sort) as Sort);
     }
     const raw = await cursor.explain('executionStats');
     return summarizeExplain(raw);
@@ -174,7 +174,7 @@ export class MongoDriver implements IDatabaseDriver {
     this.assertConnected();
     // 还原 pipeline 内 EJSON 标记为 BSON, 否则 $match 过滤 (ObjectId/$date 等) 当字面子文档恒不命中,
     // 导致导出空集或错集 (与 findDocumentsForBrowser 对齐).
-    const bsonPipeline = convertEjsonToBson(pipeline) as unknown[];
+    const bsonPipeline = convertEjsonToBson(pipeline) as Document[];
     const docs = await this.client!.db(database).collection(collection).aggregate(bsonPipeline).toArray();
     const json = EJSON.stringify(docs, undefined, 2);
     return { json, count: docs.length };
@@ -251,7 +251,7 @@ export class MongoDriver implements IDatabaseDriver {
     switch (method) {
       case 'find': {
         const filter = toFilter(args[0]);
-        const opts = (args[1] ?? {}) as Record<string, unknown>;
+        const opts = (args[1] ?? {}) as { projection?: Document };
         const limit = options?.limit ?? 1000;
         const docs = await coll.find(filter, { projection: opts.projection }).limit(limit).toArray();
         return { docs };
@@ -267,7 +267,7 @@ export class MongoDriver implements IDatabaseDriver {
         return { affectedRows: 1 };
       }
       case 'insertMany': {
-        const docs = (convertEjsonToBson(args[0] ?? []) as unknown[]);
+        const docs = convertEjsonToBson(args[0] ?? []) as Document[];
         const result = await coll.insertMany(docs);
         return { affectedRows: result.insertedCount };
       }

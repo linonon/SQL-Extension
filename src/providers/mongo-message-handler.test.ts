@@ -1,33 +1,15 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
 import { handleMongoMessage } from './mongo-message-handler';
+import { createMockDriver } from '../__mocks__/mock-driver';
 import type { IDatabaseDriver } from '../types/driver';
 import type { WebviewMessage } from '../types/messages';
 
-function createMockDriver(): IDatabaseDriver {
-  return {
-    driverType: 'mongodb',
-    connect: vi.fn(),
-    disconnect: vi.fn(),
-    isConnected: vi.fn().mockReturnValue(true),
-    listDatabases: vi.fn().mockResolvedValue([]),
-    listTables: vi.fn().mockResolvedValue([]),
-    listColumns: vi.fn().mockResolvedValue([]),
-    getTableDDL: vi.fn().mockResolvedValue(''),
-    getDetailedColumns: vi.fn().mockResolvedValue([]),
-    execute: vi.fn().mockResolvedValue({ columns: [], rows: [], affectedRows: 0, executionTime: 0 }),
-    executeCancellable: vi.fn().mockReturnValue({
-      promise: Promise.resolve({ columns: [], rows: [], affectedRows: 0, executionTime: 0 }),
-      cancel: vi.fn(),
-    }),
-  };
-}
-
 describe('handleMongoMessage', () => {
   let driver: IDatabaseDriver;
-  let postMessage: ReturnType<typeof vi.fn>;
+  let postMessage: Mock<(msg: unknown) => void>;
 
   beforeEach(() => {
-    driver = createMockDriver();
+    driver = createMockDriver({ driverType: 'mongodb' });
     postMessage = vi.fn();
   });
 
@@ -336,7 +318,7 @@ describe('handleMongoMessage', () => {
 
       await handleMongoMessage(msg, driver, postMessage);
 
-      const posted = postMessage.mock.calls[0][0];
+      const posted = postMessage.mock.calls[0][0] as { type: string; success: boolean; error?: string };
       expect(posted.type).toBe('mongoOperationResult');
       expect(posted.success).toBe(false);
       expect(posted.error).toMatch(/_id/);
@@ -429,7 +411,7 @@ describe('handleMongoMessage', () => {
       } as WebviewMessage;
 
       await handleMongoMessage(msg, driver, postMessage);
-      const posted = postMessage.mock.calls[0][0];
+      const posted = postMessage.mock.calls[0][0] as { type: string; success: boolean; error?: string };
       expect(posted.success).toBe(false);
     });
 
@@ -443,7 +425,7 @@ describe('handleMongoMessage', () => {
         } as WebviewMessage;
         await handleMongoMessage(msg, driver, postMessage);
         expect(driver.executeCancellable).not.toHaveBeenCalled();
-        expect(postMessage.mock.calls[0][0].success).toBe(false);
+        expect((postMessage.mock.calls[0][0] as { type: string; success: boolean; error?: string }).success).toBe(false);
       }
     });
   });
@@ -490,7 +472,7 @@ describe('handleMongoMessage', () => {
 
       await handleMongoMessage(msg, driver, postMessage);
 
-      const posted = postMessage.mock.calls[0][0];
+      const posted = postMessage.mock.calls[0][0] as { type: string; success: boolean; error?: string };
       expect(posted.success).toBe(false);
       expect(posted.error).toMatch(/_id/);
     });

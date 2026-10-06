@@ -179,7 +179,7 @@
     }
   },
   "scripts": {
-    "compile": "node esbuild.js",
+    "compile": "tsc --noEmit -p . && node esbuild.js",
     "watch": "node esbuild.js --watch",
     "build:webview": "cd webview-ui && npm run build",
     "build": "npm run compile && npm run build:webview",

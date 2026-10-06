@@ -35,8 +35,8 @@ export class ConnectionTreeItem extends vscode.TreeItem {
       this.description = `${host}:${port}`;
       const iconState = state === 'connected' ? 'connected' : 'disconnected';
       this.iconPath = {
-        light: path.join(resourcesPath, `${driverType}-${iconState}-light.svg`),
-        dark: path.join(resourcesPath, `${driverType}-${iconState}-dark.svg`),
+        light: vscode.Uri.file(path.join(resourcesPath, `${driverType}-${iconState}-light.svg`)),
+        dark: vscode.Uri.file(path.join(resourcesPath, `${driverType}-${iconState}-dark.svg`)),
       };
       this.command = {
         command: 'sqlext.connect',

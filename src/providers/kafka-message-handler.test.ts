@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
 import { handleKafkaMessage } from './kafka-message-handler';
 import type { IKafkaDriver } from '../types/kafka-driver';
 
@@ -8,6 +8,7 @@ function createMockDriver(): IKafkaDriver {
     connect: vi.fn().mockResolvedValue(undefined),
     disconnect: vi.fn().mockResolvedValue(undefined),
     isConnected: vi.fn().mockReturnValue(true),
+    ping: vi.fn().mockResolvedValue(undefined),
     listTopics: vi.fn().mockResolvedValue([
       { name: 'topic-a', partitionCount: 2 },
     ]),
@@ -24,12 +25,14 @@ function createMockDriver(): IKafkaDriver {
         headers: {},
       },
     ]),
+    fetchOffsetByTimestamp: vi.fn().mockResolvedValue('0'),
+    produceMessage: vi.fn().mockResolvedValue({ partition: 0, offset: '0' }),
   };
 }
 
 describe('handleKafkaMessage', () => {
   let driver: IKafkaDriver;
-  let post: ReturnType<typeof vi.fn>;
+  let post: Mock<(msg: unknown) => void>;
 
   beforeEach(() => {
     driver = createMockDriver();

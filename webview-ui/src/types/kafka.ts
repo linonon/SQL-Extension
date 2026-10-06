@@ -20,5 +20,5 @@ export interface KafkaMessage {
 
 export interface KafkaProduceResult {
   readonly partition: number;
-  readonly offset: string;
+  readonly offset?: string;
 }

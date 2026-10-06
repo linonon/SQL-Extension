@@ -143,43 +143,43 @@ describe('getAutocompleteContext', () => {
 
 describe('getCompletionItems', () => {
   it('table 类型应该返回匹配的表名', () => {
-    const ctx: AutocompleteContext = { triggerType: 'table', prefix: 'u' };
+    const ctx: AutocompleteContext = { triggerType: 'table', prefix: 'u', quoted: false };
     const items = getCompletionItems(ctx, testSchema);
     expect(items).toEqual(['users']);
   });
 
   it('table 无前缀应该返回所有表名', () => {
-    const ctx: AutocompleteContext = { triggerType: 'table', prefix: '' };
+    const ctx: AutocompleteContext = { triggerType: 'table', prefix: '', quoted: false };
     const items = getCompletionItems(ctx, testSchema);
     expect(items).toEqual(['users', 'orders', 'products']);
   });
 
   it('column 类型应该返回匹配的列名', () => {
-    const ctx: AutocompleteContext = { triggerType: 'column', prefix: 'na', tableName: 'users' };
+    const ctx: AutocompleteContext = { triggerType: 'column', prefix: 'na', tableName: 'users', quoted: false };
     const items = getCompletionItems(ctx, testSchema);
     expect(items).toEqual(['name']);
   });
 
   it('column 无前缀应该返回该表所有列', () => {
-    const ctx: AutocompleteContext = { triggerType: 'column', prefix: '', tableName: 'users' };
+    const ctx: AutocompleteContext = { triggerType: 'column', prefix: '', tableName: 'users', quoted: false };
     const items = getCompletionItems(ctx, testSchema);
     expect(items).toEqual(['id', 'name', 'email', 'age']);
   });
 
   it('keyword 类型应该返回匹配的关键字', () => {
-    const ctx: AutocompleteContext = { triggerType: 'keyword', prefix: 'SEL' };
+    const ctx: AutocompleteContext = { triggerType: 'keyword', prefix: 'SEL', quoted: false };
     const items = getCompletionItems(ctx, testSchema);
     expect(items).toContain('SELECT');
   });
 
   it('null 类型应该返回空数组', () => {
-    const ctx: AutocompleteContext = { triggerType: null, prefix: '' };
+    const ctx: AutocompleteContext = { triggerType: null, prefix: '', quoted: false };
     const items = getCompletionItems(ctx, testSchema);
     expect(items).toEqual([]);
   });
 
   it('不存在的表名应该返回空数组', () => {
-    const ctx: AutocompleteContext = { triggerType: 'column', prefix: '', tableName: 'nonexistent' };
+    const ctx: AutocompleteContext = { triggerType: 'column', prefix: '', tableName: 'nonexistent', quoted: false };
     const items = getCompletionItems(ctx, testSchema);
     expect(items).toEqual([]);
   });

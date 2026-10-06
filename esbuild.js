@@ -7,7 +7,8 @@ const extensionOptions = {
   entryPoints: ['./src/extension.ts'],
   bundle: true,
   outfile: './dist/extension.js',
-  external: ['vscode'],
+  // ssh2 的可选原生 addon 在 try/catch 里加载, 缺失时回退纯 JS 实现; esbuild 无法打包 .node
+  external: ['vscode', '*.node'],
   format: 'cjs',
   platform: 'node',
   target: 'node18',
@@ -20,6 +21,7 @@ const mcpServerOptions = {
   entryPoints: ['./src/mcp/server.ts'],
   bundle: true,
   outfile: './dist/mcp-server.js',
+  external: ['*.node'],
   format: 'cjs',
   platform: 'node',
   target: 'node18',

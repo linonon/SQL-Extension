@@ -24,6 +24,7 @@ describe('RedisKeyList', () => {
     onLoadMore: vi.fn(),
     onDeleteKey: vi.fn(),
     onSetTTL: vi.fn(),
+    onExportKey: vi.fn(),
   };
 
   beforeEach(() => {

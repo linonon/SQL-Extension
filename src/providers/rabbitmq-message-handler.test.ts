@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
 import { handleRabbitMQMessage } from './rabbitmq-message-handler';
 import type { IRabbitMQDriver } from '../types/rabbitmq-driver';
 import type { WebviewMessage } from '../types/messages';
@@ -9,6 +9,7 @@ function createMockDriver(): IRabbitMQDriver {
     connect: vi.fn(),
     disconnect: vi.fn(),
     isConnected: vi.fn().mockReturnValue(true),
+    ping: vi.fn(),
     listQueues: vi.fn().mockResolvedValue([]),
     peekMessages: vi.fn().mockResolvedValue([]),
   };
@@ -16,7 +17,7 @@ function createMockDriver(): IRabbitMQDriver {
 
 describe('handleRabbitMQMessage', () => {
   let driver: IRabbitMQDriver;
-  let postMessage: ReturnType<typeof vi.fn>;
+  let postMessage: Mock<(msg: unknown) => void>;
 
   beforeEach(() => {
     driver = createMockDriver();

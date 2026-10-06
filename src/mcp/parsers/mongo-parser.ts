@@ -4,7 +4,7 @@ export const WRITE_METHODS = [
   'deleteOne', 'deleteMany', 'aggregate', 'createIndex', 'dropIndex',
 ] as const;
 
-const ALL_METHODS = new Set([...READ_METHODS, ...WRITE_METHODS]);
+const ALL_METHODS = new Set<string>([...READ_METHODS, ...WRITE_METHODS]);
 
 export interface MongoQueryParams {
   collection: string;

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { QueryService } from './query-service';
+import { createMockDriver } from '../__mocks__/mock-driver';
 import type { IDatabaseDriver } from '../types/driver';
 import type { ColumnInfo, QueryResult } from '../types/query';
 
@@ -10,20 +11,7 @@ describe('QueryService', () => {
   beforeEach(() => {
     service = new QueryService();
 
-    // Mock driver
-    mockDriver = {
-      driverType: 'mysql',
-      connect: vi.fn(),
-      disconnect: vi.fn(),
-      isConnected: vi.fn(() => true),
-      listDatabases: vi.fn(),
-      listTables: vi.fn(),
-      listColumns: vi.fn(),
-      getTableDDL: vi.fn(),
-      getDetailedColumns: vi.fn(),
-      execute: vi.fn(),
-      executeCancellable: vi.fn(),
-    };
+    mockDriver = createMockDriver();
   });
 
   describe('fetchRows', () => {
@@ -82,7 +70,7 @@ describe('QueryService', () => {
     });
 
     it('MySQL 应该生成正确的 SQL', async () => {
-      mockDriver.driverType = 'mysql';
+      mockDriver = createMockDriver({ driverType: 'mysql' });
 
       vi.mocked(mockDriver.execute).mockResolvedValue({
         columns: [],
@@ -111,7 +99,7 @@ describe('QueryService', () => {
     });
 
     it('PostgreSQL 应该生成正确的 SQL', async () => {
-      mockDriver.driverType = 'postgresql';
+      mockDriver = createMockDriver({ driverType: 'postgresql' });
 
       vi.mocked(mockDriver.execute).mockResolvedValue({
         columns: [],
@@ -183,7 +171,7 @@ describe('QueryService', () => {
     });
 
     it('PostgreSQL 应该使用 $N 占位符', async () => {
-      mockDriver.driverType = 'postgresql';
+      mockDriver = createMockDriver({ driverType: 'postgresql' });
 
       vi.mocked(mockDriver.execute).mockResolvedValue({
         columns: [],

@@ -342,7 +342,7 @@ describe('ConnectionManager', () => {
 
       // 重新导入以使用新 mock
       const { ConnectionManager: TestConnectionManager } = await import(
-        './connection-manager'
+        './connection-manager.js'
       );
       const testManager = new TestConnectionManager(
         mockGlobalState,

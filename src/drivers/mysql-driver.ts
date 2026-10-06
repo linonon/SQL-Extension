@@ -24,9 +24,6 @@ export class MySQLDriver implements IDatabaseDriver {
       enableKeepAlive: true,
       keepAliveInitialDelay: 30000,
     });
-    this.pool.on('error', (err: Error) => {
-      console.error('[MySQLDriver] Idle client error:', err.message);
-    });
     // 验证连接可用
     try {
       const conn = await this.pool.getConnection();

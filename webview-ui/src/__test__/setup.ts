@@ -1,4 +1,5 @@
 import '@testing-library/jest-dom/vitest';
+import { vi, beforeEach } from 'vitest';
 
 // mock acquireVsCodeApi
 const mockPostMessage = vi.fn();

@@ -567,7 +567,7 @@ export class TableViewProvider implements vscode.Disposable {
             }
 
             if (message.type === 'redisDeleteKeys') {
-              const keyList = (message as { keys: string[] }).keys;
+              const keyList = message.keys;
               const label = keyList.length === 1
                 ? `Delete key "${keyList[0]}"?`
                 : `Delete ${keyList.length} keys?`;

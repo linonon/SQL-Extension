@@ -1,7 +1,7 @@
 export const READ_ACTIONS = ['listTopics', 'describeTopic', 'fetch'] as const;
 export const WRITE_ACTIONS = ['produce'] as const;
 
-const ALL_ACTIONS = new Set([...READ_ACTIONS, ...WRITE_ACTIONS]);
+const ALL_ACTIONS = new Set<string>([...READ_ACTIONS, ...WRITE_ACTIONS]);
 
 export interface KafkaQueryParams {
   action: string;

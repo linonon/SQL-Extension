@@ -52,8 +52,8 @@ export interface StatementResult {
   readonly status: StatementStatus;
   readonly executionTime?: number;
   readonly affectedRows?: number;
-  readonly columns?: ColumnInfo[];
-  readonly rows?: Record<string, unknown>[];
+  readonly columns?: readonly ColumnInfo[];
+  readonly rows?: readonly Record<string, unknown>[];
   readonly error?: string;
 }
 
