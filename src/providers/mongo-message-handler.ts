@@ -121,6 +121,7 @@ export async function handleMongoMessage(
 
     case 'mongoExportCollection': {
       const { database, collection, filter, sort, projection } = message;
+      const aborter = new AbortController();
       try {
         const uri = await vscode.window.showSaveDialog({
           filters: { 'JSON Files': ['json'], 'JSONL Files': ['jsonl'] },
@@ -128,10 +129,24 @@ export async function handleMongoMessage(
         });
         if (!uri) { return true; }
         const jsonl = uri.path.toLowerCase().endsWith('.jsonl');
-        const { json, count } = await mongo.exportDocuments(database, collection, buildExportPipeline(filter, sort, projection), jsonl);
-        await vscode.workspace.fs.writeFile(uri, Buffer.from(json, 'utf-8'));
+        const pipeline = buildExportPipeline(filter, sort, projection);
+        // 边读游标边写文件 (save dialog 给的是 file scheme); 取消或出错时 driver 已删掉写了一半的文件
+        const count = await vscode.window.withProgress(
+          { location: vscode.ProgressLocation.Notification, title: `Exporting ${database}.${collection}`, cancellable: true },
+          (progress, token) => {
+            token.onCancellationRequested(() => aborter.abort());
+            return mongo.exportDocuments(database, collection, pipeline, uri.fsPath, jsonl, {
+              signal: aborter.signal,
+              onProgress: (n) => progress.report({ message: `${n} document(s)` }),
+            });
+          },
+        );
         vscode.window.showInformationMessage(`Exported ${count} document(s) to ${uri.fsPath}`);
       } catch (e) {
+        if (aborter.signal.aborted) {
+          vscode.window.showInformationMessage('Export cancelled');
+          return true;
+        }
         const errMsg = e instanceof Error ? e.message : String(e);
         vscode.window.showErrorMessage(`Export failed: ${errMsg}`);
       }
@@ -164,6 +179,8 @@ export async function handleMongoMessage(
         vscode.window.showErrorMessage(`Import failed: ${errMsg}`);
         post({ type: 'mongoImportResult', success: false, error: errMsg });
       }
+      // 成功或中途失败都可能改了文档数: 刷新集合列表的计数
+      await postRefreshedCollections(mongo, post);
       return true;
     }
 

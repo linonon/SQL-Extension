@@ -32,7 +32,7 @@ const lastSent = (type: string): any =>
 
 // 打开 users 集合并让首屏回包到达
 function openUsers() {
-  render(<MongoBrowser connectionId="c1" />);
+  render(<MongoBrowser connectionId="c1" defaultDatabase="db" />);
   send({ type: 'mongoAllCollectionList', collections: [{ database: 'db', name: 'users', count: 1 }] });
   send(docList());
 }
@@ -66,6 +66,11 @@ describe('MongoBrowser - 已生效查询的快照', () => {
     expect(lastSent('mongoFindDocuments')).toMatchObject({ filter: '{"a": 1}', skip: 110, limit: 10, count: true });
     send({ type: 'mongoImportResult', success: true, inserted: 3 });
     expect(lastSent('mongoFindDocuments')).toMatchObject({ skip: 110, count: true });
+    // 导入中途失败时前面的批次可能已落库, 同样刷新
+    const beforeFailedImport = lastFindId();
+    send({ type: 'mongoImportResult', success: false, error: 'Imported 500 of 900 documents before the error: E11000' });
+    expect(lastFindId()).toBeGreaterThan(beforeFailedImport);
+    expect(lastSent('mongoFindDocuments')).toMatchObject({ skip: 110, count: true });
     expect(tableProps.total).toBeNull();
     send({ type: 'mongoDocumentCount', requestId: lastFindId(), total: 1003 });
     expect(tableProps).toMatchObject({ total: 1003, page: 1, offset: 110 });
@@ -93,7 +98,7 @@ describe('MongoBrowser - 已生效查询的快照', () => {
   });
 
   it('切集合: 查询复位并重新计数, 关掉上一个集合的 explain', () => {
-    render(<MongoBrowser connectionId="c1" />);
+    render(<MongoBrowser connectionId="c1" defaultDatabase="db" />);
     send({ type: 'mongoAllCollectionList', collections: [
       { database: 'db', name: 'users', count: 1 }, { database: 'db', name: 'orders', count: 1 },
     ] });
@@ -140,9 +145,46 @@ describe('isPathProjection', () => {
   });
 });
 
+describe('MongoBrowser - 打开时的初选集合与刷新列表', () => {
+  const collections = [
+    { database: 'act', name: 'act_arena_50', count: 9 },
+    { database: 'game', name: 'players', count: 3 },
+    { database: 'game', name: 'zones', count: 1 },
+  ];
+
+  it('有连接配置的 database: 选中它的第一个集合, 不碰别的库', () => {
+    render(<MongoBrowser connectionId="c1" defaultDatabase="game" />);
+    send({ type: 'mongoAllCollectionList', collections });
+    expect(lastSent('mongoFindDocuments')).toMatchObject({ database: 'game', collection: 'players' });
+    expect(listProps.selected).toEqual({ database: 'game', name: 'players' });
+  });
+
+  it('没配 database: 不选中也不查询, 提示去选集合', () => {
+    render(<MongoBrowser connectionId="c1" />);
+    send({ type: 'mongoAllCollectionList', collections });
+    expect(lastSent('mongoFindDocuments')).toBeUndefined();
+    expect(listProps.selected).toBeNull();
+    expect(screen.getByText('Select a collection to browse documents')).toBeInTheDocument();
+  });
+
+  it('Refresh 重新拉集合列表 (计数随之更新), 不改当前选中', () => {
+    render(<MongoBrowser connectionId="c1" defaultDatabase="game" />);
+    send({ type: 'mongoAllCollectionList', collections });
+    mockPostMessage.mockClear();
+    act(() => { listProps.onRefresh(); });
+    expect(mockPostMessage.mock.calls).toEqual([[{ type: 'mongoListAllCollections' }]]);
+    expect(listProps.loading).toBe(true);
+    send({ type: 'mongoAllCollectionList', collections: [{ ...collections[0] }, { ...collections[1], count: 19919 }, collections[2]] });
+    expect(listProps.loading).toBe(false);
+    expect(listProps.collections[1].count).toBe(19919);
+    expect(listProps.selected).toEqual({ database: 'game', name: 'players' });
+    expect(lastSent('mongoFindDocuments')).toBeUndefined();
+  });
+});
+
 describe('MongoBrowser - 切集合后旧查询的回执丢弃', () => {
   it('慢的 users 回执晚于 orders 请求到达, 不顶替 orders 的行', () => {
-    render(<MongoBrowser connectionId="c1" />);
+    render(<MongoBrowser connectionId="c1" defaultDatabase="db" />);
     send({ type: 'mongoAllCollectionList', collections: [
       { database: 'db', name: 'users', count: 1 }, { database: 'db', name: 'orders', count: 1 },
     ] });

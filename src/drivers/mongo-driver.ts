@@ -3,6 +3,9 @@ import {
   type AggregateOptions, type CollectionInfo, type CountDocumentsOptions, type CreateIndexesOptions,
   type Document, type EstimatedDocumentCountOptions, type FindOptions, type IndexSpecification, type Sort,
 } from 'mongodb';
+import { access, constants as fsConstants, open, rename, rm } from 'fs/promises';
+import { Readable } from 'stream';
+import { pipeline as pipeStreams } from 'stream/promises';
 import type { ConnectionConfig } from '../types/connection.js';
 import type { ColumnInfo, TableInfo } from '../types/query.js';
 import { convertEjsonToBson, assertValidBson } from '../utils/mongo-shell-to-json.js';
@@ -127,24 +130,51 @@ export class MongoDriver {
     await db.dropCollection(collectionName);
   }
 
-  // 导出为 canonical EJSON: 读时 promoteValues:false 保住 Int32 / Long / Double, 写出时带类型标记.
-  // jsonl 时每行一个文档, 否则整体一个 JSON 数组
+  // 流式导出为 canonical EJSON 写入 filePath, 返回条数: 读时 promoteValues:false 保住 Int32 / Long / Double, 写出时带类型标记.
+  // jsonl 时每行一个文档, 否则整体一个 JSON 数组 (每个文档一行). 每 1000 条回调一次 onProgress.
+  // 目标打不开 (只读 / 目录不存在) 时直接抛出, 不动原文件; 打开后出错或 signal 取消时删掉写了一半的文件再抛出
   async exportDocuments(
     database: string,
     collection: string,
     pipeline: unknown[],
+    filePath: string,
     jsonl: boolean,
-  ): Promise<{ json: string; count: number }> {
+    options: { signal?: AbortSignal; onProgress?: (count: number) => void } = {},
+  ): Promise<number> {
     this.assertConnected();
     // 还原 pipeline 内 EJSON 标记为 BSON, 否则 $match 过滤 (ObjectId/$date 等) 当字面子文档恒不命中,
     // 导致导出空集或错集 (与 findDocumentsForBrowser 对齐).
     const bsonPipeline = convertEjsonToBson(pipeline) as Document[];
-    const docs = await this.client!.db(database).collection(collection)
-      .aggregate(bsonPipeline, { promoteValues: false, allowDiskUse: true }).toArray();
-    const json = jsonl
-      ? docs.map((d) => `${EJSON.stringify(d, { relaxed: false })}\n`).join('')
-      : EJSON.stringify(docs, undefined, 2, { relaxed: false });
-    return { json, count: docs.length };
+    const coll = this.client!.db(database).collection(collection);
+    // 已有目标文件不可写时直接报错; 先写同目录的临时文件, 成功后 rename 覆盖目标,
+    // 取消或失败只删临时文件, 用户选中要覆盖的旧文件保持原样
+    await access(filePath, fsConstants.W_OK).catch((err: NodeJS.ErrnoException) => {
+      if (err.code !== 'ENOENT') { throw err; }
+    });
+    const tmpPath = `${filePath}.partial`;
+    const out = await open(tmpPath, 'w');
+    let count = 0;
+    async function* chunks(): AsyncGenerator<string> {
+      // signal 也交给游标: 取消时中断进行中的 getMore (大 $sort 可能很久才出第一批), 否则要等它返回才停
+      const cursor = coll.aggregate(bsonPipeline, { promoteValues: false, allowDiskUse: true, signal: options.signal });
+      if (!jsonl) { yield '['; }
+      for await (const doc of cursor) {
+        const text = EJSON.stringify(doc, { relaxed: false });
+        yield jsonl ? `${text}\n` : `${count === 0 ? '\n' : ',\n'}${text}`;
+        if (++count % 1000 === 0) { options.onProgress?.(count); }
+      }
+      if (!jsonl) { yield count === 0 ? ']\n' : '\n]\n'; }
+    }
+    try {
+      // pipeline 按 backpressure 拉游标 (写入跟不上时暂停读取); 出错或取消时销毁两端, 提前退出的 for await 关闭游标
+      await pipeStreams(Readable.from(chunks()), out.createWriteStream(), { signal: options.signal });
+      await rename(tmpPath, filePath);
+    } catch (err) {
+      // 清理失败不掩盖原错误
+      await rm(tmpPath, { force: true }).catch(() => {});
+      throw err;
+    }
+    return count;
   }
 
   async findDocumentsForBrowser(
@@ -193,9 +223,15 @@ export class MongoDriver {
     const BATCH = 500;
     const coll = this.client!.db(database).collection(collection);
     for (let i = 0; i < docs.length; i += BATCH) {
-      const batch = docs.slice(i, i + BATCH);
-      const result = await coll.insertMany(batch);
-      inserted += result.insertedCount;
+      try {
+        inserted += (await coll.insertMany(docs.slice(i, i + BATCH))).insertedCount;
+      } catch (err) {
+        // ordered insertMany 停在出错的那条: 之前各批和本批出错前的文档已落库 (本批条数见 MongoBulkWriteError.insertedCount)
+        const batchInserted = (err as { insertedCount?: unknown } | null)?.insertedCount;
+        inserted += typeof batchInserted === 'number' ? batchInserted : 0;
+        const reason = err instanceof Error ? err.message : String(err);
+        throw new Error(`Imported ${inserted} of ${docs.length} documents before the error: ${reason}`);
+      }
     }
     return inserted;
   }

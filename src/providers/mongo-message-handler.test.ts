@@ -28,6 +28,7 @@ function mockMongo() {
     createCollection: vi.fn(),
     dropCollection: vi.fn(),
     importDocuments: vi.fn(),
+    exportDocuments: vi.fn(),
   };
 }
 
@@ -265,6 +266,80 @@ describe('handleMongoMessage', () => {
     await send({ type: 'mongoImportCollection', database: 'game_s1', collection: 'players' });
     expect(warn.mock.calls[1][0]).toContain('1 document(s) into "game_s1.players"');
     expect(mongo.importDocuments).not.toHaveBeenCalled();
+  });
+
+  describe('mongoExportCollection', () => {
+    const exportMsg = { type: 'mongoExportCollection', database: 'game_s1', collection: 'players', filter: '{"lvl": 5}', sort: '', projection: '' };
+    // 进度条: 回报的进度记进 reports; cancel 为 true 时模拟用户在导出进行中点了取消
+    function stubProgress(cancel: boolean) {
+      const reports: unknown[] = [];
+      vi.spyOn(vscode.window, 'withProgress').mockImplementation(((_o: unknown, task: Function) => {
+        let onCancel = () => {};
+        const run = task({ report: (r: unknown) => reports.push(r) }, {
+          isCancellationRequested: false,
+          onCancellationRequested: (fn: () => void) => { onCancel = fn; return { dispose() {} }; },
+        });
+        if (cancel) { onCancel(); }
+        return run;
+      }) as never);
+      return reports;
+    }
+
+    beforeEach(() => {
+      vi.spyOn(vscode.window, 'showSaveDialog').mockResolvedValue({ path: '/out/p.jsonl', fsPath: '/out/p.jsonl' } as never);
+    });
+
+    it('流式写到所选文件, 带进度; 完成后报条数', async () => {
+      const reports = stubProgress(false);
+      const info = vi.spyOn(vscode.window, 'showInformationMessage');
+      mongo.exportDocuments.mockImplementation(async (_d, _c, _p, _f, _j, opts: { onProgress: (n: number) => void }) => {
+        opts.onProgress(1000);
+        return 1234;
+      });
+      await send(exportMsg);
+      const [db, coll, pipeline, filePath, jsonl] = mongo.exportDocuments.mock.calls[0];
+      expect([db, coll, pipeline, filePath, jsonl]).toEqual(['game_s1', 'players', [{ $match: { lvl: 5 } }], '/out/p.jsonl', true]);
+      expect(reports).toEqual([{ message: '1000 document(s)' }]);
+      expect(info).toHaveBeenCalledWith('Exported 1234 document(s) to /out/p.jsonl');
+    });
+
+    it('取消: signal 被触发, 只提示 Export cancelled, 不报错', async () => {
+      stubProgress(true);
+      const info = vi.spyOn(vscode.window, 'showInformationMessage');
+      const error = vi.spyOn(vscode.window, 'showErrorMessage');
+      // driver 在 signal 触发时才结束: 取消没传到 signal 的话这里会一直挂着
+      mongo.exportDocuments.mockImplementation((_d, _c, _p, _f, _j, opts: { signal: AbortSignal }) => new Promise((_, reject) => {
+        opts.signal.addEventListener('abort', () => reject(Object.assign(new Error('The operation was aborted'), { name: 'AbortError' })));
+      }));
+      await send(exportMsg);
+      expect(info).toHaveBeenCalledWith('Export cancelled');
+      expect(error).not.toHaveBeenCalled();
+    });
+
+    it('出错: 报 Export failed 与原因', async () => {
+      stubProgress(false);
+      const error = vi.spyOn(vscode.window, 'showErrorMessage');
+      mongo.exportDocuments.mockRejectedValue(new Error('ENOSPC: no space left on device'));
+      await send(exportMsg);
+      expect(error).toHaveBeenCalledWith('Export failed: ENOSPC: no space left on device');
+    });
+  });
+
+  it('导入中途失败: 报出 driver 给的已导入条数, 照样刷新集合列表的计数', async () => {
+    vi.spyOn(vscode.window, 'showOpenDialog').mockResolvedValue([vscode.Uri.file('/tmp/p.jsonl')] as never);
+    vi.spyOn(vscode.workspace.fs, 'readFile').mockResolvedValue(Buffer.from('{"a": 1}\n{"a": 2}') as never);
+    vi.spyOn(vscode.window, 'showWarningMessage').mockResolvedValue('Insert' as never);
+    const error = vi.spyOn(vscode.window, 'showErrorMessage');
+    const reason = 'Imported 1 of 2 documents before the error: E11000 duplicate key error';
+    mongo.importDocuments.mockRejectedValue(new Error(reason));
+    mongo.listDatabases.mockResolvedValue(['game_s1']);
+    mongo.listTables.mockResolvedValue([{ name: 'players', schema: 'game_s1', rowCount: 1 }]);
+    await send({ type: 'mongoImportCollection', database: 'game_s1', collection: 'players' });
+    expect(error).toHaveBeenCalledWith(`Import failed: ${reason}`);
+    expect(post.mock.calls).toEqual([
+      [{ type: 'mongoImportResult', success: false, error: reason }],
+      [{ type: 'mongoAllCollectionList', collections: [{ database: 'game_s1', name: 'players', count: 1 }] }],
+    ]);
   });
 
   it('mongoDeleteDocument: 先在宿主确认, 取消不删; 按 EJSON _id 删除, 没删到报 not found', async () => {

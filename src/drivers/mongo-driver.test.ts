@@ -1,4 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { MongoDriver, deepFormatValue, deepFormatDocument, buildUri, userFilter } from './mongo-driver';
 import { ObjectId, Long, Binary, UUID, Timestamp } from 'mongodb';
 // 'mongodb' 在本文件被 mock 成假类; 往返测试用 bson 包里的真实类
@@ -431,23 +434,57 @@ describe('MongoDriver', () => {
   });
 
   describe('exportDocuments / importDocuments', () => {
+    let dir: string;
+    let file: string;
     beforeEach(async () => {
       mockDb.command.mockResolvedValue({ ok: 1 });
       await driver.connect({
         id: 't', name: 't', driverType: 'mongodb',
         host: 'localhost', port: 27017, username: '', password: '', database: '',
       });
+      dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sqlext-mongo-export-'));
+      file = path.join(dir, 'out.json');
     });
+    afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+
+    // 假游标: 按需逐个产出文档 (每产出一个前先跑 beforeYield), 被提前结束时记 closed
+    function fakeCursor(docs: Iterable<unknown>, beforeYield: (i: number) => void = () => {}) {
+      const state = { closed: false, pulled: 0 };
+      const cursor = {
+        async *[Symbol.asyncIterator]() {
+          try {
+            for (const doc of docs) {
+              beforeYield(state.pulled);
+              state.pulled++;
+              yield doc;
+            }
+          } finally {
+            state.closed = true;
+          }
+        },
+      };
+      mockCollection.aggregate.mockReturnValue(cursor);
+      return state;
+    }
 
     it('pipeline 内 EJSON 被还原为 BSON (导出过滤可命中), 读时 promoteValues:false, 允许落盘但不设超时', async () => {
-      mockCollection.aggregate.mockReturnValue({ toArray: vi.fn().mockResolvedValue([{ _id: 'x' }]) });
-      const res = await driver.exportDocuments('db', 'coll', [
+      fakeCursor([{ _id: 'x' }]);
+      const count = await driver.exportDocuments('db', 'coll', [
         { $match: { _id: { $oid: '507f1f77bcf86cd799439011' } } },
-      ], false);
+      ], file, false);
       const [pipelineArg, options] = mockCollection.aggregate.mock.calls[0];
       expect(pipelineArg[0].$match._id).toBeInstanceOf(ObjectId);
       expect(options).toEqual({ promoteValues: false, allowDiskUse: true });
-      expect(res.count).toBe(1);
+      expect(count).toBe(1);
+    });
+
+    it('空结果: JSON 写出 [], JSONL 写出空文件', async () => {
+      fakeCursor([]);
+      expect(await driver.exportDocuments('db', 'coll', [], file, false)).toBe(0);
+      expect(JSON.parse(fs.readFileSync(file, 'utf-8'))).toEqual([]);
+      fakeCursor([]);
+      expect(await driver.exportDocuments('db', 'coll', [], file, true)).toBe(0);
+      expect(fs.readFileSync(file, 'utf-8')).toBe('');
     });
 
     // 真实 bson 类: 导出 -> 导入后的 BSON 字节与原文档完全一致 (类型 / 精度都不丢)
@@ -471,10 +508,10 @@ describe('MongoDriver', () => {
     it.each([
       ['JSON 数组', false],
       ['JSONL', true],
-    ])('%s 导出再导入, BSON 往返无损', async (_label, jsonl) => {
-      mockCollection.aggregate.mockReturnValue({ toArray: vi.fn().mockResolvedValue(readTyped()) });
-      const { json, count } = await driver.exportDocuments('db', 'coll', [], jsonl);
-      expect(count).toBe(2);
+    ])('%s 流式写入文件, 再导入时 BSON 往返无损', async (_label, jsonl) => {
+      fakeCursor(readTyped());
+      expect(await driver.exportDocuments('db', 'coll', [], file, jsonl)).toBe(2);
+      const json = fs.readFileSync(file, 'utf-8');
       if (jsonl) {
         const lines = json.trim().split('\n');
         expect(lines).toHaveLength(2);
@@ -487,6 +524,69 @@ describe('MongoDriver', () => {
       expect(await driver.importDocuments('db', 'coll', json)).toBe(2);
       const inserted = mockCollection.insertMany.mock.calls[0][0];
       expect(bytes(inserted)).toEqual(bytes(original()));
+    });
+
+    it('按写入速度拉游标 (backpressure): 已拉取但未落盘的数据有上限, 不把结果集攒在内存里', async () => {
+      const pad = 'x'.repeat(4000);
+      const docs = Array.from({ length: 500 }, (_, i) => ({ _id: `doc-${String(i).padStart(6, '0')}`, pad }));
+      const lineBytes = Buffer.byteLength(`${BSON.EJSON.stringify(docs[0], { relaxed: false })}\n`);
+      let maxLag = 0;
+      // 拉第 i 个文档时, 前 i 个已交给写入端; 与磁盘上的文件大小之差即积压在内存里的量
+      fakeCursor(docs, (i) => {
+        let written = 0;
+        // 导出先写同目录的 .partial 临时文件, 完成后才 rename 成目标
+        try { written = fs.statSync(`${file}.partial`).size; } catch { /* 文件还没打开 */ }
+        maxLag = Math.max(maxLag, i * lineBytes - written);
+      });
+      expect(await driver.exportDocuments('db', 'coll', [], file, true)).toBe(500);
+      expect(fs.statSync(file).size).toBe(500 * lineBytes);
+      // 总量约 2MB; 不等写入就拉完会积压到整个结果集
+      expect(maxLag).toBeLessThan(512 * 1024);
+    });
+
+    it('取消: 游标被关闭, 写了一半的临时文件被删掉, 已有的目标文件原样保留; 进度每 1000 条回报一次', async () => {
+      fs.writeFileSync(file, 'keep');
+      const aborter = new AbortController();
+      const progress: number[] = [];
+      const infinite = function* () { for (let i = 0; i < 100_000; i++) { yield { _id: i }; } };
+      const state = fakeCursor(infinite(), (i) => { if (i === 2500) { aborter.abort(); } });
+      await expect(driver.exportDocuments('db', 'coll', [], file, false, {
+        signal: aborter.signal, onProgress: (n) => progress.push(n),
+      })).rejects.toMatchObject({ name: 'AbortError' });
+      expect(state.closed).toBe(true);
+      expect(state.pulled).toBeLessThan(3000);
+      expect(fs.readFileSync(file, 'utf-8')).toBe('keep');
+      expect(fs.readdirSync(dir)).toEqual(['out.json']);
+      expect(progress).toEqual([1000, 2000]);
+      // 游标收到同一个 signal, 进行中的 getMore 也能被中断
+      expect(mockCollection.aggregate.mock.calls[0][1].signal).toBe(aborter.signal);
+    });
+
+    it('写入出错 (目录不存在): 报错, 不留文件', async () => {
+      fakeCursor([{ _id: 1 }]);
+      const bad = path.join(dir, 'missing', 'out.json');
+      await expect(driver.exportDocuments('db', 'coll', [], bad, false)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(fs.existsSync(bad)).toBe(false);
+    });
+
+    // root 无视文件权限, 打不出 EACCES
+    it.skipIf(process.getuid?.() === 0)('打开目标失败 (已有只读文件): 报错, 原文件原样保留', async () => {
+      fakeCursor([{ _id: 1 }]);
+      fs.writeFileSync(file, 'keep');
+      fs.chmodSync(file, 0o444);
+      await expect(driver.exportDocuments('db', 'coll', [], file, false)).rejects.toMatchObject({ code: 'EACCES' });
+      expect(fs.readFileSync(file, 'utf-8')).toBe('keep');
+      expect(mockCollection.aggregate).not.toHaveBeenCalled();
+    });
+
+    it('导入中途出错: 报错带已写入条数 (含出错那批里已写入的)', async () => {
+      const lines = Array.from({ length: 1200 }, (_, i) => JSON.stringify({ _id: i })).join('\n');
+      mockCollection.insertMany
+        .mockResolvedValueOnce({ insertedCount: 500 })
+        .mockRejectedValueOnce(Object.assign(new Error('E11000 duplicate key error'), { insertedCount: 37 }));
+      await expect(driver.importDocuments('db', 'coll', lines))
+        .rejects.toThrow('Imported 537 of 1200 documents before the error: E11000 duplicate key error');
+      expect(mockCollection.insertMany).toHaveBeenCalledTimes(2);
     });
   });
 

@@ -149,8 +149,10 @@ export class TableViewProvider implements vscode.Disposable {
       light: vscode.Uri.joinPath(this.extensionUri, 'resources', `${driverType}-connected-light.svg`),
       dark: vscode.Uri.joinPath(this.extensionUri, 'resources', `${driverType}-connected-dark.svg`),
     };
+    // defaultDatabase: 连接表单里填的 Database, 打开时选中它的第一个集合
     this.openBrowser(`mongo:${connectionId}`, `[MongoDB]${connectionName}`, 'mongo-browser', {
       connectionId,
+      defaultDatabase: this.connectionConfig(connectionId)?.database || undefined,
     }, iconPath);
   }
 

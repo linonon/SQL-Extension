@@ -10,6 +10,8 @@ import '../../styles/mongo-browser.css';
 
 interface MongoBrowserProps {
   readonly connectionId: string;
+  // 连接表单里填的 Database: 打开时选中它的第一个集合; 没填则不自动选中
+  readonly defaultDatabase?: string;
 }
 
 export interface GlobalCollectionInfo {
@@ -67,7 +69,7 @@ export function isPathProjection(text: string): boolean {
       !k.startsWith('$') && !k.includes('.') && (typeof v === 'number' || typeof v === 'boolean'));
 }
 
-export function MongoBrowser({ connectionId }: MongoBrowserProps) {
+export function MongoBrowser({ connectionId, defaultDatabase }: MongoBrowserProps) {
   const [allCollections, setAllCollections] = useState<readonly GlobalCollectionInfo[]>([]);
   const [selected, setSelected] = useState<SelectedCollection | null>(null);
   const [columns, setColumns] = useState<readonly ColumnInfo[]>([]);
@@ -135,9 +137,11 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
       case 'mongoAllCollectionList':
         setCollectionsLoading(false);
         setAllCollections(msg.collections);
-        if (msg.collections.length > 0) {
-          setSelected((prev) => prev ?? { database: msg.collections[0].database, name: msg.collections[0].name });
-        }
+        setSelected((prev) => {
+          if (prev) { return prev; }
+          const first = msg.collections.find((c) => c.database === defaultDatabase);
+          return first ? { database: first.database, name: first.name } : null;
+        });
         break;
       case 'mongoDocumentList':
         if (msg.requestId !== findIdRef.current) { break; }
@@ -164,9 +168,9 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
           handleRefetch();
         }
         break;
-      // 导出 / 导入的失败由宿主弹提示 (宿主侧流程: 文件对话框 / 进度)
+      // 导出 / 导入的失败由宿主弹提示 (宿主侧流程: 文件对话框 / 进度); 导入失败时前面的批次可能已落库, 照样刷新
       case 'mongoImportResult':
-        if (msg.success) { handleRefetch(); }
+        handleRefetch();
         break;
       case 'mongoExplainResult':
         // 只接收进行中的 explain: 切 collection 时面板已清空, 旧 collection 迟到的结果丢弃
@@ -191,15 +195,17 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
         }
         break;
     }
-  }, [handleRefetch]);
+  }, [handleRefetch, defaultDatabase]);
 
   useVSCodeMessage(handleMessage);
 
-  // 初始加载所有 collections
-  useEffect(() => {
+  const refreshCollections = useCallback(() => {
     setCollectionsLoading(true);
     postMessage({ type: 'mongoListAllCollections' });
   }, [postMessage]);
+
+  // 初始加载所有 collections
+  useEffect(() => { refreshCollections(); }, [refreshCollections]);
 
   // 选中 / 切换 collection: 查询复位, 关掉上一个集合的 explain, 从首页取并计数
   useEffect(() => {
@@ -357,6 +363,7 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
             collections={allCollections}
             selected={selected}
             loading={collectionsLoading}
+            onRefresh={refreshCollections}
             onSelectCollection={handleSelectCollection}
             onCreateCollection={handleCreateCollection}
             onDropCollection={handleDropCollection}
