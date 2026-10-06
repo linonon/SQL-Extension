@@ -3,7 +3,6 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import type { ConnectionManager } from './connection-manager.js';
-import type { MongoDriver } from '../drivers/mongo-driver.js';
 import { routeByDriver, type DriverSource, type RouteMode } from './query-router.js';
 import { sanitizeErrorMessage } from '../utils/sanitize-error.js';
 
@@ -89,6 +88,11 @@ export class IpcServer {
     await this.connectionManager.connect(id);
   }
 
+  // db_schema 的库 / 表 / 列 / DDL: SQL 与 MongoDB driver 都提供这四个方法
+  private schemaDriver(id: string, driverType: string) {
+    return driverType === 'mongodb' ? this.connectionManager.getMongoDriver(id) : this.connectionManager.getDriver(id);
+  }
+
   private findConfig(id: string) {
     const config = this.connectionManager.getConnections().find(c => c.id === id);
     if (!config) { throw new Error(`Connection not found: ${id}`); }
@@ -117,7 +121,7 @@ export class IpcServer {
         const drivers: DriverSource = {
           getDriver: (i) => cm.getDriver(i),
           getRedisDriver: (i) => cm.getRedisDriver(i),
-          getMongoDriver: (i) => cm.getDriver(i) as unknown as MongoDriver,
+          getMongoDriver: (i) => cm.getMongoDriver(i),
           getKafkaDriver: (i) => cm.getKafkaDriver(i),
           getRabbitMQDriver: (i) => cm.getRabbitMQDriver(i),
         };
@@ -135,8 +139,7 @@ export class IpcServer {
           return { error: 'N/A for this database type' };
         }
         await this.ensureConnected(id);
-        const driver = this.connectionManager.getDriver(id);
-        return await driver.listDatabases();
+        return await this.schemaDriver(id, config.driverType).listDatabases();
       }
 
       case 'listTables': {
@@ -153,28 +156,25 @@ export class IpcServer {
         if (config.driverType === 'redis') {
           return { error: 'N/A for Redis' };
         }
-        const driver = this.connectionManager.getDriver(id);
-        return await driver.listTables(database);
+        return await this.schemaDriver(id, config.driverType).listTables(database);
       }
 
       case 'listColumns': {
         const id = params.connectionId as string;
         const database = params.database as string;
         const table = params.table as string;
-        this.findConfig(id);
+        const config = this.findConfig(id);
         await this.ensureConnected(id);
-        const driver = this.connectionManager.getDriver(id);
-        return await driver.listColumns(database, table);
+        return await this.schemaDriver(id, config.driverType).listColumns(database, table);
       }
 
       case 'getTableDDL': {
         const id = params.connectionId as string;
         const database = params.database as string;
         const table = params.table as string;
-        this.findConfig(id);
+        const config = this.findConfig(id);
         await this.ensureConnected(id);
-        const driver = this.connectionManager.getDriver(id);
-        return await driver.getTableDDL(database, table);
+        return await this.schemaDriver(id, config.driverType).getTableDDL(database, table);
       }
 
       default:

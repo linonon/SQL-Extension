@@ -32,9 +32,6 @@ export class DumpService {
     database: string,
     table: string
   ): Promise<string> {
-    if (driver.driverType === 'mongodb') {
-      throw new Error('MongoDB does not support SQL dump');
-    }
     const ddl = (await driver.getTableDDL(database, table)).trimEnd();
     const header = `-- Dump from SQL Extension\n-- Table: ${table}\n-- Date: ${new Date().toISOString()}\n`;
     const dropStmt = driver.driverType === 'mysql'
@@ -51,9 +48,6 @@ export class DumpService {
     onProgress?: (current: number, total: number) => void,
     cancellationToken?: { readonly isCancellationRequested: boolean }
   ): Promise<string> {
-    if (driver.driverType === 'mongodb') {
-      throw new Error('MongoDB does not support SQL dump');
-    }
     const structSql = await this.dumpStruct(driver, database, table);
 
     const mysql = driver.driverType === 'mysql';

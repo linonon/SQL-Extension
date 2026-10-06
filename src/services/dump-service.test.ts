@@ -4,7 +4,7 @@ import { createMockDriver as createBaseMockDriver } from '../__mocks__/mock-driv
 import type { IDatabaseDriver } from '../types/driver';
 import { splitSqlStatements } from '../utils/destructive-sql';
 
-function createMockDriver(driverType: string = 'mysql'): IDatabaseDriver {
+function createMockDriver(driverType: IDatabaseDriver['driverType'] = 'mysql'): IDatabaseDriver {
   const driver = createBaseMockDriver({ driverType });
   driver.getTableDDL.mockResolvedValue('CREATE TABLE `users` (`id` int PRIMARY KEY);');
   return driver;
@@ -18,12 +18,6 @@ describe('DumpService', () => {
   });
 
   describe('dumpStruct', () => {
-    it('MongoDB 抛错', async () => {
-      const driver = createMockDriver('mongodb');
-      await expect(service.dumpStruct(driver, 'db', 'col'))
-        .rejects.toThrow('MongoDB does not support SQL dump');
-    });
-
     it('MySQL 方言: 反引号 + DROP TABLE IF EXISTS', async () => {
       const driver = createMockDriver('mysql');
       (driver.getTableDDL as any).mockResolvedValue('CREATE TABLE `users` (`id` int PRIMARY KEY);');
@@ -66,12 +60,6 @@ describe('DumpService', () => {
   });
 
   describe('dumpStructAndData', () => {
-    it('MongoDB 抛错', async () => {
-      const driver = createMockDriver('mongodb');
-      await expect(service.dumpStructAndData(driver, 'db', 'col'))
-        .rejects.toThrow('MongoDB does not support SQL dump');
-    });
-
     it('表无数据时只返回 struct', async () => {
       const driver = createMockDriver('mysql');
       (driver.execute as any).mockResolvedValue({
@@ -312,7 +300,7 @@ describe('dump / import 往返', () => {
     o: { k: 1 }, // 对象值按 JSON 写出
   };
 
-  async function dump(driverType: string, ddl: string): Promise<{ sql: string; driver: IDatabaseDriver }> {
+  async function dump(driverType: IDatabaseDriver['driverType'], ddl: string): Promise<{ sql: string; driver: IDatabaseDriver }> {
     const driver = createBaseMockDriver({ driverType });
     driver.getTableDDL.mockResolvedValue(ddl);
     driver.listColumns.mockResolvedValue(columns);

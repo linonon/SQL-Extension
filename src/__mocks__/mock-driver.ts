@@ -18,6 +18,14 @@ export function createMockDriver(overrides: Partial<Mocked<IDatabaseDriver>> = {
     getTableDDL: vi.fn<IDatabaseDriver['getTableDDL']>().mockResolvedValue(''),
     getDetailedColumns: vi.fn<IDatabaseDriver['getDetailedColumns']>().mockResolvedValue([]),
     execute: vi.fn<IDatabaseDriver['execute']>().mockImplementation(async () => emptyResult()),
+    // 泛型方法: vi.fn 的调用签名会把 T 实例化成 unknown, 需断言回接口签名
+    transaction: vi.fn<IDatabaseDriver['transaction']>()
+      .mockImplementation(async (work) => work(async () => emptyResult())) as Mocked<IDatabaseDriver>['transaction'],
+    executeReadOnly: vi.fn<IDatabaseDriver['executeReadOnly']>().mockImplementation(async () => emptyResult()),
+    executeBatch: vi.fn<IDatabaseDriver['executeBatch']>().mockImplementation(() => ({
+      promise: Promise.resolve({ results: [] }),
+      cancel: vi.fn(),
+    })),
     executeCancellable: vi.fn<IDatabaseDriver['executeCancellable']>().mockImplementation(() => ({
       promise: Promise.resolve(emptyResult()),
       cancel: vi.fn(),

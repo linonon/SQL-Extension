@@ -113,15 +113,5 @@ describe('QueryService', () => {
       await service.batchUpdate(mockDriver, 'testdb', 'users', []);
       expect(mockDriver.transaction).not.toHaveBeenCalled();
     });
-
-    it('driver 无 transaction 能力时退化为逐条 execute', async () => {
-      vi.mocked(mockDriver.execute).mockResolvedValue({
-        columns: [], rows: [], affectedRows: 1, executionTime: 1,
-      } as QueryResult);
-      await service.batchUpdate(mockDriver, 'testdb', 'users', [
-        { primaryKeys: { id: 1 }, changes: { name: 'A' } },
-      ]);
-      expect(mockDriver.execute).toHaveBeenCalledWith('UPDATE `testdb`.`users` SET `name` = ? WHERE `id` = ?', ['A', 1], 'testdb');
-    });
   });
 });

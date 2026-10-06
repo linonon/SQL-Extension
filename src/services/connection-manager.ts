@@ -13,6 +13,8 @@ import { RabbitMQDriver } from '../drivers/rabbitmq-driver.js';
 import { CredentialStore } from './credential-store.js';
 import { createTunnel, type TunnelHandle } from './ssh-tunnel.js';
 
+type AnyDriver = IDatabaseDriver | MongoDriver | IRedisDriver | IKafkaDriver | IRabbitMQDriver;
+
 const CONNECTIONS_KEY = 'sqlext.connections';
 
 const HEARTBEAT_INTERVAL_MS = 60_000;
@@ -22,7 +24,7 @@ export function newConnectionId(config: Pick<ConnectionConfig, 'driverType' | 'h
 }
 
 export class ConnectionManager implements vscode.Disposable {
-  private readonly drivers = new Map<string, IDatabaseDriver | IRedisDriver | IKafkaDriver | IRabbitMQDriver>();
+  private readonly drivers = new Map<string, AnyDriver>();
   private readonly tunnels = new Map<string, TunnelHandle>();
   private readonly states = new Map<string, ConnectionState>();
   private readonly inflight = new Map<string, Promise<void>>();
@@ -208,21 +210,27 @@ export class ConnectionManager implements vscode.Disposable {
     this._onDidChange.fire();
   }
 
+  // SQL (MySQL / PostgreSQL) driver; 其他类型各走自己的 getter
   getDriver(id: string): IDatabaseDriver {
     const driver = this.drivers.get(id);
     if (!driver) {
       throw new Error(`No active connection: ${id}`);
     }
-    if (driver.driverType === 'redis') {
-      throw new Error(`Connection ${id} is a Redis connection, use getRedisDriver() instead`);
-    }
-    if (driver.driverType === 'kafka') {
-      throw new Error(`Connection ${id} is a Kafka connection, use getKafkaDriver() instead`);
-    }
-    if (driver.driverType === 'rabbitmq') {
-      throw new Error(`Connection ${id} is a RabbitMQ connection, use getRabbitMQDriver() instead`);
+    if (driver.driverType !== 'mysql' && driver.driverType !== 'postgresql') {
+      throw new Error(`Connection ${id} is a ${driver.driverType} connection, not SQL`);
     }
     return driver as IDatabaseDriver;
+  }
+
+  getMongoDriver(id: string): MongoDriver {
+    const driver = this.drivers.get(id);
+    if (!driver) {
+      throw new Error(`No active connection: ${id}`);
+    }
+    if (driver.driverType !== 'mongodb') {
+      throw new Error(`Connection ${id} is not a MongoDB connection`);
+    }
+    return driver as MongoDriver;
   }
 
   getRedisDriver(id: string): IRedisDriver {
@@ -270,7 +278,7 @@ export class ConnectionManager implements vscode.Disposable {
     }
   }
 
-  private createDriver(driverType: string): IDatabaseDriver | IRedisDriver | IKafkaDriver | IRabbitMQDriver {
+  private createDriver(driverType: string): AnyDriver {
     switch (driverType) {
       case 'mysql':
         return new MySQLDriver();

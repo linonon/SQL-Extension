@@ -13,14 +13,6 @@ function getPlaceholder(driverType: string): PlaceholderFn {
   return driverType === 'postgresql' ? pgPlaceholder : mysqlPlaceholder;
 }
 
-// MongoDB collection name 校验: 仅允许合法标识符
-function validateMongoCollection(name: string): string {
-  if (!/^[a-zA-Z_$][\w$]*$/.test(name)) {
-    throw new Error(`Invalid MongoDB collection name: "${name}"`);
-  }
-  return name;
-}
-
 // MySQL 用反引号, PG 用双引号 (alter-table-builder 复用同一实现, 避免转义规则两份漂移)
 export function escapeIdentifier(driverType: string, name: string): string {
   if (driverType === 'mysql') {
@@ -49,9 +41,6 @@ export function buildInsert(
   row: Record<string, unknown>,
   database?: string
 ): BuiltSQL {
-  if (driverType === 'mongodb') {
-    return { sql: `db.${validateMongoCollection(table)}.insertOne(${JSON.stringify(row)})`, params: [] };
-  }
   const ph = getPlaceholder(driverType);
   const keys = Object.keys(row);
   const qualified = qualifyTable(driverType, table, database);
@@ -77,12 +66,6 @@ export function buildUpdate(
   changes: Record<string, unknown>,
   database?: string
 ): BuiltSQL {
-  if (driverType === 'mongodb') {
-    return {
-      sql: `db.${validateMongoCollection(table)}.updateOne(${JSON.stringify(primaryKeys)},{"$set":${JSON.stringify(changes)}})`,
-      params: [],
-    };
-  }
   const ph = getPlaceholder(driverType);
   const changeKeys = Object.keys(changes);
   const pkKeys = Object.keys(primaryKeys);
@@ -121,13 +104,6 @@ export function buildBatchDelete(
 ): BuiltSQL {
   if (primaryKeysList.length === 0) {
     return { sql: '', params: [] };
-  }
-  if (driverType === 'mongodb') {
-    const filters = primaryKeysList.map((pks) => JSON.stringify(pks));
-    return {
-      sql: `db.${validateMongoCollection(table)}.deleteMany({"$or":[${filters.join(',')}]})`,
-      params: [],
-    };
   }
   const ph = getPlaceholder(driverType);
   const keys = Object.keys(primaryKeysList[0]);

@@ -36,11 +36,19 @@ describe('MongoDocumentCard', () => {
     expect(onEdit).toHaveBeenCalledWith(doc);
   });
 
-  it('Delete 传去 _id 的 shell 形式 (保留类型, backend 还原)', () => {
+  it('Delete 传去 _id 的 EJSON 值 (保留类型)', () => {
     const onDelete = vi.fn();
     render(<MongoDocumentCard doc={{ _id: 'ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa")', aid: 'w' }} view="list" onEdit={vi.fn()} onClone={vi.fn()} onDelete={onDelete} />);
     fireEvent.click(screen.getByRole('button', { name: /delete/i }));
-    expect(onDelete).toHaveBeenCalledWith('ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa")');
+    expect(onDelete).toHaveBeenCalledWith({ $oid: 'aaaaaaaaaaaaaaaaaaaaaaaa' });
+  });
+
+  it('复合 _id 内的 ObjectId / ISODate 也还原成 EJSON', () => {
+    const onDelete = vi.fn();
+    const _id = { uid: 'ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa")', day: 'ISODate("2024-01-15T00:00:00.000Z")' };
+    render(<MongoDocumentCard doc={{ _id, aid: 'w' }} view="list" onEdit={vi.fn()} onClone={vi.fn()} onDelete={onDelete} />);
+    fireEvent.click(screen.getByRole('button', { name: /delete/i }));
+    expect(onDelete).toHaveBeenCalledWith({ uid: { $oid: 'aaaaaaaaaaaaaaaaaaaaaaaa' }, day: { $date: '2024-01-15T00:00:00.000Z' } });
   });
 
   it('Clone 按钮可用, 点击回调带完整文档 (含 _id)', () => {
@@ -52,7 +60,7 @@ describe('MongoDocumentCard', () => {
     expect(onClone).toHaveBeenCalledWith(doc);
   });
 
-  it('editing 模式渲染内联编辑器 (列表不动), Save 调 onSave(idShell, doc)', () => {
+  it('editing 模式渲染内联编辑器 (列表不动), Save 调 onSave(original, doc)', () => {
     const onSave = vi.fn();
     render(
       <MongoDocumentCard
@@ -71,7 +79,7 @@ describe('MongoDocumentCard', () => {
     expect(textarea).not.toBeNull();
     fireEvent.change(textarea, { target: { value: '{"aid": "w-2"}' } });
     fireEvent.click(screen.getByText('Save'));
-    expect(onSave).toHaveBeenCalledWith('ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa")', { aid: 'w-2' });
+    expect(onSave).toHaveBeenCalledWith({ aid: 'w-1' }, { aid: 'w-2' });
   });
 
   it('非 editing 模式不渲染编辑器, 渲染树', () => {

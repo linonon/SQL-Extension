@@ -6,6 +6,7 @@ import { ViewToggle, type MongoView } from './ViewToggle';
 import { MongoDocumentList } from './MongoDocumentList';
 import { MongoTableView } from './MongoTableView';
 import { idToShell } from './mongo-id';
+import { convertTags } from './mongo-field-editor';
 import { useMongoFilterHistory, MongoFilterHistory, type FilterHistoryEntry } from './MongoFilterHistory';
 import { MongoFilterBuilder } from './MongoFilterBuilder';
 import { MongoExplainPanel } from './MongoExplainPanel';
@@ -23,7 +24,7 @@ interface MongoDocumentTableProps {
   readonly filter: string;
   readonly sort: string;
   readonly projection: string;
-  // 当前 rows 由非空 projection 查出: 文档不完整, replaceOne / Clone 会丢字段, 禁用 Edit / Clone / 单元格编辑
+  // 当前 rows 由非空 projection 查出: 编辑器看到的不是整篇文档, 禁用 Edit / Clone / 单元格编辑
   readonly projected?: boolean;
   readonly customLimit: string;
   readonly customSkip: string;
@@ -34,10 +35,11 @@ interface MongoDocumentTableProps {
   readonly onSkipChange: (v: string) => void;
   readonly onApply: () => void;
   readonly onPageChange: (page: number) => void;
+  // id / sourceId: 文档 _id 的 EJSON 值; original: 编辑器打开时的文档, doc: 编辑结果 (都是 EJSON)
   readonly onInsertDocument: (doc: Record<string, unknown>) => void;
-  readonly onUpdateDocument: (id: string, doc: Record<string, unknown>) => void;
-  readonly onUpdateField?: (id: string, path: string, value: unknown) => void;
-  readonly onDeleteDocument: (id: string) => void;
+  readonly onUpdateDocument: (id: unknown, original: Record<string, unknown>, doc: Record<string, unknown>) => void;
+  readonly onCloneDocument: (sourceId: unknown, original: Record<string, unknown>, doc: Record<string, unknown>) => void;
+  readonly onDeleteDocument: (id: unknown) => void;
   readonly queryError: string | null;
   readonly onExport?: () => void;
   readonly onImport?: () => void;
@@ -72,7 +74,7 @@ export function MongoDocumentTable({
   onPageChange,
   onInsertDocument,
   onUpdateDocument,
-  onUpdateField,
+  onCloneDocument,
   onDeleteDocument,
   queryError,
   onExport,
@@ -84,8 +86,9 @@ export function MongoDocumentTable({
   onSwitchConfirmed,
   onSwitchCancelled,
 }: MongoDocumentTableProps) {
-  // in-card 编辑态: editingId (现存文档 _id 的 shell 形式) 与 composing (顶部新建/克隆卡片) 互斥
-  const [editingId, setEditingId] = useState<string | null>(null);
+  // in-card 编辑态: editing (正在编辑的现存文档) 与 composing (顶部新建/克隆卡片) 互斥
+  const [editing, setEditing] = useState<Record<string, unknown> | null>(null);
+  const editingId = editing ? idToShell(editing._id) : null;
   const [composing, setComposing] = useState<Record<string, unknown> | null>(null);
   const [isDirty, setIsDirty] = useState(false);
   const [view, setView] = useState<MongoView>('list');
@@ -102,43 +105,48 @@ export function MongoDocumentTable({
   const endRow = Math.min((page + 1) * pageSize, total);
 
   const clearEditor = useCallback(() => {
-    setEditingId(null);
+    setEditing(null);
     setComposing(null);
     setIsDirty(false);
   }, []);
 
-  const handleSave = useCallback((id: string | null, doc: Record<string, unknown>) => {
-    if (id) {
-      onUpdateDocument(id, doc);
+  const handleSave = useCallback((original: Record<string, unknown> | null, doc: Record<string, unknown>) => {
+    if (editing) {
+      onUpdateDocument(convertTags(editing._id), original ?? {}, doc);
+    } else if (original) {
+      // Clone: 源文档按编辑器打开时 seed 里的 _id 定位, 与编辑基准是同一份
+      onCloneDocument(original._id, original, doc);
     } else {
       onInsertDocument(doc);
     }
     clearEditor();
-  }, [onUpdateDocument, onInsertDocument, clearEditor]);
+  }, [editing, onUpdateDocument, onCloneDocument, onInsertDocument, clearEditor]);
 
-  const handleDelete = useCallback((id: string) => {
-    onDeleteDocument(id);
-    clearEditor();
-  }, [onDeleteDocument, clearEditor]);
+  // 单元格编辑: 前后文档只含这一个 path, 与整文档编辑走同一条 diff 写回
+  const handleCellEdit = useCallback((id: unknown, path: string, before: unknown, value: unknown) => {
+    const nest = (v: unknown) =>
+      path.split('.').reduceRight<unknown>((acc, k) => ({ [k]: acc }), v) as Record<string, unknown>;
+    onUpdateDocument(convertTags(id), nest(convertTags(before)), nest(value));
+  }, [onUpdateDocument]);
 
-  // rows 是 projection 结果时文档不完整, 现存文档编辑器保存会 replaceOne 掉未投影字段: 直接退出编辑
+  // rows 是 projection 结果时文档不完整, 编辑器看到的不是整篇文档: 直接退出编辑
   useEffect(() => {
-    if (projected && editingId !== null) { clearEditor(); }
-  }, [projected, editingId, clearEditor]);
+    if (projected && editing !== null) { clearEditor(); }
+  }, [projected, editing, clearEditor]);
 
   const handleEnterEdit = useCallback((doc: Record<string, unknown>) => {
     setComposing(null);
-    setEditingId(idToShell(doc._id));
+    setEditing(doc);
   }, []);
 
   const handleNewDocument = useCallback(() => {
-    setEditingId(null);
+    setEditing(null);
     setComposing({});
   }, []);
 
-  // Clone: 整文档 (含 _id) 作 seed 塞进顶部新建卡片, _id 可编辑, 保存走 insert (天然保留 _id 类型)
+  // Clone: 整文档 (含 _id) 作 seed 塞进顶部新建卡片, _id 可编辑; 保存时宿主按 _id 重读源文档套用改动后插入
   const handleClone = useCallback((doc: Record<string, unknown>) => {
-    setEditingId(null);
+    setEditing(null);
     setComposing({ ...doc });
   }, []);
 
@@ -232,9 +240,11 @@ export function MongoDocumentTable({
     const lim = parseInt(customLimit, 10);
     const sk = parseInt(customSkip, 10);
 
+    // 不是合法 JS 标识符的集合名 (数字开头 / 中文 / 含 - 等) 要写成 getCollection("...")
+    const coll = /^[A-Za-z_$][\w$]*$/.test(collection) ? `db.${collection}` : `db.getCollection(${JSON.stringify(collection)})`;
     let query = p
-      ? `db.${collection}.find(${f}, ${p})`
-      : `db.${collection}.find(${f})`;
+      ? `${coll}.find(${f}, ${p})`
+      : `${coll}.find(${f})`;
     if (s) { query += `.sort(${s})`; }
     if (lim > 0) { query += `.limit(${lim})`; }
     if (sk > 0) { query += `.skip(${sk})`; }
@@ -437,7 +447,7 @@ export function MongoDocumentTable({
                 columns={columns}
                 rows={capped.rows}
                 onRowClick={(row) => { setView('list'); if (!projected) { handleEnterEdit(row); } }}
-                onCellEdit={projected ? undefined : onUpdateField}
+                onCellEdit={projected ? undefined : handleCellEdit}
               />
             : <MongoDocumentList
                 rows={capped.rows}

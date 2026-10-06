@@ -3,7 +3,8 @@ import type { IRedisDriver } from '../types/redis-driver.js';
 import type { IKafkaDriver } from '../types/kafka-driver.js';
 import type { IRabbitMQDriver } from '../types/rabbitmq-driver.js';
 import type { QueryResult } from '../types/query.js';
-import type { MongoDriver } from '../drivers/mongo-driver.js';
+import { userFilter, type MongoDriver } from '../drivers/mongo-driver.js';
+import { convertEjsonToBson } from '../utils/mongo-shell-to-json.js';
 import { ErrorCode } from './utils.js';
 import { isReadonlySQL, enforceLimit, isMultiStatement } from './sql-validator.js';
 import { parseRedisCommand } from './parsers/redis-parser.js';
@@ -117,16 +118,13 @@ async function routeSQL(
   }
 
   const driver = drivers.getDriver(connectionId);
-  if (mode === 'read' ? !driver.executeReadOnly : !driver.executeBatch) {
-    return makeError(`Driver '${driverType}' cannot run this mode.`, ErrorCode.UNSUPPORTED_COMMAND);
-  }
   let result: QueryResult;
   let warning: string | undefined;
   if (mode === 'read') {
-    result = await driver.executeReadOnly!(query, database).catch(rethrowReadTimeout);
+    result = await driver.executeReadOnly(query, database).catch(rethrowReadTimeout);
   } else {
     // 专用连接执行完即销毁: agent 的 USE / BEGIN / SET 不会留在 UI 共用的池里
-    const outcome = await driver.executeBatch!([query], database).promise;
+    const outcome = await driver.executeBatch([query], database).promise;
     if (outcome.error) { throw outcome.error.cause; }
     result = outcome.results[outcome.results.length - 1];
     warning = outcome.warning;
@@ -234,55 +232,53 @@ async function routeMongo(
     }
   }
 
-  const driver = drivers.getMongoDriver(connectionId);
-  const safeLimit = mode === 'read' ? capLimit(params.limit) : undefined;
+  const mongo = drivers.getMongoDriver(connectionId);
+  const { collection } = params;
+  // db_read: 行数上限与服务端超时; db_execute 不加
+  const limit = mode === 'read' ? capLimit(params.limit) : undefined;
+  const maxTimeMS = mode === 'read' ? READ_TIMEOUT_MS : undefined;
+  const filter = () => userFilter(params.filter);
+  const ejson = <T>(v: T): T => convertEjsonToBson(v) as T;
 
-  const args: unknown[] = [];
-  switch (params.method) {
-    case 'find':
-      args.push(params.filter ?? {}, { projection: params.projection });
-      break;
-    case 'aggregate':
-      args.push(params.pipeline ?? []);
-      break;
-    case 'countDocuments':
-      args.push(params.filter ?? {});
-      break;
-    case 'insertOne':
-      args.push(params.document ?? {});
-      break;
-    case 'insertMany':
-      args.push(params.documents ?? []);
-      break;
-    case 'updateOne':
-    case 'updateMany':
-      args.push(params.filter ?? {}, params.update ?? {});
-      break;
-    case 'deleteOne':
-    case 'deleteMany':
-      args.push(params.filter ?? {});
-      break;
-    case 'createIndex':
-      args.push(params.keys ?? {}, params.options ?? {});
-      break;
-    case 'dropIndex':
-      args.push(params.indexName ?? '');
-      break;
-  }
+  const run = async (): Promise<ToolResult> => {
+    switch (params.method) {
+      case 'find':
+        return docsResult(await mongo.find(database, collection, filter(), { projection: params.projection, limit: limit ?? 1000, maxTimeMS }));
+      case 'aggregate': {
+        // 行数上限下推到服务端, 避免先把整个结果集拉进内存
+        const pipeline = ejson(params.pipeline ?? []);
+        return docsResult(await mongo.aggregate(database, collection, limit ? [...pipeline, { $limit: limit }] : pipeline, { maxTimeMS }));
+      }
+      case 'countDocuments':
+        return docsResult([{ count: await mongo.count(database, collection, filter(), { maxTimeMS }) }]);
+      case 'insertOne':
+        await mongo.insertOne(database, collection, ejson(params.document ?? {}));
+        return makeResult({ affectedRows: 1 });
+      case 'insertMany':
+        return makeResult({ affectedRows: await mongo.insertMany(database, collection, ejson(params.documents ?? [])) });
+      case 'updateOne':
+        return makeResult({ affectedRows: await mongo.updateOne(database, collection, filter(), ejson(params.update ?? {})) });
+      case 'updateMany':
+        return makeResult({ affectedRows: await mongo.updateMany(database, collection, filter(), ejson(params.update ?? {})) });
+      case 'deleteOne':
+        return makeResult({ affectedRows: await mongo.deleteOne(database, collection, filter()) });
+      case 'deleteMany':
+        return makeResult({ affectedRows: await mongo.deleteMany(database, collection, filter()) });
+      case 'createIndex':
+        await mongo.createIndex(database, collection, params.keys ?? {}, params.options ?? {});
+        return makeResult({ affectedRows: 1 });
+      case 'dropIndex':
+        await mongo.dropIndex(database, collection, params.indexName ?? '');
+        return makeResult({ affectedRows: 1 });
+      default:
+        return makeError(`Unsupported method: ${params.method}`, ErrorCode.UNSUPPORTED_COMMAND);
+    }
+  };
+  return mode === 'read' ? run().catch(rethrowReadTimeout) : run();
+}
 
-  const result = mode === 'read'
-    ? await driver.dispatchToCollection(
-      database, params.collection, params.method, args, { limit: safeLimit, maxTimeMS: READ_TIMEOUT_MS },
-    ).catch(rethrowReadTimeout)
-    : await driver.dispatchToCollection(database, params.collection, params.method, args);
-
-  if ('affectedRows' in result) {
-    return makeResult({ affectedRows: result.affectedRows });
-  }
-  return makeResult({
-    rows: result.docs,
-    rowCount: result.docs.length,
-  });
+function docsResult(docs: Record<string, unknown>[]): ToolResult {
+  return makeResult({ rows: docs, rowCount: docs.length });
 }
 
 async function routeKafka(

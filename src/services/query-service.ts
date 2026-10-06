@@ -38,11 +38,6 @@ export class QueryService {
         }
       }
     };
-    if (driver.transaction) {
-      await driver.transaction(run, database);
-    } else {
-      // 无事务能力的 driver 退化为逐条 (SQL driver 均实现 transaction, 此为防御兜底)
-      await run((sql, params) => driver.execute(sql, params, database));
-    }
+    await driver.transaction(run, database);
   }
 }

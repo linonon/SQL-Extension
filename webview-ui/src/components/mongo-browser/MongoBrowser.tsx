@@ -274,18 +274,31 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
     });
   }, [selected, postMessage]);
 
-  const handleUpdateDocument = useCallback((id: string, doc: Record<string, unknown>) => {
+  const handleUpdateDocument = useCallback((id: unknown, original: Record<string, unknown>, doc: Record<string, unknown>) => {
     if (!selected) { return; }
     postMessage({
       type: 'mongoUpdateDocument',
       database: selected.database,
       collection: selected.name,
       id,
+      original,
       document: doc,
     });
   }, [selected, postMessage]);
 
-  const handleDeleteDocument = useCallback((id: string) => {
+  const handleCloneDocument = useCallback((sourceId: unknown, original: Record<string, unknown>, doc: Record<string, unknown>) => {
+    if (!selected) { return; }
+    postMessage({
+      type: 'mongoCloneDocument',
+      database: selected.database,
+      collection: selected.name,
+      sourceId,
+      original,
+      document: doc,
+    });
+  }, [selected, postMessage]);
+
+  const handleDeleteDocument = useCallback((id: unknown) => {
     if (!selected) { return; }
     postMessage({
       type: 'mongoDeleteDocument',
@@ -304,18 +317,6 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
       collection: selected.name,
       filter: filterRef.current,
       sort: sortRef.current,
-    });
-  }, [selected, postMessage]);
-
-  const handleUpdateField = useCallback((id: string, path: string, value: unknown) => {
-    if (!selected) { return; }
-    postMessage({
-      type: 'mongoUpdateField',
-      database: selected.database,
-      collection: selected.name,
-      id,
-      path,
-      value,
     });
   }, [selected, postMessage]);
 
@@ -413,7 +414,7 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
               onPageChange={handlePageChange}
               onInsertDocument={handleInsertDocument}
               onUpdateDocument={handleUpdateDocument}
-              onUpdateField={handleUpdateField}
+              onCloneDocument={handleCloneDocument}
               onDeleteDocument={handleDeleteDocument}
               queryError={queryError}
               onExport={handleExport}

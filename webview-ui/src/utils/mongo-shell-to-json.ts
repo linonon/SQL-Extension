@@ -25,6 +25,21 @@ const SHELL_PATTERNS: ReadonlyArray<{
   { pattern: /MaxKey\(\s*\)/g, replace: '{"$maxKey":1}' },
 ];
 
+// 字符串字面量整体匹配 (跳过其中的数字), 或前后不接标识符 / 小数点 / 指数的裸整数
+const STRING_OR_INTEGER = /"(?:[^"\\]|\\.)*"|(?<![\w$.+-])-?\d+(?![\w$.])/g;
+
+const INT64_LIMIT = 2n ** 63n;
+
+// 字符串外超出 2^53 的裸整数包成 {"$numberLong":"..."}: JSON.parse 会把它静默舍入成邻近的 double.
+// 超出 int64 的不可能是 Long, 保持原样按 double 解析
+function wrapUnsafeIntegers(json: string): string {
+  return json.replace(STRING_OR_INTEGER, (m) => {
+    if (m.startsWith('"') || Number.isSafeInteger(Number(m))) { return m; }
+    const n = BigInt(m);
+    return n < -INT64_LIMIT || n >= INT64_LIMIT ? m : `{"$numberLong":"${m}"}`;
+  });
+}
+
 /**
  * shell 语法转 Extended JSON.
  * ObjectId("abc") -> {"$oid":"abc"}
@@ -36,7 +51,7 @@ export function convertShellToJson(input: string): string {
     pattern.lastIndex = 0;
     result = result.replace(pattern, replace as string);
   }
-  return result;
+  return wrapUnsafeIntegers(result);
 }
 
 /**

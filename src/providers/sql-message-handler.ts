@@ -128,7 +128,7 @@ export async function handleSqlMessage(
         const driver = ctx.getDriver();
         const stmts = buildAlterTableStatements(driver.driverType, message.table, message.changes);
         try {
-          const { error } = await batchExecutor(driver)(stmts, message.database).promise;
+          const { error } = await driver.executeBatch(stmts, message.database).promise;
           if (error) {
             const base = sanitizeErrorMessage(error.cause);
             // 多条 DDL 非原子 (MySQL DDL 隐式提交无法回滚): 明确回报已执行/未执行边界,
@@ -292,7 +292,7 @@ export async function handleSqlMessage(
         const driver = ctx.getDriver();
         try {
           const stmts = statementsFor(driver, sql);
-          const { results, error, warning } = await batchExecutor(driver)(stmts, database).promise;
+          const { results, error, warning } = await driver.executeBatch(stmts, database).promise;
           if (error) {
             // MySQL 逐条 autocommit, 失败点之前的语句已生效; PG 整段在隐式事务里, 出错整段回滚
             const at = stmts.length > 1
@@ -328,13 +328,6 @@ function statementsFor(driver: IDatabaseDriver, sql: string): string[] {
   return driver.driverType === 'mysql' ? splitSqlStatements(sql) : [sql];
 }
 
-function batchExecutor(driver: IDatabaseDriver): NonNullable<IDatabaseDriver['executeBatch']> {
-  if (!driver.executeBatch) {
-    throw new Error(`Driver '${driver.driverType}' cannot execute SQL statements`);
-  }
-  return driver.executeBatch.bind(driver);
-}
-
 // executeQuery 的执行体, 返回待发的 queryBatchResult (不含 requestId).
 // 整次执行在一条专用连接上跑完 (executeBatch), 编辑器里的 USE / BEGIN 对同一次执行的后续语句生效.
 // cancel 槽位每个 panel 一个: 执行结束只清自己放进去的 cancel, 晚结束的旧执行不能清掉新执行的
@@ -353,7 +346,7 @@ async function runQuery(sql: string, db: string, ctx: SqlMessageContext): Promis
   }
 
   const stmts = statementsFor(driver, sql);
-  const { promise, cancel } = batchExecutor(driver)(stmts, db);
+  const { promise, cancel } = driver.executeBatch(stmts, db);
   ctx.pendingCancels.set(ctx.panel, cancel);
   try {
     const { results, error, warning } = await promise;

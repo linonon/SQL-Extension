@@ -1,13 +1,18 @@
-import { MongoClient, ObjectId, type CollectionInfo, type Document, type Sort } from 'mongodb';
-import { EJSON } from 'bson';
+import {
+  BSON, MongoClient, ObjectId,
+  type AggregateOptions, type CollectionInfo, type CountDocumentsOptions, type CreateIndexesOptions,
+  type Document, type FindOptions, type IndexSpecification, type Sort,
+} from 'mongodb';
 import type { ConnectionConfig } from '../types/connection.js';
-import type { IDatabaseDriver } from '../types/driver.js';
-import type { ColumnInfo, DetailedColumnInfo, QueryResult, TableInfo } from '../types/query.js';
-import { parseMongoQuery } from '../utils/mongo-query-parser.js';
+import type { ColumnInfo, TableInfo } from '../types/query.js';
 import { convertEjsonToBson, assertValidBson } from '../utils/mongo-shell-to-json.js';
 import { summarizeExplain, type ExplainSummary } from '../utils/mongo-explain.js';
 
-export class MongoDriver implements IDatabaseDriver {
+// 用 mongodb 自带的 bson 实例: 单独 import 'bson' 可能加载第二份, instanceof 跨实例不成立
+const { EJSON } = BSON;
+
+// MongoDB driver: 不是 SQL driver (不实现 IDatabaseDriver), 集合名 / filter / 文档都作为数据传入.
+export class MongoDriver {
   readonly driverType = 'mongodb';
   private client: MongoClient | null = null;
   private configDatabase = '';
@@ -89,53 +94,6 @@ export class MongoDriver implements IDatabaseDriver {
     return `// Collection "${collection}" has no schema validator defined.`;
   }
 
-  async getDetailedColumns(database: string, collection: string): Promise<DetailedColumnInfo[]> {
-    const columns = await this.listColumns(database, collection);
-    return columns.map((c) => ({ ...c, comment: '' }));
-  }
-
-  async execute(sql: string, params?: unknown[]): Promise<QueryResult> {
-    return this.executeCancellable(sql, params).promise;
-  }
-
-  executeCancellable(
-    query: string,
-    _params?: unknown[],
-    database?: string,
-    options?: { readonly autoConvertIds?: boolean }
-  ): { promise: Promise<QueryResult>; cancel: () => void } {
-    let cancelled = false;
-
-    const promise = (async (): Promise<QueryResult> => {
-      const cmd = parseMongoQuery(query);
-      const dbName = database ?? 'test';
-      const start = Date.now();
-
-      const result = await this.dispatchToCollection(dbName, cmd.collection, cmd.method, cmd.args, {
-        autoConvertIds: options?.autoConvertIds,
-      });
-
-      if (cancelled) {
-        return { columns: [], rows: [], affectedRows: 0, executionTime: 0 };
-      }
-
-      const executionTime = Date.now() - start;
-
-      if ('affectedRows' in result) {
-        return { columns: [], rows: [], affectedRows: result.affectedRows, executionTime };
-      }
-
-      const docs = result.docs;
-      const rows = docs.map(flattenDocument);
-      const columns = inferSchema(docs);
-      return { columns, rows, affectedRows: 0, executionTime };
-    })();
-
-    const cancel = () => { cancelled = true; };
-
-    return { promise, cancel };
-  }
-
   // explain 浏览查询的 find (filter + sort 决定索引选择), 返回精简摘要供 UI 展示索引使用情况.
   async explainFind(
     database: string,
@@ -145,8 +103,7 @@ export class MongoDriver implements IDatabaseDriver {
   ): Promise<ExplainSummary> {
     this.assertConnected();
     const coll = this.client!.db(database).collection(collection);
-    const f = autoConvertIds(convertEjsonToBson(filter ?? {}) as Record<string, unknown>);
-    const cursor = coll.find(f);
+    const cursor = coll.find(userFilter(filter));
     if (sort && Object.keys(sort).length > 0) {
       cursor.sort(convertEjsonToBson(sort) as Sort);
     }
@@ -166,17 +123,23 @@ export class MongoDriver implements IDatabaseDriver {
     await db.dropCollection(collectionName);
   }
 
+  // 导出为 canonical EJSON: 读时 promoteValues:false 保住 Int32 / Long / Double, 写出时带类型标记.
+  // jsonl 时每行一个文档, 否则整体一个 JSON 数组
   async exportDocuments(
     database: string,
     collection: string,
-    pipeline: unknown[]
+    pipeline: unknown[],
+    jsonl: boolean,
   ): Promise<{ json: string; count: number }> {
     this.assertConnected();
     // 还原 pipeline 内 EJSON 标记为 BSON, 否则 $match 过滤 (ObjectId/$date 等) 当字面子文档恒不命中,
     // 导致导出空集或错集 (与 findDocumentsForBrowser 对齐).
     const bsonPipeline = convertEjsonToBson(pipeline) as Document[];
-    const docs = await this.client!.db(database).collection(collection).aggregate(bsonPipeline).toArray();
-    const json = EJSON.stringify(docs, undefined, 2);
+    const docs = await this.client!.db(database).collection(collection)
+      .aggregate(bsonPipeline, { promoteValues: false }).toArray();
+    const json = jsonl
+      ? docs.map((d) => `${EJSON.stringify(d, { relaxed: false })}\n`).join('')
+      : EJSON.stringify(docs, undefined, 2, { relaxed: false });
     return { json, count: docs.length };
   }
 
@@ -208,12 +171,13 @@ export class MongoDriver implements IDatabaseDriver {
     this.assertConnected();
     const trimmed = content.trim();
     let docs: Record<string, unknown>[];
+    // canonical 解析 (relaxed:false): 裸数字也按 Int32 / Long / Double 落库, 带类型标记的值原样还原
     if (trimmed.startsWith('[')) {
-      docs = EJSON.parse(trimmed) as Record<string, unknown>[];
+      docs = EJSON.parse(trimmed, { relaxed: false }) as Record<string, unknown>[];
     } else {
       docs = trimmed.split('\n')
         .filter((l) => l.trim())
-        .map((line) => EJSON.parse(line) as Record<string, unknown>);
+        .map((line) => EJSON.parse(line, { relaxed: false }) as Record<string, unknown>);
     }
 
     // EJSON.parse 不校验 $date 合法性 (非法日期产出 Invalid Date -> 落库变 epoch 0),
@@ -231,105 +195,62 @@ export class MongoDriver implements IDatabaseDriver {
     return inserted;
   }
 
-  async dispatchToCollection(
-    database: string,
-    collection: string,
-    method: string,
-    args: readonly unknown[],
-    options?: { limit?: number; autoConvertIds?: boolean; maxTimeMS?: number },
-  ): Promise<DispatchResult> {
+  // --- 结构化集合操作 (浏览器 handler 与 MCP 路由共用) ---
+  // 本组方法收的 filter 与文档须已是 BSON 值 (EJSON 由调用方经 convertEjsonToBson / userFilter 还原)
+
+  find(database: string, collection: string, filter: Document, options: FindOptions): Promise<Document[]> {
+    return this.coll(database, collection).find(filter, options).toArray();
+  }
+
+  aggregate(database: string, collection: string, pipeline: Document[], options: AggregateOptions = {}): Promise<Document[]> {
+    return this.coll(database, collection).aggregate(pipeline, options).toArray();
+  }
+
+  count(database: string, collection: string, filter: Document, options: CountDocumentsOptions = {}): Promise<number> {
+    return this.coll(database, collection).countDocuments(filter, options);
+  }
+
+  // 按库内原 BSON 类型取单个文档 (promoteValues:false: Int32 / Long / Double 不转成 JS number), 供写回时沿用类型
+  findOneTyped(database: string, collection: string, filter: Document): Promise<Document | null> {
+    return this.coll(database, collection).findOne(filter, { promoteValues: false });
+  }
+
+  async insertOne(database: string, collection: string, doc: Document): Promise<void> {
+    await this.coll(database, collection).insertOne(doc);
+  }
+
+  async insertMany(database: string, collection: string, docs: Document[]): Promise<number> {
+    return (await this.coll(database, collection).insertMany(docs)).insertedCount;
+  }
+
+  // 返回 matchedCount (是否命中): 命中但值未变也算成功
+  async updateOne(database: string, collection: string, filter: Document, update: Document): Promise<number> {
+    return (await this.coll(database, collection).updateOne(filter, update)).matchedCount;
+  }
+
+  async updateMany(database: string, collection: string, filter: Document, update: Document): Promise<number> {
+    return (await this.coll(database, collection).updateMany(filter, update)).modifiedCount;
+  }
+
+  async deleteOne(database: string, collection: string, filter: Document): Promise<number> {
+    return (await this.coll(database, collection).deleteOne(filter)).deletedCount;
+  }
+
+  async deleteMany(database: string, collection: string, filter: Document): Promise<number> {
+    return (await this.coll(database, collection).deleteMany(filter)).deletedCount;
+  }
+
+  createIndex(database: string, collection: string, keys: IndexSpecification, options: CreateIndexesOptions): Promise<string> {
+    return this.coll(database, collection).createIndex(keys, options);
+  }
+
+  async dropIndex(database: string, collection: string, indexName: string): Promise<void> {
+    await this.coll(database, collection).dropIndex(indexName);
+  }
+
+  private coll(database: string, collection: string) {
     this.assertConnected();
-    const coll = this.client!.db(database).collection(collection);
-    // 服务端超时只加在读方法 (find / aggregate / countDocuments) 上
-    const timeout = options?.maxTimeMS ? { maxTimeMS: options.maxTimeMS } : {};
-    // 把 filter 还原成 BSON. autoConvertIds (24-hex 字符串 -> ObjectId) 是查询编辑器手敲裸字符串的
-    // 便利; CRUD 路径 (filter 经 buildIdFilter 已显式带类型) 传 autoConvertIds:false 跳过它,
-    // 否则真字符串 _id (恰好 24-hex) 会被误转成 ObjectId 而匹配不上.
-    const ac = options?.autoConvertIds !== false;
-    const toFilter = (a: unknown): Record<string, unknown> => {
-      const f = convertEjsonToBson(a ?? {}) as Record<string, unknown>;
-      return ac ? autoConvertIds(f) : f;
-    };
-    switch (method) {
-      case 'find': {
-        const filter = toFilter(args[0]);
-        const opts = (args[1] ?? {}) as { projection?: Document };
-        const limit = options?.limit ?? 1000;
-        const docs = await coll.find(filter, { projection: opts.projection, ...timeout }).limit(limit).toArray();
-        return { docs };
-      }
-      case 'findOne': {
-        const filter = toFilter(args[0]);
-        const doc = await coll.findOne(filter);
-        return { docs: doc ? [doc] : [] };
-      }
-      case 'insertOne': {
-        const doc = convertEjsonToBson(args[0] ?? {}) as Record<string, unknown>;
-        await coll.insertOne(doc);
-        return { affectedRows: 1 };
-      }
-      case 'insertMany': {
-        const docs = convertEjsonToBson(args[0] ?? []) as Document[];
-        const result = await coll.insertMany(docs);
-        return { affectedRows: result.insertedCount };
-      }
-      case 'updateOne': {
-        // affectedRows 取 matchedCount (是否命中): 无改动的局部更新不应误判为"未匹配".
-        const filter = toFilter(args[0]);
-        const update = convertEjsonToBson(args[1] as Record<string, unknown>) as Record<string, unknown>;
-        const result = await coll.updateOne(filter, update);
-        return { affectedRows: result.matchedCount };
-      }
-      case 'updateMany': {
-        const filter = toFilter(args[0]);
-        // 与 updateOne 一致还原 EJSON 类型 ($oid/$date/$numberLong 等), 否则写入畸形子文档
-        const update = convertEjsonToBson(args[1] as Record<string, unknown>) as Record<string, unknown>;
-        const result = await coll.updateMany(filter, update);
-        return { affectedRows: result.modifiedCount };
-      }
-      case 'replaceOne': {
-        // 整文档替换: 替换文档不含 _id, _id 由 filter 保持; 不在 replacement 内的字段被移除.
-        // affectedRows 取 matchedCount (是否命中), 而非 modifiedCount, 以便无改动的保存仍判定为成功.
-        const filter = toFilter(args[0]);
-        const replacement = convertEjsonToBson(args[1] ?? {}) as Record<string, unknown>;
-        const result = await coll.replaceOne(filter, replacement);
-        return { affectedRows: result.matchedCount };
-      }
-      case 'deleteOne': {
-        const filter = toFilter(args[0]);
-        const result = await coll.deleteOne(filter);
-        return { affectedRows: result.deletedCount };
-      }
-      case 'deleteMany': {
-        const filter = toFilter(args[0]);
-        const result = await coll.deleteMany(filter);
-        return { affectedRows: result.deletedCount };
-      }
-      case 'aggregate': {
-        const pipeline = convertEjsonToBson(args[0] ?? []) as Record<string, unknown>[];
-        // 行数上限下推到服务端, 避免先把整个结果集拉进内存
-        const docs = await coll.aggregate(options?.limit ? [...pipeline, { $limit: options.limit }] : pipeline, timeout).toArray();
-        return { docs };
-      }
-      case 'countDocuments': {
-        const filter = toFilter(args[0]);
-        const count = await coll.countDocuments(filter, timeout);
-        return { docs: [{ count }] };
-      }
-      case 'createIndex': {
-        const keys = args[0] as Record<string, number>;
-        const indexOptions = (args[1] ?? {}) as Record<string, unknown>;
-        await coll.createIndex(keys, indexOptions);
-        return { affectedRows: 1 };
-      }
-      case 'dropIndex': {
-        const indexName = args[0] as string;
-        await coll.dropIndex(indexName);
-        return { affectedRows: 1 };
-      }
-      default:
-        throw new Error(`Unsupported method: ${method}`);
-    }
+    return this.client!.db(database).collection(collection);
   }
 
   private assertConnected(): void {
@@ -360,12 +281,6 @@ export function buildUri(config: ConnectionConfig & { readonly password: string 
   return `mongodb://${auth}${host}:${port}${dbPart}${query}`;
 }
 
-// --- method 分发 ---
-
-export type DispatchResult =
-  | { readonly docs: Record<string, unknown>[] }
-  | { readonly affectedRows: number };
-
 // --- ObjectId 自动转换 ---
 
 const OBJECT_ID_REGEX = /^[0-9a-fA-F]{24}$/;
@@ -390,6 +305,12 @@ function convertIdValue(value: unknown): unknown {
   return out;
 }
 
+// 用户手写的 filter (浏览器输入框 / MCP 查询): 还原 EJSON 标记, 并把 _id 上下文里的裸 24-hex 串转 ObjectId.
+// 按真实 _id 定位文档的写路径不用它: 恰好 24-hex 的字符串 _id 会被误转而匹配不上.
+export function userFilter(filter: unknown): Document {
+  return autoConvertIds(convertEjsonToBson(filter ?? {}) as Record<string, unknown>);
+}
+
 // 裸字符串 _id 自动转 ObjectId 的便利 (查询/浏览/count/explain 共用单一策略).
 // 递归进 $and/$or/$nor 分支与 _id 的 $in/$nin 数组, 否则这些上下文里的 24-hex 串会静默不命中.
 function autoConvertIds(filter: Record<string, unknown>): Record<string, unknown> {
@@ -407,33 +328,6 @@ function autoConvertIds(filter: Record<string, unknown>): Record<string, unknown
     }
   }
   return result;
-}
-
-// --- document 扁平化 ---
-
-function flattenDocument(doc: Record<string, unknown>): Record<string, unknown> {
-  const result: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(doc)) {
-    result[key] = flattenValue(value);
-  }
-  return result;
-}
-
-function flattenValue(value: unknown): unknown {
-  if (value === null || value === undefined) { return null; }
-  if (value instanceof ObjectId) { return `ObjectId("${value.toString()}")`; }
-  if (value instanceof Date) { return `ISODate("${value.toISOString()}")`; }
-  if (Array.isArray(value)) { return JSON.stringify(value.map(flattenValue)); }
-  if (typeof value === 'object') {
-    const obj = value as Record<string, unknown>;
-    if ('_bsontype' in obj) {
-      return bsonToShellTag(obj);
-    }
-    const result: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(obj)) { result[k] = flattenValue(v); }
-    return JSON.stringify(result);
-  }
-  return value;
 }
 
 // BSON 实例 -> shell-tag 字符串. 未知类型回退 String(value) (展示路径不可抛错, 否则浏览崩溃).
@@ -460,7 +354,7 @@ function bsonToShellTag(obj: Record<string, unknown>): string {
 }
 
 // deep 格式化: 保留嵌套结构 (object/array 不 JSON.stringify), 叶子 BSON 转 shell-tag 字符串.
-// 供文档浏览器渲染折叠树用; flattenValue 仍服务于查询编辑器的扁平表格.
+// 供文档浏览器渲染折叠树用.
 export function deepFormatValue(value: unknown): unknown {
   if (value === null || value === undefined) { return null; }
   if (value instanceof ObjectId) { return `ObjectId("${value.toString()}")`; }

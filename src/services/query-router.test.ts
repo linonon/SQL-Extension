@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // db_read / db_execute 在扩展侧的校验: sql-validator 与 routeByDriver
 
+import { ObjectId } from 'mongodb';
 import { isReadonlySQL, enforceLimit } from './sql-validator.js';
 
 describe('query tool - SQL validation integration', () => {
@@ -115,17 +116,43 @@ describe('routeByDriver SQL guards', () => {
   });
 });
 
-describe('routeByDriver Mongo 读超时', () => {
-  it('db_read 给 find 传 maxTimeMS, 超时报可操作提示; db_execute 不加', async () => {
-    const dispatch = vi.fn().mockResolvedValue({ docs: [] });
-    const src = { getMongoDriver: () => ({ dispatchToCollection: dispatch }) } as unknown as DriverSource;
-    await routeByDriver('read', 'mongodb', 'c', '{"collection":"u","method":"find","filter":{}}', 'db', src);
-    expect(dispatch).toHaveBeenLastCalledWith('db', 'u', 'find', expect.anything(), { limit: 500, maxTimeMS: 30000 });
-    await routeByDriver('execute', 'mongodb', 'c', '{"collection":"u","method":"deleteOne","filter":{"a":1}}', 'db', src);
-    expect(dispatch).toHaveBeenLastCalledWith('db', 'u', 'deleteOne', expect.anything());
+describe('routeByDriver Mongo', () => {
+  function mongoSource() {
+    const mongo = {
+      find: vi.fn().mockResolvedValue([]),
+      count: vi.fn().mockResolvedValue(3),
+      deleteOne: vi.fn().mockResolvedValue(1),
+      updateMany: vi.fn().mockResolvedValue(2),
+      aggregate: vi.fn().mockResolvedValue([]),
+    };
+    return { mongo, src: { getMongoDriver: () => mongo } as unknown as DriverSource };
+  }
 
-    dispatch.mockRejectedValueOnce(Object.assign(new Error('operation exceeded time limit'), { code: 50 }));
+  it('db_read 给 find 传行数上限与 maxTimeMS, 超时报可操作提示; db_execute 不加', async () => {
+    const { mongo, src } = mongoSource();
+    await routeByDriver('read', 'mongodb', 'c', '{"collection":"2024日志","method":"find","filter":{}}', 'db', src);
+    expect(mongo.find).toHaveBeenLastCalledWith('db', '2024日志', {}, { projection: undefined, limit: 500, maxTimeMS: 30000 });
+    const r = await routeByDriver('execute', 'mongodb', 'c', '{"collection":"u","method":"deleteOne","filter":{"a":1}}', 'db', src);
+    expect(mongo.deleteOne).toHaveBeenLastCalledWith('db', 'u', { a: 1 });
+    expect(JSON.parse(r.content[0].text)).toEqual({ affectedRows: 1 });
+
+    mongo.count.mockRejectedValueOnce(Object.assign(new Error('operation exceeded time limit'), { code: 50 }));
     await expect(routeByDriver('read', 'mongodb', 'c', '{"collection":"u","method":"countDocuments"}', 'db', src))
       .rejects.toThrow(/exceeded the 30s read timeout/);
+  });
+
+  it('update 文档与 aggregate pipeline 里的 EJSON 标记还原成 BSON 再交给 driver', async () => {
+    const { mongo, src } = mongoSource();
+    const oid = 'aabbccddeeff001122334455';
+    await routeByDriver('execute', 'mongodb', 'c',
+      `{"collection":"u","method":"updateMany","filter":{"a":1},"update":{"$set":{"ref":{"$oid":"${oid}"},"at":{"$date":"2024-01-01T00:00:00Z"}}}}`, 'db', src);
+    const set = mongo.updateMany.mock.calls[0][3].$set;
+    expect(set.ref).toBeInstanceOf(ObjectId);
+    expect(set.ref.toHexString()).toBe(oid);
+    expect(set.at).toBeInstanceOf(Date);
+
+    await routeByDriver('read', 'mongodb', 'c',
+      `{"collection":"u","method":"aggregate","pipeline":[{"$match":{"ref":{"$oid":"${oid}"}}}]}`, 'db', src);
+    expect(mongo.aggregate.mock.calls[0][2][0].$match.ref).toBeInstanceOf(ObjectId);
   });
 });

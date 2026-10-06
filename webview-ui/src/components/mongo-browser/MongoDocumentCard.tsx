@@ -2,21 +2,23 @@ import { useState } from 'react';
 import { MongoJsonTree } from './MongoJsonTree';
 import { jsonToShell } from '../../utils/mongo-shell-to-json';
 import type { MongoView } from './ViewToggle';
-import { idToShell } from './mongo-id';
 import { MongoDocumentDetail } from './MongoDocumentDetail';
 import { MongoFieldEditor } from './MongoFieldEditor';
+import { convertTags } from './mongo-field-editor';
 
 interface MongoDocumentCardProps {
   readonly doc: Record<string, unknown>;
   readonly view: Exclude<MongoView, 'table'>;
-  // 文档由 projection 查出, 不完整: 禁用 Edit / Clone (保存会删掉未投影字段, Clone 会插入残缺文档)
+  // 文档由 projection 查出, 不完整: 禁用 Edit / Clone (编辑器看不到未投影字段)
   readonly projected?: boolean;
   readonly editing?: boolean;
   readonly fieldNames?: readonly string[];
   readonly onEdit: (doc: Record<string, unknown>) => void;
   readonly onClone: (doc: Record<string, unknown>) => void;
-  readonly onDelete: (id: string) => void;
-  readonly onSave?: (id: string | null, doc: Record<string, unknown>) => void;
+  // id: 文档 _id 的 EJSON 值
+  readonly onDelete: (id: unknown) => void;
+  // original: 编辑器打开时的文档; doc: 编辑结果. 都是 EJSON
+  readonly onSave?: (original: Record<string, unknown> | null, doc: Record<string, unknown>) => void;
   readonly onCancelEdit?: () => void;
   readonly onDirtyChange?: (dirty: boolean) => void;
   readonly onSaveError?: () => void;
@@ -38,7 +40,6 @@ export function MongoDocumentCard({
   onSaveError,
   saveSignal,
 }: MongoDocumentCardProps) {
-  const id = idToShell(doc._id);
   const [editMode, setEditMode] = useState<'json' | 'fields'>('json');
 
   // in-card 编辑: Fields (结构化逐字段) 与 JSON (textarea) 两种模式, 列表上下文不动 (Compass 文档列表模型)
@@ -62,7 +63,7 @@ export function MongoDocumentCard({
         {editMode === 'fields' ? (
           <MongoFieldEditor
             document={doc}
-            onSave={(ejson) => onSave(idToShell(doc._id), ejson)}
+            onSave={onSave}
             onCancel={() => onCancelEdit?.()}
             onDirtyChange={onDirtyChange}
             onSaveError={onSaveError}
@@ -97,7 +98,7 @@ export function MongoDocumentCard({
         <button className="btn-small" title={writeBlockedTitle ?? 'Edit'} disabled={writeBlockedTitle != null} onClick={() => onEdit(doc)}>Edit</button>
         <button className="btn-small" title="Copy" onClick={() => navigator.clipboard.writeText(shellText)}>Copy</button>
         <button className="btn-small" title={writeBlockedTitle ?? 'Clone (复制为新建, _id 可改)'} disabled={writeBlockedTitle != null} onClick={() => onClone(doc)}>Clone</button>
-        <button className="btn-small btn-danger" title={noIdTitle ?? 'Delete'} disabled={!hasId} onClick={() => onDelete(id)}>Delete</button>
+        <button className="btn-small btn-danger" title={noIdTitle ?? 'Delete'} disabled={!hasId} onClick={() => onDelete(convertTags(doc._id))}>Delete</button>
       </div>
       {view === 'list'
         ? <MongoJsonTree value={doc} />

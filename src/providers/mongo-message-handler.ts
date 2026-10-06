@@ -1,16 +1,19 @@
+import type { Document } from 'mongodb';
 import type { WebviewMessage } from '../types/messages.js';
-import type { IDatabaseDriver } from '../types/driver.js';
-import type { MongoDriver } from '../drivers/mongo-driver.js';
-import { convertShellToJson } from '../utils/mongo-shell-to-json.js';
+import { userFilter, type MongoDriver } from '../drivers/mongo-driver.js';
+import { convertEjsonToBson, convertShellToJson } from '../utils/mongo-shell-to-json.js';
+import { buildClone, buildUpdate, diffDocuments, isEmptyDiff, type DocumentDiff } from '../utils/mongo-update.js';
+
+const NOT_FOUND = 'document not found (deleted or _id changed)';
 
 export async function handleMongoMessage(
   message: WebviewMessage,
-  driver: IDatabaseDriver,
+  mongo: MongoDriver,
   post: (msg: unknown) => void
 ): Promise<boolean> {
   switch (message.type) {
     case 'mongoListAllCollections': {
-      await postRefreshedCollections(driver, post);
+      await postRefreshedCollections(mongo, post);
       return true;
     }
 
@@ -19,18 +22,10 @@ export async function handleMongoMessage(
       const { requestId, database, collection, filter, sort, projection, skip, limit } = message;
       try {
         const pipeline = buildAggregatePipeline(filter, sort, projection, skip, limit);
-        const countFilter = filter.trim() ? convertShellToJson(filter.trim()) : '{}';
-        const countQuery = `db.${collection}.countDocuments(${countFilter})`;
-
-        const mongo = driver as unknown as MongoDriver;
-        const [docsResult, countResult] = await Promise.all([
+        const [docsResult, total] = await Promise.all([
           mongo.findDocumentsForBrowser(database, collection, pipeline),
-          driver.executeCancellable(countQuery, undefined, database).promise,
+          mongo.count(database, collection, userFilter(parseShell(filter))),
         ]);
-
-        const total = countResult.rows.length > 0
-          ? Number((countResult.rows[0] as Record<string, unknown>).count ?? 0)
-          : 0;
 
         post({
           type: 'mongoDocumentList',
@@ -46,72 +41,13 @@ export async function handleMongoMessage(
       return true;
     }
 
-    case 'mongoInsertDocument': {
-      const { database, collection, document } = message;
-      try {
-        const query = `db.${collection}.insertOne(${JSON.stringify(document)})`;
-        await driver.executeCancellable(query, undefined, database).promise;
-        post({ type: 'mongoOperationResult', success: true });
-      } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : String(err);
-        post({ type: 'mongoOperationResult', success: false, error: errorMsg });
-      }
-      return true;
-    }
-
-    case 'mongoUpdateDocument': {
-      const { database, collection, id, document } = message;
-      try {
-        // replaceOne 整文档替换: 编辑器删掉的字段会真实移除 (updateOne+$set 做不到).
-        // _id filter 经 idToShell -> convertShellToJson 还原 BSON 类型, 避免数值/ObjectId 被当字符串匹配不上.
-        const filterJson = buildIdFilter(id);
-        const query = `db.${collection}.replaceOne(${filterJson},${JSON.stringify(document)})`;
-        const result = await driver.executeCancellable(query, undefined, database, { autoConvertIds: false }).promise;
-        if (result.affectedRows === 0) {
-          post({ type: 'mongoOperationResult', success: false, error: `未匹配到 _id 为 ${id} 的文档, 未更新 (请检查 _id 类型)` });
-        } else {
-          post({ type: 'mongoOperationResult', success: true, affectedRows: result.affectedRows });
-        }
-      } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : String(err);
-        post({ type: 'mongoOperationResult', success: false, error: errorMsg });
-      }
-      return true;
-    }
-
-    case 'mongoUpdateField': {
-      // 单元格原地编辑: 局部 $set 单个字段 (Compass List/Table 视图的 findOneAndUpdate 语义).
-      // 仅标量值, path 支持 dotted (嵌套字段); _id filter 经 buildIdFilter 保留类型.
-      const { database, collection, id, path, value } = message;
-      try {
-        assertSafeFieldPath(path);
-        const filterJson = buildIdFilter(id);
-        const setJson = JSON.stringify({ [path]: value });
-        const query = `db.${collection}.updateOne(${filterJson},{"$set":${setJson}})`;
-        const result = await driver.executeCancellable(query, undefined, database, { autoConvertIds: false }).promise;
-        if (result.affectedRows === 0) {
-          post({ type: 'mongoOperationResult', success: false, error: `未匹配到 _id 为 ${id} 的文档, 未更新 (请检查 _id 类型)` });
-        } else {
-          post({ type: 'mongoOperationResult', success: true, affectedRows: result.affectedRows });
-        }
-      } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : String(err);
-        post({ type: 'mongoOperationResult', success: false, error: errorMsg });
-      }
-      return true;
-    }
-
+    // 写操作: _id filter 由 webview 送来的 EJSON _id 还原 (复合 / ObjectId / Date _id 保留类型), 不做 24-hex 自动转换
+    case 'mongoInsertDocument':
+    case 'mongoUpdateDocument':
+    case 'mongoCloneDocument':
     case 'mongoDeleteDocument': {
-      const { database, collection, id } = message;
       try {
-        const filterJson = buildIdFilter(id);
-        const query = `db.${collection}.deleteOne(${filterJson})`;
-        const result = await driver.executeCancellable(query, undefined, database, { autoConvertIds: false }).promise;
-        if (result.affectedRows === 0) {
-          post({ type: 'mongoOperationResult', success: false, error: `未匹配到 _id 为 ${id} 的文档, 未删除 (请检查 _id 类型)` });
-        } else {
-          post({ type: 'mongoOperationResult', success: true, affectedRows: result.affectedRows });
-        }
+        post({ type: 'mongoOperationResult', ...await writeDocument(message, mongo) });
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         post({ type: 'mongoOperationResult', success: false, error: errorMsg });
@@ -122,10 +58,8 @@ export async function handleMongoMessage(
     case 'mongoExplainQuery': {
       const { database, collection, filter, sort } = message;
       try {
-        const filterObj = filter.trim() ? JSON.parse(convertShellToJson(filter.trim())) : {};
-        const sortObj = sort.trim() ? JSON.parse(convertShellToJson(sort.trim())) : undefined;
-        const mongo = driver as unknown as MongoDriver;
-        const summary = await mongo.explainFind(database, collection, filterObj, sortObj);
+        const sortObj = sort.trim() ? parseShell(sort) as Record<string, unknown> : undefined;
+        const summary = await mongo.explainFind(database, collection, parseShell(filter) as Record<string, unknown>, sortObj);
         post({ type: 'mongoExplainResult', summary });
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
@@ -137,10 +71,9 @@ export async function handleMongoMessage(
     case 'mongoCreateCollection': {
       const { database, collection } = message as { database: string; collection: string };
       try {
-        const mongo = driver as unknown as MongoDriver;
         await mongo.createCollection(database, collection);
         post({ type: 'mongoCollectionCreated', success: true });
-        await postRefreshedCollections(driver, post);
+        await postRefreshedCollections(mongo, post);
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         post({ type: 'mongoCollectionCreated', success: false, error: errorMsg });
@@ -151,10 +84,9 @@ export async function handleMongoMessage(
     case 'mongoDropCollection': {
       const { database, collection } = message as { database: string; collection: string };
       try {
-        const mongo = driver as unknown as MongoDriver;
         await mongo.dropCollection(database, collection);
         post({ type: 'mongoCollectionDropped', success: true, database, collection });
-        await postRefreshedCollections(driver, post);
+        await postRefreshedCollections(mongo, post);
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         post({ type: 'mongoCollectionDropped', success: false, error: errorMsg });
@@ -168,13 +100,13 @@ export async function handleMongoMessage(
 }
 
 async function postRefreshedCollections(
-  driver: IDatabaseDriver,
+  mongo: MongoDriver,
   post: (msg: unknown) => void
 ): Promise<void> {
-  const databases = await driver.listDatabases();
+  const databases = await mongo.listDatabases();
   // 并行获取所有 database 的 collections, 总耗时 max(T) 而非 N*T
   const results = await Promise.allSettled(
-    databases.map((db) => driver.listTables(db))
+    databases.map((db) => mongo.listTables(db))
   );
   const all: { database: string; name: string; count: number }[] = [];
   for (let i = 0; i < databases.length; i++) {
@@ -189,27 +121,52 @@ async function postRefreshedCollections(
   post({ type: 'mongoAllCollectionList', collections: all });
 }
 
-// 把 _id 的 shell 形式 (ObjectId("..") / 1102025811 / "str") 包成 filter 并还原为 EJSON.
-// 单一 source: 与查询编辑器共用 convertShellToJson, _id 类型不在 handler 里二次猜测.
-function buildIdFilter(idShell: string): string {
-  return convertShellToJson(`{"_id":${idShell}}`);
-}
+type WriteMessage = Extract<WebviewMessage, { type: 'mongoInsertDocument' | 'mongoUpdateDocument' | 'mongoCloneDocument' | 'mongoDeleteDocument' }>;
+type WriteOutcome = { success: boolean; affectedRows?: number; error?: string; message?: string };
 
-// 单元格 $set 的 field path 来自 webview, 须校验: $ 前缀会被 Mongo 当 update operator,
-// __proto__/constructor/prototype 段是原型污染向量. 任一非法即拒绝, 不构建 update.
-const UNSAFE_PATH_SEGMENTS = new Set(['__proto__', 'constructor', 'prototype']);
-function assertSafeFieldPath(path: string): void {
-  if (typeof path !== 'string' || path.trim() === '') {
-    throw new Error(`Invalid field path: ${String(path)}`);
-  }
-  if (path.startsWith('$')) {
-    throw new Error(`Field path must not start with "$": ${path}`);
-  }
-  for (const seg of path.split('.')) {
-    if (UNSAFE_PATH_SEGMENTS.has(seg)) {
-      throw new Error(`Unsafe field path segment "${seg}" in: ${path}`);
+async function writeDocument(message: WriteMessage, mongo: MongoDriver): Promise<WriteOutcome> {
+  const { database, collection } = message;
+  switch (message.type) {
+    case 'mongoInsertDocument':
+      await mongo.insertOne(database, collection, convertEjsonToBson(message.document) as Document);
+      return { success: true, affectedRows: 1 };
+
+    case 'mongoUpdateDocument': {
+      // 只写用户改过的 path, 没动的字段 (及期间别人写的值) 不被旧快照覆盖
+      const diff = editDiff(message.original, message.document);
+      if (isEmptyDiff(diff)) { return { success: true, affectedRows: 0, message: 'No changes' }; }
+      const filter = { _id: convertEjsonToBson(message.id) };
+      // 重读库内文档只为取原值的 BSON 数值类型
+      const current = await mongo.findOneTyped(database, collection, filter);
+      const matched = current ? await mongo.updateOne(database, collection, filter, buildUpdate(current, diff)) : 0;
+      return matched ? { success: true, affectedRows: matched } : { success: false, error: NOT_FOUND };
+    }
+
+    case 'mongoCloneDocument': {
+      const source = await mongo.findOneTyped(database, collection, { _id: convertEjsonToBson(message.sourceId) });
+      if (!source) { return { success: false, error: NOT_FOUND }; }
+      await mongo.insertOne(database, collection, buildClone(source, editDiff(message.original, message.document)));
+      return { success: true, affectedRows: 1 };
+    }
+
+    case 'mongoDeleteDocument': {
+      const deleted = await mongo.deleteOne(database, collection, { _id: convertEjsonToBson(message.id) });
+      return deleted ? { success: true, affectedRows: deleted } : { success: false, error: NOT_FOUND };
     }
   }
+}
+
+// original 是编辑器打开时的文档, document 是编辑结果, 都是 EJSON
+function editDiff(original: unknown, document: unknown): DocumentDiff {
+  return diffDocuments(
+    convertEjsonToBson(original) as Record<string, unknown>,
+    convertEjsonToBson(document) as Record<string, unknown>,
+  );
+}
+
+function parseShell(text: string): unknown {
+  const trimmed = text.trim();
+  return trimmed ? JSON.parse(convertShellToJson(trimmed)) : {};
 }
 
 export function buildExportPipeline(

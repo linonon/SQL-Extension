@@ -2,8 +2,6 @@ import * as vscode from 'vscode';
 import { newConnectionId, type ConnectionManager } from '../services/connection-manager.js';
 import { QueryService } from '../services/query-service.js';
 import { CredentialStore } from '../services/credential-store.js';
-// driver 按需动态加载, 避免 main bundle 包含所有 driver 依赖
-import type { MongoDriver } from '../drivers/mongo-driver.js';
 import { createTunnel } from '../services/ssh-tunnel.js';
 import type { WebviewMessage, ViewType, SaveConnectionConfig, UpdateConnectionConfig } from '../types/messages.js';
 import type { ConnectionFormSSH } from '../types/messages.js';
@@ -297,6 +295,7 @@ export class TableViewProvider implements vscode.Disposable {
           }
 
           if (message.type.startsWith('mongo')) {
+            const mongoDriver = this.connectionManager.getMongoDriver(connectionId!);
             if (message.type === 'mongoCreateCollection') {
               const { database } = message as { database: string; collection: string };
               const input = await vscode.window.showInputBox({
@@ -309,7 +308,6 @@ export class TableViewProvider implements vscode.Disposable {
                 },
               });
               if (!input) { return; }
-              const mongoDriver = this.connectionManager.getDriver(connectionId!);
               const post = (msg: unknown) => panel.webview.postMessage(msg);
               await handleMongoMessage({ ...message, collection: input.trim() } as WebviewMessage, mongoDriver, post);
               return;
@@ -330,7 +328,7 @@ export class TableViewProvider implements vscode.Disposable {
               // 点名库 / 集合 / _id: 删的是这条消息里的目标, 让用户能核对它是否就是界面上看到的那条
               const { database, collection, id } = message;
               const confirmDelete = await vscode.window.showWarningMessage(
-                `Delete document ${id} from ${database}.${collection}?`, { modal: true }, 'Delete'
+                `Delete document ${JSON.stringify(id)} from ${database}.${collection}?`, { modal: true }, 'Delete'
               );
               if (confirmDelete !== 'Delete') { return; }
             }
@@ -344,9 +342,9 @@ export class TableViewProvider implements vscode.Disposable {
                   defaultUri: vscode.Uri.file(`${exportMsg.collection}.json`),
                 });
                 if (!uri) { return; }
-                const mongoDriver = this.connectionManager.getDriver(connectionId!) as unknown as MongoDriver;
                 const pipeline = buildExportPipeline(exportMsg.filter, exportMsg.sort, exportMsg.projection);
-                const { json, count } = await mongoDriver.exportDocuments(exportMsg.database, exportMsg.collection, pipeline);
+                const jsonl = uri.path.toLowerCase().endsWith('.jsonl');
+                const { json, count } = await mongoDriver.exportDocuments(exportMsg.database, exportMsg.collection, pipeline, jsonl);
                 await vscode.workspace.fs.writeFile(uri, Buffer.from(json, 'utf-8'));
                 vscode.window.showInformationMessage(`Exported ${count} document(s) to ${uri.fsPath}`);
                 post({ type: 'mongoExportResult', success: true, count });
@@ -377,7 +375,6 @@ export class TableViewProvider implements vscode.Disposable {
                   'Insert'
                 );
                 if (confirm !== 'Insert') { return; }
-                const mongoDriver = this.connectionManager.getDriver(connectionId!) as unknown as MongoDriver;
                 const inserted = await mongoDriver.importDocuments(importMsg.database, importMsg.collection, content);
                 vscode.window.showInformationMessage(`Imported ${inserted} document(s) into "${importMsg.collection}"`);
                 post({ type: 'mongoImportResult', success: true, inserted });
@@ -389,8 +386,15 @@ export class TableViewProvider implements vscode.Disposable {
               return;
             }
 
-            const mongoDriver = this.connectionManager.getDriver(connectionId!);
-            const post = (msg: unknown) => panel.webview.postMessage(msg);
+            // 文档写操作的结果在宿主侧提示 (webview sandbox 里 alert 不弹), 回执照常发给 webview
+            const post = (msg: unknown) => {
+              const m = msg as { type?: string; success?: boolean; error?: string; message?: string };
+              if (m.type === 'mongoOperationResult') {
+                if (!m.success) { void vscode.window.showErrorMessage(`MongoDB: ${m.error ?? 'operation failed'}`); }
+                else if (m.message) { void vscode.window.showInformationMessage(m.message); }
+              }
+              return panel.webview.postMessage(msg);
+            };
             await handleMongoMessage(message, mongoDriver, post);
             return;
           }

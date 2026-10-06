@@ -36,7 +36,7 @@ describe('MongoDocumentDetail - save 流程', () => {
     expect(saveBtn).toBeDisabled();
   });
 
-  it('J2: edit 模式修改文本 -> Save -> onSave(docId, parsed) 被调用', () => {
+  it('J2: edit 模式修改文本 -> Save -> onSave(打开时的文档, 编辑结果), 都不含 _id', () => {
     const onSave = vi.fn();
     const doc = { _id: 'ObjectId("507f1f77bcf86cd799439011")', name: 'test' };
     render(<MongoDocumentDetail {...defaultProps} document={doc} mode="edit" onSave={onSave} />);
@@ -48,7 +48,7 @@ describe('MongoDocumentDetail - save 流程', () => {
     expect(saveBtn).not.toBeDisabled();
     fireEvent.click(saveBtn);
 
-    expect(onSave).toHaveBeenCalledWith('ObjectId("507f1f77bcf86cd799439011")', { name: 'updated' });
+    expect(onSave).toHaveBeenCalledWith({ name: 'test' }, { name: 'updated' });
   });
 
   it('J3: insert 模式 -> Save -> onSave(null, parsed)', () => {
@@ -107,7 +107,7 @@ describe('MongoDocumentDetail - save 流程', () => {
     fireEvent.click(screen.getByText('Save'));
 
     expect(onSave).toHaveBeenCalledWith(
-      'ObjectId("507f1f77bcf86cd799439011")',
+      { name: 'test' },
       { name: 'test', ref: { '$oid': 'aabbccddeeff00112233aabb' } }
     );
   });
@@ -121,7 +121,7 @@ describe('MongoDocumentDetail - save 流程', () => {
     fireEvent.change(textarea, { target: { value: '{"date": ISODate("2024-01-15T00:00:00.000Z")}' } });
     fireEvent.click(screen.getByText('Save'));
 
-    expect(onSave).toHaveBeenCalledWith('"myid"', { date: { '$date': '2024-01-15T00:00:00.000Z' } });
+    expect(onSave).toHaveBeenCalledWith({ name: 'test' }, { date: { '$date': '2024-01-15T00:00:00.000Z' } });
   });
 
   it('J7: round-trip NumberLong', () => {
@@ -133,7 +133,39 @@ describe('MongoDocumentDetail - save 流程', () => {
     fireEvent.change(textarea, { target: { value: '{"big": NumberLong("9999999999")}' } });
     fireEvent.click(screen.getByText('Save'));
 
-    expect(onSave).toHaveBeenCalledWith('"myid"', { big: { '$numberLong': '9999999999' } });
+    expect(onSave).toHaveBeenCalledWith({ name: 'test' }, { big: { '$numberLong': '9999999999' } });
+  });
+
+  it('超出 2^53 的裸整数不被 JSON.parse 舍入, 按 $numberLong 提交', () => {
+    const onSave = vi.fn();
+    render(<MongoDocumentDetail {...defaultProps} document={{ _id: 'myid', name: 'test' }} mode="edit" onSave={onSave} />);
+    const textarea = document.querySelector('.highlight-editor-textarea') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: '{"uid": 9007199254740993, "n": 5, "s": "9007199254740993"}' } });
+    fireEvent.click(screen.getByText('Save'));
+    expect(onSave).toHaveBeenCalledWith(
+      { name: 'test' },
+      { uid: { $numberLong: '9007199254740993' }, n: 5, s: '9007199254740993' },
+    );
+  });
+
+  it('整数值的大 Double (1e20) 打开即可校验通过, 改别的字段时两边该值相同', () => {
+    const onSave = vi.fn();
+    render(<MongoDocumentDetail {...defaultProps} document={{ _id: 'myid', score: 1e20, n: 1 }} mode="edit" onSave={onSave} />);
+    expect(document.querySelector('.detail-error')).toBeNull();
+    const textarea = document.querySelector('.highlight-editor-textarea') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: textarea.value.replace('"n": 1', '"n": 2') } });
+    fireEvent.click(screen.getByText('Save'));
+    expect(onSave).toHaveBeenCalledWith({ score: 1e20, n: 1 }, { score: 1e20, n: 2 });
+  });
+
+  it('打开后列表刷新换了 document 对象, 对比基准仍是打开时的文档', () => {
+    const onSave = vi.fn();
+    const { rerender } = render(<MongoDocumentDetail {...defaultProps} document={{ _id: 'myid', gold: 1 }} mode="edit" onSave={onSave} />);
+    const textarea = document.querySelector('.highlight-editor-textarea') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: '{"gold": 1, "name": "x"}' } });
+    rerender(<MongoDocumentDetail {...defaultProps} document={{ _id: 'myid', gold: 999 }} mode="edit" onSave={onSave} />);
+    fireEvent.click(screen.getByText('Save'));
+    expect(onSave).toHaveBeenCalledWith({ gold: 1 }, { gold: 1, name: 'x' });
   });
 
   it('J8: round-trip 混合类型文档', () => {
@@ -146,7 +178,7 @@ describe('MongoDocumentDetail - save 流程', () => {
     fireEvent.change(textarea, { target: { value: mixedDoc } });
     fireEvent.click(screen.getByText('Save'));
 
-    expect(onSave).toHaveBeenCalledWith('ObjectId("507f1f77bcf86cd799439011")', {
+    expect(onSave).toHaveBeenCalledWith({ name: 'test' }, {
       name: 'test',
       ref: { '$oid': 'aabbccddeeff00112233aabb' },
       date: { '$date': '2024-01-15T00:00:00.000Z' },
@@ -160,7 +192,7 @@ describe('MongoDocumentDetail - save 流程', () => {
 });
 
 describe('MongoDocumentDetail - clone', () => {
-  it('J9: insert + seed 含 _id (clone) -> _id 在编辑区可改, save 随文档提交', () => {
+  it('J9: insert + seed 含 _id (clone) -> _id 在编辑区可改, save 带上 seed 作对比基准', () => {
     const onSave = vi.fn();
     const seed = { _id: 'ObjectId("507f1f77bcf86cd799439011")', name: 'orig' };
     render(<MongoDocumentDetail {...defaultProps} document={seed} mode="insert" onSave={onSave} />);
@@ -174,11 +206,11 @@ describe('MongoDocumentDetail - clone', () => {
     });
     fireEvent.click(screen.getByText('Save'));
 
-    // insert 路径: id=null, doc 含改过的 _id (EJSON), backend insertOne 保留类型
-    expect(onSave).toHaveBeenCalledWith(null, {
-      _id: { '$oid': 'aaaaaaaaaaaaaaaaaaaaaaaa' },
-      name: 'clone',
-    });
+    // original 是 seed (含源 _id), doc 含改过的 _id (EJSON)
+    expect(onSave).toHaveBeenCalledWith(
+      { _id: { '$oid': '507f1f77bcf86cd799439011' }, name: 'orig' },
+      { _id: { '$oid': 'aaaaaaaaaaaaaaaaaaaaaaaa' }, name: 'clone' },
+    );
   });
 });
 

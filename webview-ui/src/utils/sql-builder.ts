@@ -26,13 +26,6 @@ export function buildSelectSql(
   sort: SortState | null,
   limit: number = 50
 ): string {
-  if (driverType === 'mongodb') {
-    if (sort) {
-      const sortDir = sort.direction === 'ASC' ? 1 : -1;
-      return `db.${table}.aggregate([{"$sort":{"${sort.column}":${sortDir}}},{"$limit":${limit}}])`;
-    }
-    return `db.${table}.find({})`;
-  }
   const from = qualifyTable(driverType, table, database);
   const orderBy = sort
     ? ` ORDER BY ${escapeIdentifier(driverType, sort.column)} ${sort.direction}`

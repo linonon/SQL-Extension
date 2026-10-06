@@ -103,6 +103,25 @@ describe('convertShellToJson', () => {
     expect(result).toContain('{"$date":"2024-01-15T00:00:00.000Z"}');
     expect(result).toContain('{"$numberLong":"999"}');
   });
+
+  it('字符串外超出 2^53 的裸整数包成 $numberLong, 安全整数 / 小数 / 指数 / 字符串内的不动', () => {
+    const out = convertShellToJson('{"uid": 9007199254740993, "neg": -9223372036854775808, "n": 9007199254740991, "f": 9007199254740993.5, "e": 1e25, "s": "9007199254740993", "t": "a\\"9007199254740993"}');
+    expect(JSON.parse(out)).toEqual({
+      uid: { $numberLong: '9007199254740993' },
+      neg: { $numberLong: '-9223372036854775808' },
+      n: 9007199254740991,
+      f: 9007199254740993.5,
+      e: 1e25,
+      s: '9007199254740993',
+      t: 'a"9007199254740993',
+    });
+  });
+
+  it('超出 int64 的裸整数只能是 double, 原样不包; 负指数里的数字不动', () => {
+    for (const s of ['{"a":100000000000000000000}', '{"a":-9223372036854775809}', '{"a":1e-99999999999999999999}']) {
+      expect(convertShellToJson(s)).toBe(s);
+    }
+  });
 });
 
 describe('stripShellTypes', () => {

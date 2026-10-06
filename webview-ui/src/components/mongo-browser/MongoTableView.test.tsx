@@ -47,7 +47,7 @@ describe('MongoTableView', () => {
     const editRows = [{ _id: 'ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa")', name: 'Alice', age: 30 }];
     const editId = 'ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa")';
 
-    it('双击字符串单元格 -> Enter 提交 onCellEdit(idShell, path, string)', () => {
+    it('双击字符串单元格 -> Enter 提交 onCellEdit(_id, path, 原值, 新值)', () => {
       const onCellEdit = vi.fn();
       render(<MongoTableView columns={editCols} rows={editRows} onRowClick={vi.fn()} onCellEdit={onCellEdit} />);
       fireEvent.doubleClick(screen.getByText('Alice'));
@@ -55,7 +55,7 @@ describe('MongoTableView', () => {
       expect(input).not.toBeNull();
       fireEvent.change(input, { target: { value: 'Bob' } });
       fireEvent.keyDown(input, { key: 'Enter' });
-      expect(onCellEdit).toHaveBeenCalledWith(editId, 'name', 'Bob');
+      expect(onCellEdit).toHaveBeenCalledWith(editId, 'name', 'Alice', 'Bob');
     });
 
     it('数字单元格编辑 -> 提交 number 类型 (保留类型)', () => {
@@ -65,17 +65,17 @@ describe('MongoTableView', () => {
       const input = document.querySelector('.mongo-cell-input') as HTMLInputElement;
       fireEvent.change(input, { target: { value: '45' } });
       fireEvent.keyDown(input, { key: 'Enter' });
-      expect(onCellEdit).toHaveBeenCalledWith(editId, 'age', 45);
+      expect(onCellEdit).toHaveBeenCalledWith(editId, 'age', 30, 45);
     });
 
-    it('清空数字单元格不静默写 0 (回退原值) — H4', () => {
+    it('清空数字单元格不静默写 0: 回退原值, 值没变不发写请求', () => {
       const onCellEdit = vi.fn();
       render(<MongoTableView columns={editCols} rows={editRows} onRowClick={vi.fn()} onCellEdit={onCellEdit} />);
       fireEvent.doubleClick(screen.getByText('30'));
       const input = document.querySelector('.mongo-cell-input') as HTMLInputElement;
       fireEvent.change(input, { target: { value: '' } });
       fireEvent.keyDown(input, { key: 'Enter' });
-      expect(onCellEdit).toHaveBeenCalledWith(editId, 'age', 30);
+      expect(onCellEdit).not.toHaveBeenCalled();
     });
 
     it('_id 单元格不可原地编辑', () => {
@@ -92,7 +92,7 @@ describe('MongoTableView', () => {
       const input = document.querySelector('.mongo-cell-input') as HTMLInputElement;
       fireEvent.change(input, { target: { value: 'Bob' } });
       fireEvent.blur(input);
-      expect(onCellEdit).toHaveBeenCalledWith(editId, 'name', 'Bob');
+      expect(onCellEdit).toHaveBeenCalledWith(editId, 'name', 'Alice', 'Bob');
     });
 
     it('Enter 提交后再 blur 不重复提交 (review round2 #2)', () => {

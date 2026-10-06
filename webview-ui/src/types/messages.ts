@@ -92,7 +92,7 @@ export type ExtensionMessage =
   | { type: 'kafkaProduceResult'; success: boolean; partition?: number; offset?: string; error?: string }
   | { type: 'mongoDocumentList'; requestId: number; columns: readonly ColumnInfo[]; rows: readonly Record<string, unknown>[]; total: number; error?: string }
   | { type: 'mongoAllCollectionList'; collections: readonly { readonly database: string; readonly name: string; readonly count: number }[] }
-  | { type: 'mongoOperationResult'; success: boolean; error?: string; affectedRows?: number }
+  | { type: 'mongoOperationResult'; success: boolean; error?: string; affectedRows?: number; message?: string }
   | { type: 'mongoExportResult'; success: boolean; count?: number; error?: string }
   | { type: 'mongoImportResult'; success: boolean; inserted?: number; error?: string }
   | { type: 'mongoCollectionCreated'; success: boolean; error?: string }
@@ -154,10 +154,12 @@ export type WebviewMessage =
   | { type: 'mongoFindDocuments'; requestId: number; database: string; collection: string; filter: string; sort: string; projection?: string; skip: number; limit: number }
   | { type: 'mongoListAllCollections' }
   | { type: 'mongoInsertDocument'; database: string; collection: string; document: Record<string, unknown> }
-  | { type: 'mongoUpdateDocument'; database: string; collection: string; id: string; document: Record<string, unknown> }
-  | { type: 'mongoUpdateField'; database: string; collection: string; id: string; path: string; value: unknown }
+  // 编辑保存 / Clone: original 是编辑器打开时的文档, document 是编辑结果, 宿主按 path 对比后只写改动.
+  // id / sourceId 是行 _id 还原成的 EJSON 值 (按真实类型定位文档)
+  | { type: 'mongoUpdateDocument'; database: string; collection: string; id: unknown; original: Record<string, unknown>; document: Record<string, unknown> }
+  | { type: 'mongoCloneDocument'; database: string; collection: string; sourceId: unknown; original: Record<string, unknown>; document: Record<string, unknown> }
   | { type: 'mongoExplainQuery'; database: string; collection: string; filter: string; sort: string }
-  | { type: 'mongoDeleteDocument'; database: string; collection: string; id: string }
+  | { type: 'mongoDeleteDocument'; database: string; collection: string; id: unknown }
   | { type: 'mongoExportCollection'; database: string; collection: string; filter: string; sort: string; projection?: string }
   | { type: 'mongoImportCollection'; database: string; collection: string }
   | { type: 'mongoCreateCollection'; database: string; collection: string }

@@ -41,7 +41,7 @@ function renderTable(over: Record<string, unknown> = {}) {
     onPageChange: vi.fn(),
     onInsertDocument: vi.fn(),
     onUpdateDocument: vi.fn(),
-    onUpdateField: vi.fn(),
+    onCloneDocument: vi.fn(),
     onDeleteDocument: vi.fn(),
     queryError: null,
     ...over,
@@ -175,7 +175,47 @@ describe('MongoDocumentTable - 脏数据守卫 (H6)', () => {
   });
 });
 
-describe('MongoDocumentTable - handleSave insert/update 分流 (H8)', () => {
+describe('MongoDocumentTable - handleSave insert/update/clone 分流', () => {
+  const oid = { $oid: 'aaaaaaaaaaaaaaaaaaaaaaaa' };
+
+  it('Edit 保存走 update: _id 还原成 EJSON, 带打开时的文档作对比基准', () => {
+    const onUpdateDocument = vi.fn();
+    renderTable({ onUpdateDocument });
+    fireEvent.click(screen.getByRole('button', { name: /^edit$/i }));
+    const textarea = document.querySelector('.highlight-editor-textarea') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: '{"name": "Bob"}' } });
+    fireEvent.click(screen.getByText('Save'));
+    expect(onUpdateDocument).toHaveBeenCalledWith(oid, { name: 'Alice' }, { name: 'Bob' });
+  });
+
+  it('Clone 保存走 clone: 源 _id 取自 seed, 不走 insert', () => {
+    const onCloneDocument = vi.fn();
+    const onInsertDocument = vi.fn();
+    renderTable({ onCloneDocument, onInsertDocument });
+    fireEvent.click(screen.getByRole('button', { name: /^clone$/i }));
+    const textarea = document.querySelector('.highlight-editor-textarea') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: '{"_id": ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa"), "name": "copy"}' } });
+    fireEvent.click(screen.getByText('Save'));
+    expect(onCloneDocument).toHaveBeenCalledWith(oid, { _id: oid, name: 'Alice' }, { _id: oid, name: 'copy' });
+    expect(onInsertDocument).not.toHaveBeenCalled();
+  });
+
+  it('表格单元格编辑走 update, 前后文档只含该 path (嵌套字段按层级展开)', () => {
+    const onUpdateDocument = vi.fn();
+    renderTable({
+      onUpdateDocument,
+      columns: [col('_id'), col('bag')],
+      rows: [{ _id: 'ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa")', bag: { gold: 10 } }],
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Table' }));
+    fireEvent.click(screen.getByRole('button', { name: /expand bag/i }));
+    fireEvent.doubleClick(screen.getByText('10'));
+    const input = document.querySelector('.mongo-cell-input') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '20' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onUpdateDocument).toHaveBeenCalledWith(oid, { bag: { gold: 10 } }, { bag: { gold: 20 } });
+  });
+
   it('New Document 保存走 insert', () => {
     const onInsertDocument = vi.fn();
     renderTable({ onInsertDocument });

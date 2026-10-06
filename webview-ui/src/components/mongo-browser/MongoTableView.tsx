@@ -8,8 +8,8 @@ interface MongoTableViewProps {
   readonly columns: readonly ColumnInfo[];
   readonly rows: readonly Record<string, unknown>[];
   readonly onRowClick: (row: Record<string, unknown>) => void;
-  // 单元格原地编辑提交: id 为 _id 的 shell 形式, path 为 dotted 字段路径, value 保留原类型
-  readonly onCellEdit?: (id: string, path: string, value: unknown) => void;
+  // 单元格原地编辑提交: id 为行的 _id, path 为 dotted 字段路径, original 为编辑前的值, value 按原类型转换后的新值
+  readonly onCellEdit?: (id: unknown, path: string, original: unknown, value: unknown) => void;
 }
 
 // 将 cell 值转换为显示字符串, 对象类型 JSON.stringify 以避免 [object Object]
@@ -26,7 +26,7 @@ function isEditableCell(path: string, value: unknown): boolean {
 
 export function MongoTableView({ columns, rows, onRowClick, onCellEdit }: MongoTableViewProps) {
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
-  const [editing, setEditing] = useState<{ rowId: string; path: string; original: unknown } | null>(null);
+  const [editing, setEditing] = useState<{ rowId: string; id: unknown; path: string; original: unknown } | null>(null);
   const [draft, setDraft] = useState('');
 
   const topLevel = useMemo(() => columns.map((c) => c.name), [columns]);
@@ -55,14 +55,16 @@ export function MongoTableView({ columns, rows, onRowClick, onCellEdit }: MongoT
       return next;
     });
 
-  const startEdit = (rowId: string, path: string, value: unknown) => {
-    setEditing({ rowId, path, original: value });
+  const startEdit = (rowId: string, id: unknown, path: string, value: unknown) => {
+    setEditing({ rowId, id, path, original: value });
     setDraft(typeof value === 'object' ? '' : String(value));
   };
   const cancelEdit = () => setEditing(null);
   const commitEdit = () => {
     if (editing && onCellEdit) {
-      onCellEdit(editing.rowId, editing.path, coerceToType(editing.original, draft));
+      const value = coerceToType(editing.original, draft);
+      // 值没变 (含非法输入回退原值) 不发写请求
+      if (value !== editing.original) { onCellEdit(editing.id, editing.path, editing.original, value); }
     }
     setEditing(null);
   };
@@ -131,7 +133,7 @@ export function MongoTableView({ columns, rows, onRowClick, onCellEdit }: MongoT
                     key={col.path}
                     title={editable ? `${full}\n(双击编辑)` : full}
                     className={editable ? 'mongo-cell-editable' : undefined}
-                    onDoubleClick={editable ? (e) => { e.stopPropagation(); startEdit(rowId, col.path, v); } : undefined}
+                    onDoubleClick={editable ? (e) => { e.stopPropagation(); startEdit(rowId, row._id, col.path, v); } : undefined}
                   >
                     {cellText(v, 80)}
                   </td>

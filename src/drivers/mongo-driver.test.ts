@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { MongoDriver, deepFormatValue, deepFormatDocument, buildUri } from './mongo-driver';
+import { MongoDriver, deepFormatValue, deepFormatDocument, buildUri, userFilter } from './mongo-driver';
 import { ObjectId, Long, Binary, UUID, Timestamp } from 'mongodb';
+// 'mongodb' 在本文件被 mock 成假类; 往返测试用 bson 包里的真实类
+import {
+  BSON, Decimal128 as RealDecimal128, Double as RealDouble, Int32 as RealInt32, Long as RealLong, ObjectId as RealObjectId,
+} from 'bson';
 
 // Mock mongodb
 const mockCollection = {
@@ -39,7 +43,9 @@ const mockClient = {
   }),
 };
 
-vi.mock('mongodb', () => {
+vi.mock('mongodb', async () => {
+  // driver 经 mongodb 的 BSON 命名空间取 EJSON; 这里给真实实现, 只把类换成假的
+  const { BSON } = await vi.importActual<typeof import('bson')>('bson');
   class FakeObjectId {
     private readonly id: string;
     constructor(id: string) { this.id = id; }
@@ -92,6 +98,7 @@ vi.mock('mongodb', () => {
     }
   }
   return {
+    BSON,
     MongoClient: FakeMongoClient,
     ObjectId: FakeObjectId,
     Long: FakeLong,
@@ -251,7 +258,7 @@ describe('MongoDriver', () => {
     });
   });
 
-  describe('execute', () => {
+  describe('结构化集合操作', () => {
     beforeEach(async () => {
       mockDb.command.mockResolvedValue({ ok: 1 });
       await driver.connect({
@@ -260,104 +267,30 @@ describe('MongoDriver', () => {
       });
     });
 
-    it('find 返回扁平化文档', async () => {
-      mockCollection.find.mockReturnValue({
-        limit: vi.fn().mockReturnValue({
-          toArray: vi.fn().mockResolvedValue([
-            { _id: 'abc', name: 'Alice', tags: ['a', 'b'] },
-          ]),
-        }),
-      });
-
-      const result = await driver.execute('db.users.find({})');
-      expect(result.rows).toHaveLength(1);
-      expect(result.rows[0]._id).toBe('abc');
-      expect(result.rows[0].tags).toBe('["a","b"]'); // 数组被 JSON.stringify
+    it('集合名原样作数据传给 driver (数字开头 / 中文名), find 透传 options', async () => {
+      mockCollection.find.mockReturnValue({ toArray: vi.fn().mockResolvedValue([{ _id: 'a' }]) });
+      const docs = await driver.find('db', '2024日志', { a: 1 }, { limit: 5, maxTimeMS: 100 });
+      expect(mockDb.collection).toHaveBeenCalledWith('2024日志');
+      expect(mockCollection.find).toHaveBeenCalledWith({ a: 1 }, { limit: 5, maxTimeMS: 100 });
+      expect(docs).toEqual([{ _id: 'a' }]);
     });
 
-    it('insertOne 返回 affectedRows', async () => {
-      mockCollection.insertOne.mockResolvedValue({ insertedId: 'newid' });
-
-      const result = await driver.execute('db.users.insertOne({"name": "New"})');
-      expect(result.affectedRows).toBe(1);
-      expect(result.rows).toEqual([]);
+    it('findOneTyped 用 promoteValues:false 读, 保留 Int32 / Long / Double', async () => {
+      mockCollection.findOne.mockResolvedValue({ _id: 'x' });
+      await driver.findOneTyped('db', 'users', { _id: 'x' });
+      expect(mockCollection.findOne).toHaveBeenCalledWith({ _id: 'x' }, { promoteValues: false });
     });
 
-    it('updateOne 返回 matchedCount (命中即成功, 无改动也不算失败) — M2', () => {
-      mockCollection.updateOne.mockResolvedValue({ matchedCount: 1, modifiedCount: 1 });
-      return driver.execute('db.users.updateOne({"_id": "x"}, {"$set": {"name": "Updated"}})')
-        .then((result) => expect(result.affectedRows).toBe(1));
-    });
-
-    it('updateOne 命中但值未变 (modified=0) 仍 affectedRows=1 — M2', async () => {
+    it('updateOne 返回 matchedCount (命中但值未变也算成功), deleteOne 返回 deletedCount', async () => {
       mockCollection.updateOne.mockResolvedValue({ matchedCount: 1, modifiedCount: 0 });
-      const result = await driver.execute('db.users.updateOne({"_id": "x"}, {"$set": {"name": "Same"}})');
-      expect(result.affectedRows).toBe(1);
+      mockCollection.deleteOne.mockResolvedValue({ deletedCount: 0 });
+      expect(await driver.updateOne('db', 'users', { _id: 'x' }, { $set: { a: 1 } })).toBe(1);
+      expect(await driver.deleteOne('db', 'users', { _id: 'x' })).toBe(0);
     });
 
-    it('deleteOne 返回 deletedCount', async () => {
-      mockCollection.deleteOne.mockResolvedValue({ deletedCount: 1 });
-
-      const result = await driver.execute('db.users.deleteOne({"_id": "x"})');
-      expect(result.affectedRows).toBe(1);
-    });
-
-    it('replaceOne 整文档替换, affectedRows 取 matchedCount', async () => {
-      mockCollection.replaceOne.mockResolvedValue({ matchedCount: 1, modifiedCount: 1 });
-
-      const result = await driver.execute('db.users.replaceOne({"_id": "x"}, {"name": "Replaced"})');
-      expect(result.affectedRows).toBe(1);
-      // 替换文档是整文档 (无 $set operator)
-      expect(mockCollection.replaceOne.mock.calls[0][1]).toEqual({ name: 'Replaced' });
-    });
-
-    it('replaceOne 用 EJSON _id filter 还原 ObjectId 类型', async () => {
-      mockCollection.replaceOne.mockResolvedValue({ matchedCount: 1, modifiedCount: 1 });
-
-      await driver.execute('db.users.replaceOne({"_id": {"$oid": "507f1f77bcf86cd799439011"}}, {"name": "X"})');
-
-      const filterArg = mockCollection.replaceOne.mock.calls[0][0];
-      expect(filterArg._id).toBeInstanceOf(ObjectId);
-      expect(String(filterArg._id)).toBe('507f1f77bcf86cd799439011');
-    });
-
-    it('replaceOne 未匹配时 affectedRows=0 (matchedCount=0)', async () => {
-      mockCollection.replaceOne.mockResolvedValue({ matchedCount: 0, modifiedCount: 0 });
-
-      const result = await driver.execute('db.users.replaceOne({"_id": 999}, {"name": "X"})');
-      expect(result.affectedRows).toBe(0);
-    });
-
-    it('CRUD 传 autoConvertIds:false 时 24-hex 字符串 _id 不被强转 ObjectId (保字符串)', async () => {
-      mockCollection.replaceOne.mockResolvedValue({ matchedCount: 1, modifiedCount: 1 });
-      await driver.executeCancellable(
-        'db.users.replaceOne({"_id":"507f1f77bcf86cd799439011"},{"name":"X"})',
-        undefined,
-        'mydb',
-        { autoConvertIds: false },
-      ).promise;
-      const filterArg = mockCollection.replaceOne.mock.calls[0][0];
-      expect(typeof filterArg._id).toBe('string');
-      expect(filterArg._id).toBe('507f1f77bcf86cd799439011');
-    });
-
-    it('deleteOne 传 autoConvertIds:false 时字符串 _id 保字符串', async () => {
-      mockCollection.deleteOne.mockResolvedValue({ deletedCount: 1 });
-      await driver.executeCancellable(
-        'db.users.deleteOne({"_id":"aaaaaaaaaaaaaaaaaaaaaaaa"})',
-        undefined,
-        'mydb',
-        { autoConvertIds: false },
-      ).promise;
-      const filterArg = mockCollection.deleteOne.mock.calls[0][0];
-      expect(typeof filterArg._id).toBe('string');
-    });
-
-    it('默认 (不传 options) 仍对 24-hex 字符串 _id 自动转 ObjectId (查询编辑器便利)', async () => {
-      mockCollection.replaceOne.mockResolvedValue({ matchedCount: 1, modifiedCount: 1 });
-      await driver.execute('db.users.replaceOne({"_id":"507f1f77bcf86cd799439011"},{"name":"X"})');
-      const filterArg = mockCollection.replaceOne.mock.calls[0][0];
-      expect(filterArg._id).toBeInstanceOf(ObjectId);
+    it('未连接时报错', async () => {
+      await driver.disconnect();
+      expect(() => driver.find('db', 'users', {}, { limit: 1 })).toThrow('not connected');
     });
 
     it('explainFind 返回精简 explain 摘要 (全表扫描)', async () => {
@@ -396,51 +329,23 @@ describe('MongoDriver', () => {
       await (driver as any).explainFind('mydb', 'users', { a: 1 }, { a: -1 });
       expect(sortFn).toHaveBeenCalledWith({ a: -1 });
     });
+  });
 
-    it('updateMany 也还原 update 文档的 EJSON 类型 (与 updateOne 一致) — M1', async () => {
-      mockCollection.updateMany.mockResolvedValue({ matchedCount: 2, modifiedCount: 2 });
-      await driver.execute('db.users.updateMany({"active": true}, {"$set": {"ref": {"$oid": "507f1f77bcf86cd799439011"}}})');
-      const updateArg = mockCollection.updateMany.mock.calls[0][1];
-      expect(updateArg.$set.ref).toBeInstanceOf(ObjectId);
+  describe('userFilter (手写 filter 的 _id 便利转换)', () => {
+    it('_id 上下文里的 24-hex 串转 ObjectId (含大写 / $in / $or 分支), 其他字段与非 24-hex 不动', () => {
+      const hex = '507f1f77bcf86cd799439011';
+      const f = userFilter({ _id: hex.toUpperCase(), ref: hex, $or: [{ _id: { $in: [hex, 'short'] } }] });
+      expect(f._id).toBeInstanceOf(ObjectId);
+      expect(f.ref).toBe(hex);
+      expect(f.$or[0]._id.$in[0]).toBeInstanceOf(ObjectId);
+      expect(f.$or[0]._id.$in[1]).toBe('short');
+      expect(userFilter({ _id: 'abc' })._id).toBe('abc');
     });
 
-    it('deleteMany 返回 deletedCount', async () => {
-      mockCollection.deleteMany.mockResolvedValue({ deletedCount: 5 });
-
-      const result = await driver.execute('db.logs.deleteMany({"level": "debug"})');
-      expect(result.affectedRows).toBe(5);
-    });
-
-    it('aggregate 返回文档', async () => {
-      mockCollection.aggregate.mockReturnValue({
-        toArray: vi.fn().mockResolvedValue([
-          { _id: 'active', count: 10 },
-        ]),
-      });
-
-      const result = await driver.execute('db.orders.aggregate([{"$group": {"_id": "$status", "count": {"$sum": 1}}}])');
-      expect(result.rows).toHaveLength(1);
-      expect(result.rows[0]._id).toBe('active');
-    });
-
-    it('countDocuments 返回 count', async () => {
-      mockCollection.countDocuments.mockResolvedValue(42);
-
-      const result = await driver.execute('db.users.countDocuments({})');
-      expect(result.rows).toEqual([{ count: 42 }]);
-    });
-
-    it('executeCancellable 使用指定 database', async () => {
-      mockCollection.find.mockReturnValue({
-        limit: vi.fn().mockReturnValue({
-          toArray: vi.fn().mockResolvedValue([]),
-        }),
-      });
-
-      const { promise } = driver.executeCancellable('db.users.find({})', [], 'otherdb');
-      const result = await promise;
-      expect(result.rows).toEqual([]);
-      expect(mockClient.db).toHaveBeenCalledWith('otherdb');
+    it('EJSON 标记还原成 BSON', () => {
+      const f = userFilter({ _id: { $oid: '507f1f77bcf86cd799439011' }, ts: { $numberLong: '1700000000000' } });
+      expect(f._id).toBeInstanceOf(ObjectId);
+      expect(f.ts).toBeInstanceOf(Long);
     });
   });
 
@@ -474,356 +379,6 @@ describe('MongoDriver', () => {
 
       const ddl = await driver.getTableDDL('testdb', 'users');
       expect(JSON.parse(ddl)).toEqual(validator);
-    });
-  });
-
-  describe('flattenValue via execute/find', () => {
-    beforeEach(async () => {
-      mockDb.command.mockResolvedValue({ ok: 1 });
-      await driver.connect({
-        id: 'test', name: 'test', driverType: 'mongodb',
-        host: 'localhost', port: 27017, username: '', password: '', database: '',
-      });
-    });
-
-    it('ObjectId 扁平化为 ObjectId("...")', async () => {
-      // 从 mock 中拿到 FakeObjectId
-      const { ObjectId } = await import('mongodb');
-      const oid = new ObjectId('aabbccddee112233aabbccdd');
-
-      mockCollection.find.mockReturnValue({
-        limit: vi.fn().mockReturnValue({
-          toArray: vi.fn().mockResolvedValue([
-            { _id: oid, name: 'test' },
-          ]),
-        }),
-      });
-
-      const result = await driver.execute('db.users.find({})');
-      expect(result.rows[0]._id).toBe('ObjectId("aabbccddee112233aabbccdd")');
-    });
-
-    it('Date 扁平化为 ISODate("...")', async () => {
-      const date = new Date('2024-06-15T10:30:00.000Z');
-
-      mockCollection.find.mockReturnValue({
-        limit: vi.fn().mockReturnValue({
-          toArray: vi.fn().mockResolvedValue([
-            { _id: 'id1', createdAt: date },
-          ]),
-        }),
-      });
-
-      const result = await driver.execute('db.users.find({})');
-      expect(result.rows[0].createdAt).toBe('ISODate("2024-06-15T10:30:00.000Z")');
-    });
-
-    it('Long 扁平化为 NumberLong("...")', async () => {
-      const { Long } = await import('mongodb');
-      const longVal = Long.fromString('9999999999');
-
-      mockCollection.find.mockReturnValue({
-        limit: vi.fn().mockReturnValue({
-          toArray: vi.fn().mockResolvedValue([
-            { _id: 'id1', bigNum: longVal },
-          ]),
-        }),
-      });
-
-      const result = await driver.execute('db.users.find({})');
-      expect(result.rows[0].bigNum).toBe('NumberLong("9999999999")');
-    });
-
-    it('Int32 扁平化为 NumberInt(...)', async () => {
-      const { Int32 } = await import('mongodb');
-      const intVal = new Int32(42);
-
-      mockCollection.find.mockReturnValue({
-        limit: vi.fn().mockReturnValue({
-          toArray: vi.fn().mockResolvedValue([
-            { _id: 'id1', count: intVal },
-          ]),
-        }),
-      });
-
-      const result = await driver.execute('db.users.find({})');
-      expect(result.rows[0].count).toBe('NumberInt(42)');
-    });
-
-    it('Decimal128 扁平化为 NumberDecimal("...")', async () => {
-      const { Decimal128 } = await import('mongodb');
-      const decVal = new Decimal128('3.14159');
-
-      mockCollection.find.mockReturnValue({
-        limit: vi.fn().mockReturnValue({
-          toArray: vi.fn().mockResolvedValue([
-            { _id: 'id1', price: decVal },
-          ]),
-        }),
-      });
-
-      const result = await driver.execute('db.users.find({})');
-      expect(result.rows[0].price).toBe('NumberDecimal("3.14159")');
-    });
-
-    it('MinKey 扁平化为 MinKey()', async () => {
-      const { MinKey } = await import('mongodb');
-
-      mockCollection.find.mockReturnValue({
-        limit: vi.fn().mockReturnValue({
-          toArray: vi.fn().mockResolvedValue([
-            { _id: 'id1', lower: new MinKey() },
-          ]),
-        }),
-      });
-
-      const result = await driver.execute('db.users.find({})');
-      expect(result.rows[0].lower).toBe('MinKey()');
-    });
-
-    it('MaxKey 扁平化为 MaxKey()', async () => {
-      const { MaxKey } = await import('mongodb');
-
-      mockCollection.find.mockReturnValue({
-        limit: vi.fn().mockReturnValue({
-          toArray: vi.fn().mockResolvedValue([
-            { _id: 'id1', upper: new MaxKey() },
-          ]),
-        }),
-      });
-
-      const result = await driver.execute('db.users.find({})');
-      expect(result.rows[0].upper).toBe('MaxKey()');
-    });
-
-    it('null/undefined 值扁平化为 null', async () => {
-      mockCollection.find.mockReturnValue({
-        limit: vi.fn().mockReturnValue({
-          toArray: vi.fn().mockResolvedValue([
-            { _id: 'id1', empty: null, missing: undefined },
-          ]),
-        }),
-      });
-
-      const result = await driver.execute('db.users.find({})');
-      expect(result.rows[0].empty).toBeNull();
-      expect(result.rows[0].missing).toBeNull();
-    });
-
-    it('嵌套对象含 BSON 类型被 JSON.stringify', async () => {
-      const { ObjectId } = await import('mongodb');
-      const oid = new ObjectId('aabbccddee112233aabbccdd');
-
-      mockCollection.find.mockReturnValue({
-        limit: vi.fn().mockReturnValue({
-          toArray: vi.fn().mockResolvedValue([
-            { _id: 'id1', meta: { ref: oid, count: 5 } },
-          ]),
-        }),
-      });
-
-      const result = await driver.execute('db.users.find({})');
-      // 嵌套对象 flattenValue 会递归然后 JSON.stringify
-      const parsed = JSON.parse(result.rows[0].meta as string);
-      expect(parsed.ref).toBe('ObjectId("aabbccddee112233aabbccdd")');
-      expect(parsed.count).toBe(5);
-    });
-  });
-
-  describe('autoConvertIds (via find)', () => {
-    beforeEach(async () => {
-      mockDb.command.mockResolvedValue({ ok: 1 });
-      await driver.connect({
-        id: 'test', name: 'test', driverType: 'mongodb',
-        host: 'localhost', port: 27017, username: '', password: '', database: '',
-      });
-    });
-
-    it('24 位 hex _id 自动转为 ObjectId', async () => {
-      mockCollection.find.mockReturnValue({
-        limit: vi.fn().mockReturnValue({
-          toArray: vi.fn().mockResolvedValue([]),
-        }),
-      });
-
-      await driver.execute('db.users.find({"_id": "507f1f77bcf86cd799439011"})');
-
-      const filterArg = mockCollection.find.mock.calls[0][0];
-      const { ObjectId } = await import('mongodb');
-      expect(filterArg._id).toBeInstanceOf(ObjectId);
-    });
-
-    it('非 24 位 hex _id 保持 string', async () => {
-      mockCollection.find.mockReturnValue({
-        limit: vi.fn().mockReturnValue({
-          toArray: vi.fn().mockResolvedValue([]),
-        }),
-      });
-
-      await driver.execute('db.users.find({"_id": "not-a-valid-hex"})');
-
-      const filterArg = mockCollection.find.mock.calls[0][0];
-      expect(filterArg._id).toBe('not-a-valid-hex');
-    });
-
-    it('大写 hex _id 也能自动转换', async () => {
-      mockCollection.find.mockReturnValue({
-        limit: vi.fn().mockReturnValue({
-          toArray: vi.fn().mockResolvedValue([]),
-        }),
-      });
-
-      await driver.execute('db.users.find({"_id": "507F1F77BCF86CD799439011"})');
-
-      const filterArg = mockCollection.find.mock.calls[0][0];
-      const { ObjectId } = await import('mongodb');
-      expect(filterArg._id).toBeInstanceOf(ObjectId);
-    });
-
-    it('非 _id 字段的 24 位 hex 不转换', async () => {
-      mockCollection.find.mockReturnValue({
-        limit: vi.fn().mockReturnValue({
-          toArray: vi.fn().mockResolvedValue([]),
-        }),
-      });
-
-      await driver.execute('db.users.find({"name": "507f1f77bcf86cd799439011"})');
-
-      const filterArg = mockCollection.find.mock.calls[0][0];
-      expect(filterArg.name).toBe('507f1f77bcf86cd799439011');
-    });
-
-    it('_id: {$in: [...]} 内的 24-hex 串递归转 ObjectId — H6', async () => {
-      mockCollection.find.mockReturnValue({
-        limit: vi.fn().mockReturnValue({ toArray: vi.fn().mockResolvedValue([]) }),
-      });
-      await driver.execute('db.users.find({"_id": {"$in": ["507f1f77bcf86cd799439011", "507f1f77bcf86cd799439012", "not-hex"]}})');
-      const { ObjectId } = await import('mongodb');
-      const inArr = mockCollection.find.mock.calls[0][0]._id.$in;
-      expect(inArr[0]).toBeInstanceOf(ObjectId);
-      expect(inArr[1]).toBeInstanceOf(ObjectId);
-      expect(inArr[2]).toBe('not-hex'); // 非 hex 保字符串
-    });
-
-    it('$or/$and 分支内的 _id 24-hex 串递归转 ObjectId — H6', async () => {
-      mockCollection.find.mockReturnValue({
-        limit: vi.fn().mockReturnValue({ toArray: vi.fn().mockResolvedValue([]) }),
-      });
-      await driver.execute('db.users.find({"$or": [{"_id": "507f1f77bcf86cd799439011"}, {"name": "x"}]})');
-      const { ObjectId } = await import('mongodb');
-      const orArr = mockCollection.find.mock.calls[0][0].$or;
-      expect(orArr[0]._id).toBeInstanceOf(ObjectId);
-      expect(orArr[1].name).toBe('x');
-    });
-  });
-
-  describe('insertOne with EJSON', () => {
-    beforeEach(async () => {
-      mockDb.command.mockResolvedValue({ ok: 1 });
-      await driver.connect({
-        id: 'test', name: 'test', driverType: 'mongodb',
-        host: 'localhost', port: 27017, username: '', password: '', database: '',
-      });
-    });
-
-    it('{"$date":"..."} 传入后 insertOne 收到 Date 实例', async () => {
-      mockCollection.insertOne.mockResolvedValue({ insertedId: 'newid' });
-
-      await driver.execute('db.users.insertOne({"name": "Alice", "createdAt": {"$date": "2024-01-15T00:00:00.000Z"}})');
-
-      expect(mockCollection.insertOne).toHaveBeenCalledTimes(1);
-      const arg = mockCollection.insertOne.mock.calls[0][0];
-      expect(arg.name).toBe('Alice');
-      expect(arg.createdAt).toBeInstanceOf(Date);
-      expect(arg.createdAt.toISOString()).toBe('2024-01-15T00:00:00.000Z');
-    });
-  });
-
-  describe('updateOne with EJSON', () => {
-    beforeEach(async () => {
-      mockDb.command.mockResolvedValue({ ok: 1 });
-      await driver.connect({
-        id: 'test', name: 'test', driverType: 'mongodb',
-        host: 'localhost', port: 27017, username: '', password: '', database: '',
-      });
-    });
-
-    it('$set 中的 {"$date":"..."} 被转为 Date 实例', async () => {
-      mockCollection.updateOne.mockResolvedValue({ modifiedCount: 1 });
-
-      await driver.execute('db.users.updateOne({"_id": "x"}, {"$set": {"updatedAt": {"$date": "2024-06-01T12:00:00.000Z"}}})');
-
-      expect(mockCollection.updateOne).toHaveBeenCalledTimes(1);
-      const updateArg = mockCollection.updateOne.mock.calls[0][1];
-      expect(updateArg.$set.updatedAt).toBeInstanceOf(Date);
-      expect(updateArg.$set.updatedAt.toISOString()).toBe('2024-06-01T12:00:00.000Z');
-    });
-  });
-
-  describe('EJSON + autoConvertIds 端到端集成', () => {
-    beforeEach(async () => {
-      mockDb.command.mockResolvedValue({ ok: 1 });
-      await driver.connect({
-        id: 'test', name: 'test', driverType: 'mongodb',
-        host: 'localhost', port: 27017, username: '', password: '', database: '',
-      });
-    });
-
-    it('find 中 {"$oid":"..."} filter 经 convertEjsonToBson + autoConvertIds 完整链路', async () => {
-      mockCollection.find.mockReturnValue({
-        limit: vi.fn().mockReturnValue({
-          toArray: vi.fn().mockResolvedValue([]),
-        }),
-      });
-
-      // 使用 EJSON 格式的 _id
-      await driver.execute('db.users.find({"_id": {"$oid": "507f1f77bcf86cd799439011"}})');
-
-      const filterArg = mockCollection.find.mock.calls[0][0];
-      const { ObjectId } = await import('mongodb');
-      // convertEjsonToBson 把 {"$oid":"..."} 转成 ObjectId 实例
-      expect(filterArg._id).toBeInstanceOf(ObjectId);
-      expect(filterArg._id.toString()).toBe('507f1f77bcf86cd799439011');
-    });
-
-    it('updateOne 带 ObjectId filter + ISODate body', async () => {
-      mockCollection.updateOne.mockResolvedValue({ modifiedCount: 1 });
-
-      await driver.execute('db.users.updateOne({"_id": {"$oid": "507f1f77bcf86cd799439011"}}, {"$set": {"lastLogin": {"$date": "2024-06-01T00:00:00.000Z"}}})');
-
-      const { ObjectId } = await import('mongodb');
-      const filterArg = mockCollection.updateOne.mock.calls[0][0];
-      expect(filterArg._id).toBeInstanceOf(ObjectId);
-
-      const updateArg = mockCollection.updateOne.mock.calls[0][1];
-      expect(updateArg.$set.lastLogin).toBeInstanceOf(Date);
-      expect(updateArg.$set.lastLogin.toISOString()).toBe('2024-06-01T00:00:00.000Z');
-    });
-
-    it('find 带 NumberLong filter', async () => {
-      mockCollection.find.mockReturnValue({
-        limit: vi.fn().mockReturnValue({
-          toArray: vi.fn().mockResolvedValue([]),
-        }),
-      });
-
-      await driver.execute('db.events.find({"timestamp": {"$numberLong": "1700000000000"}})');
-
-      const filterArg = mockCollection.find.mock.calls[0][0];
-      const { Long } = await import('mongodb');
-      expect(filterArg.timestamp).toBeInstanceOf(Long);
-    });
-
-    it('aggregate pipeline 中的 EJSON 类型被转换', async () => {
-      mockCollection.aggregate.mockReturnValue({
-        toArray: vi.fn().mockResolvedValue([{ _id: null, count: 5 }]),
-      });
-
-      await driver.execute('db.events.aggregate([{"$match": {"date": {"$gt": {"$date": "2024-01-01T00:00:00.000Z"}}}}])');
-
-      const pipelineArg = mockCollection.aggregate.mock.calls[0][0];
-      const matchStage = pipelineArg[0].$match;
-      expect(matchStage.date.$gt).toBeInstanceOf(Date);
     });
   });
 
@@ -880,26 +435,66 @@ describe('MongoDriver', () => {
     });
   });
 
-  describe('exportDocuments', () => {
-    it('pipeline 内 EJSON 被还原为 BSON (导出过滤可命中) — H2', async () => {
+  describe('exportDocuments / importDocuments', () => {
+    beforeEach(async () => {
       mockDb.command.mockResolvedValue({ ok: 1 });
       await driver.connect({
         id: 't', name: 't', driverType: 'mongodb',
         host: 'localhost', port: 27017, username: '', password: '', database: '',
       });
-      mockCollection.aggregate.mockReturnValue({
-        toArray: vi.fn().mockResolvedValue([{ _id: 'x' }]),
-      });
+    });
 
+    it('pipeline 内 EJSON 被还原为 BSON (导出过滤可命中), 读时 promoteValues:false', async () => {
+      mockCollection.aggregate.mockReturnValue({ toArray: vi.fn().mockResolvedValue([{ _id: 'x' }]) });
       const res = await driver.exportDocuments('db', 'coll', [
         { $match: { _id: { $oid: '507f1f77bcf86cd799439011' } } },
-      ]);
-
-      const pipelineArg = mockCollection.aggregate.mock.calls[0][0];
+      ], false);
+      const [pipelineArg, options] = mockCollection.aggregate.mock.calls[0];
       expect(pipelineArg[0].$match._id).toBeInstanceOf(ObjectId);
+      expect(options).toEqual({ promoteValues: false });
       expect(res.count).toBe(1);
     });
+
+    // 真实 bson 类: 导出 -> 导入后的 BSON 字节与原文档完全一致 (类型 / 精度都不丢)
+    const original = () => [
+      {
+        _id: new RealObjectId('507f1f77bcf86cd799439011'),
+        big: RealLong.fromNumber(1727000000000),
+        small: RealLong.fromNumber(1000),
+        rate: new RealDouble(2.0),
+        lvl: new RealInt32(5),
+        price: RealDecimal128.fromString('1.50'),
+        at: new Date('2024-01-15T00:00:00.123Z'),
+        bag: [RealLong.fromNumber(1), { n: new RealDouble(3), tags: ['a', new RealInt32(2)] }],
+      },
+      { _id: new RealObjectId('507f1f77bcf86cd799439012'), n: new RealInt32(-1) },
+    ];
+    // 模拟 driver 按 promoteValues:false 读出的文档
+    const readTyped = () => original().map((d) => BSON.deserialize(BSON.serialize(d), { promoteValues: false }));
+    const bytes = (docs: unknown[]) => docs.map((d) => Buffer.from(BSON.serialize(d as Record<string, unknown>)).toString('hex'));
+
+    it.each([
+      ['JSON 数组', false],
+      ['JSONL', true],
+    ])('%s 导出再导入, BSON 往返无损', async (_label, jsonl) => {
+      mockCollection.aggregate.mockReturnValue({ toArray: vi.fn().mockResolvedValue(readTyped()) });
+      const { json, count } = await driver.exportDocuments('db', 'coll', [], jsonl);
+      expect(count).toBe(2);
+      if (jsonl) {
+        const lines = json.trim().split('\n');
+        expect(lines).toHaveLength(2);
+        expect(JSON.parse(lines[0]).big).toEqual({ $numberLong: '1727000000000' });
+      } else {
+        expect(JSON.parse(json)[0].rate).toEqual({ $numberDouble: '2.0' });
+      }
+
+      mockCollection.insertMany.mockResolvedValue({ insertedCount: 2 });
+      expect(await driver.importDocuments('db', 'coll', json)).toBe(2);
+      const inserted = mockCollection.insertMany.mock.calls[0][0];
+      expect(bytes(inserted)).toEqual(bytes(original()));
+    });
   });
+
 });
 
 describe('deepFormatValue', () => {
