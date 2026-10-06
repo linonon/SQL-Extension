@@ -478,6 +478,12 @@ describe('MongoDriver', () => {
       expect(count).toBe(1);
     });
 
+    it('$match 内裸 24-hex _id 串转 ObjectId, 与浏览命中同一批文档', async () => {
+      fakeCursor([]);
+      await driver.exportDocuments('db', 'coll', [{ $match: { _id: '507f1f77bcf86cd799439011' } }], file, false);
+      expect(mockCollection.aggregate.mock.calls[0][0][0].$match._id).toBeInstanceOf(ObjectId);
+    });
+
     it('空结果: JSON 写出 [], JSONL 写出空文件', async () => {
       fakeCursor([]);
       expect(await driver.exportDocuments('db', 'coll', [], file, false)).toBe(0);
@@ -671,6 +677,18 @@ describe('fieldPathTypes', () => {
       ['bag.n', ['Int32']],
       ['heroes.<n>.star', ['Long']],
       ['heroes.<id>.star', ['Int32']],
+    ]);
+  });
+
+  it('不是标识符的 key (日期 / 邮箱 / UUID) 归并为 <key>; 标识符与中文字段名保留', () => {
+    const docs = [{
+      daily: { '2026-10-07': 1, '2026-10-08': 2 },
+      members: { 'p@example.com': true, nick_1: true },
+      devices: { '0123abcd-0000-4000-8000-000000000000': 1, '0123abcd00004000800000000000000a': 2 },
+      等级: 3,
+    }];
+    expect(fieldPathTypes(docs).map(([p]) => p)).toEqual([
+      'daily', 'members', 'devices', '等级', 'daily.<key>', 'members.<key>', 'members.nick_1', 'devices.<key>',
     ]);
   });
 });

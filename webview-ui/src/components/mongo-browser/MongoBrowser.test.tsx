@@ -127,6 +127,8 @@ describe('MongoBrowser - 已生效查询的快照', () => {
     expect(tableProps.explain).not.toBeNull();
     applyQuery({ limit: '1000' });
     expect(lastSent('mongoFindDocuments')).toMatchObject({ limit: 200, skip: 0 });
+    // 输入框回显实际生效的上限
+    expect(tableProps.customLimit).toBe('200');
     expect(tableProps.explain).toBeNull();
     send(docList());
     act(() => { tableProps.onPageChange(1); });
@@ -209,6 +211,11 @@ describe('MongoBrowser - 打开时的初选集合与刷新列表', () => {
     expect(lastSent('mongoFindDocuments')).toBeUndefined();
     expect(listProps.selected).toBeNull();
     expect(screen.getByText('Select a collection to browse documents')).toBeInTheDocument();
+
+    // 没有选中时表格未挂载, 点集合直接切过去
+    act(() => { listProps.onSelectCollection('game', 'zones'); });
+    expect(lastSent('mongoFindDocuments')).toMatchObject({ database: 'game', collection: 'zones' });
+    expect(listProps.selected).toEqual({ database: 'game', name: 'zones' });
   });
 
   it('Refresh 重新拉集合列表 (计数随之更新), 不改当前选中', () => {

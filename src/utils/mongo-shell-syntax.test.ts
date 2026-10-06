@@ -160,4 +160,9 @@ describe('parseShellJson: 从 mongosh 粘过来的写法', () => {
     expect(message).toMatch(/'a'/);
     expect(message).not.toContain('"name"');
   });
+
+  it('未闭合的单引号与正则字面量报原文行列; 字符串里的 / 与 \' 不算', () => {
+    expect(() => parseShellJson("{note: 'a/b', name: 'abc}")).toThrow(/^Unterminated string at line 1 column 21$/);
+    expect(() => parseShellJson('{tip: "it\'s",\n  name: /^player_77$/}')).toThrow(/^Unexpected "\/" at line 2 column 9 .*\$regex/);
+  });
 });

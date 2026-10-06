@@ -103,9 +103,22 @@ export function convertShellToJson(input: string): string {
   return rewriteShell(input).text;
 }
 
+function lineColumn(input: string, offset: number): string {
+  const lines = input.slice(0, offset).split('\n');
+  return `line ${lines.length} column ${lines[lines.length - 1].length + 1}`;
+}
+
+// 字符串字面量之外的 ' 是没闭合的字符串, / 是正则字面量: 两者 V8 都只报 "Unexpected token" 不带位置, 这里自己定位
+const STRAY = /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|(['/])/g;
+const STRAY_ERROR: Readonly<Record<string, (at: string) => string>> = {
+  "'": (at) => `Unterminated string at ${at}`,
+  '/': (at) => `Unexpected "/" at ${at} (regex literals and comments are not supported; use {"$regex": "..."})`,
+};
+
 /**
  * 解析 mongosh 写法为 EJSON 对象. 语法错误的位置换算成用户原文的行列;
- * 不带位置的 "Unexpected token" 只留出错的 token (V8 引用的是改写后的文本, 用户没写过)
+ * 不带位置的 "Unexpected token" 只留出错的 token (V8 引用的是改写后的文本, 用户没写过),
+ * 出错的是未闭合的单引号或正则字面量时报原文行列
  */
 export function parseShellJson(input: string): unknown {
   const { text, edits } = rewriteShell(input);
@@ -114,8 +127,12 @@ export function parseShellJson(input: string): unknown {
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     const at = /\s*(?:in JSON )?at position (\d+)(?: \(line \d+ column \d+\))?/.exec(message);
-    if (!at) { throw new SyntaxError(message.replace(/, (?:\.\.\.)?".*"(?:\.\.\.)? is not valid JSON$/s, '')); }
-    const lines = input.slice(0, originalOffset(edits, Number(at[1]))).split('\n');
-    throw new SyntaxError(`${message.slice(0, at.index)} at line ${lines.length} column ${lines[lines.length - 1].length + 1}`);
+    if (at) { throw new SyntaxError(`${message.slice(0, at.index)} at ${lineColumn(input, originalOffset(edits, Number(at[1])))}`); }
+    // V8 停在第一个出错处, 字符串之外的第一个 ' 或 / 必然是错; V8 报的正是这个字符时就是它
+    const stray = [...input.matchAll(STRAY)].find((m) => m[1]);
+    if (stray && message.startsWith(`Unexpected token '${stray[1]}'`)) {
+      throw new SyntaxError(STRAY_ERROR[stray[1]](lineColumn(input, stray.index)));
+    }
+    throw new SyntaxError(message.replace(/, (?:\.\.\.)?".*"(?:\.\.\.)? is not valid JSON$/s, ''));
   }
 }

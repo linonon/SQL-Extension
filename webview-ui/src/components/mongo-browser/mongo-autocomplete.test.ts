@@ -222,4 +222,11 @@ describe('extractFieldPaths', () => {
     expect(getMongoCompletionItems({ triggerType: 'field', prefix: '' }, fields)).toHaveLength(50);
     expect(getMongoCompletionItems({ triggerType: 'field', prefix: 'f29' }, fields)).toEqual(['f29', 'f290', 'f291', 'f292', 'f293', 'f294', 'f295', 'f296', 'f297', 'f298', 'f299']);
   });
+
+  it('截断前浅层优先: 深层路径不把顶层字段挤出候选', () => {
+    const deep = Array.from({ length: 80 }, (_, i) => `items.${10000 + i}.desc`);
+    const items = getMongoCompletionItems({ triggerType: 'field', prefix: '' }, ['_id', ...deep, 'version', 'stages']);
+    expect(items.slice(0, 3)).toEqual(['_id', 'version', 'stages']);
+    expect(items).toHaveLength(50);
+  });
 });

@@ -161,6 +161,18 @@ describe('changedSinceLoaded: 要写的 path 自打开以来是否被别人改�
     expect(lock('1800000000000000001')).toEqual([]);
     expect(lock('1800000000000000002')).toEqual(['uid']);
   });
+
+  it('库里按 Double 存的超出 2^53 的整数: 编辑器把它解析成 Long, 同值不算改过 (含数组整组)', () => {
+    // 浏览显示裸数字, 编辑器解析时包成 $numberLong
+    const shown = { score: { $numberLong: '9007199254740992' }, ids: [{ $numberLong: '18014398509481984' }, 1] };
+    const lock = (score: number) => changedSinceLoaded(
+      convertEjsonToBson(shown) as Record<string, unknown>,
+      typed({ score: new Double(score), ids: [new Double(2 ** 54), new Int32(1)] }),
+      diff(shown, { score: 1, ids: [2] }),
+    );
+    expect(lock(2 ** 53)).toEqual([]);
+    expect(lock(2 ** 53 + 2)).toEqual(['score']);
+  });
 });
 
 describe('buildClone: 源文档按 _id 重读, 套用改动后插入', () => {

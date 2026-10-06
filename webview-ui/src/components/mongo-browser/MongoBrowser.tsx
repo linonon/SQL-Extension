@@ -222,11 +222,6 @@ export function MongoBrowser({ connectionId, defaultDatabase }: MongoBrowserProp
     fetchDocs(EMPTY_QUERY, 0, true);
   }, [selected, fetchDocs]);
 
-  const handleSelectCollection = useCallback((database: string, name: string) => {
-    pendingSwitchTarget.current = { database, name };
-    setPendingSwitchSignal(s => s + 1);
-  }, []);
-
   const onSwitchConfirmed = useCallback(() => {
     const target = pendingSwitchTarget.current;
     if (!target) { return; }
@@ -239,12 +234,21 @@ export function MongoBrowser({ connectionId, defaultDatabase }: MongoBrowserProp
     setCustomSkip('');
   }, []);
 
+  // 有选中集合时由 MongoDocumentTable 守护未保存的编辑再切; 没有选中时表格未挂载, 直接切
+  const handleSelectCollection = useCallback((database: string, name: string) => {
+    pendingSwitchTarget.current = { database, name };
+    if (!selected) { onSwitchConfirmed(); return; }
+    setPendingSwitchSignal(s => s + 1);
+  }, [selected, onSwitchConfirmed]);
+
   const onSwitchCancelled = useCallback(() => {
     pendingSwitchTarget.current = null;
   }, []);
 
   const handleApply = useCallback(() => {
     const q = { filter, sort, projection, skip: resolveSkip(customSkip), limit: resolveLimit(customLimit, PAGE_SIZE) };
+    // 超过上限的 Limit 被钳住, 输入框回显实际生效的值
+    if (customLimit.trim() && String(q.limit) !== customLimit.trim()) { setCustomLimit(String(q.limit)); }
     setApplied(q);
     // 旧的执行计划属于上一条查询
     setExplain(null);

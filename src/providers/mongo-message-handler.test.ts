@@ -366,6 +366,22 @@ describe('handleMongoMessage', () => {
     ]);
   });
 
+  it('导入: 写入前就失败不刷新集合列表; 刷新本身失败不再报错', async () => {
+    vi.spyOn(vscode.window, 'showOpenDialog').mockResolvedValue([vscode.Uri.file('/tmp/p.json')] as never);
+    vi.spyOn(vscode.workspace.fs, 'readFile').mockResolvedValue(Buffer.from('[{"a": 1}') as never);
+    vi.spyOn(vscode.window, 'showWarningMessage').mockResolvedValue('Insert' as never);
+    await send({ type: 'mongoImportCollection', database: 'game_s1', collection: 'players' });
+    expect(post.mock.calls).toEqual([[expect.objectContaining({ type: 'mongoImportResult', success: false })]]);
+    expect(mongo.listDatabases).not.toHaveBeenCalled();
+
+    post.mockClear();
+    vi.spyOn(vscode.workspace.fs, 'readFile').mockResolvedValue(Buffer.from('[{"a": 1}]') as never);
+    mongo.importDocuments.mockRejectedValue(new Error('connection closed'));
+    mongo.listDatabases.mockRejectedValue(new Error('connection closed'));
+    await expect(send({ type: 'mongoImportCollection', database: 'game_s1', collection: 'players' })).resolves.toBe(true);
+    expect(post.mock.calls).toEqual([[{ type: 'mongoImportResult', success: false, error: 'connection closed' }]]);
+  });
+
   it('mongoDeleteDocument: 先在宿主确认, 取消不删; 按 EJSON _id 删除, 没删到报 not found', async () => {
     const warn = vi.spyOn(vscode.window, 'showWarningMessage').mockResolvedValue(undefined as never);
     await send({ type: 'mongoDeleteDocument', database: 'db', collection: 'users', id: 'x' });

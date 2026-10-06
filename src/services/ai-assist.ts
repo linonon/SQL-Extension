@@ -130,8 +130,8 @@ export function buildMongoAiPrompt(input: MongoAiAskInput): string {
     '',
     'Field paths and BSON types from a random sample of documents (values are not included; other fields may exist).',
     'Fields of array elements use the array\'s path (items.id is the id of each element of items).',
-    '<n> stands for numeric keys and <id> for 24-hex keys: these are dynamic map keys, and find cannot wildcard them,',
-    'so a condition on them needs a concrete key from the question.',
+    '<n> stands for numeric keys, <id> for 24-hex keys and <key> for other non-identifier keys (dates, emails, UUIDs):',
+    'these are dynamic map keys, and find cannot wildcard them, so a condition on them needs a concrete key from the question.',
     fields || '(no documents sampled)',
     '',
     'Current inputs (raw text):',
@@ -228,7 +228,7 @@ async function runAiAsk(
       const model = copilot.find(m => m.id === chosen)!;
       const res = await model.sendRequest(
         [vscode.LanguageModelChatMessage.User(prompt)],
-        { justification: 'Database Explorer sends your question, the current query, its last error and the schema (table / field names, types and comments; no row or document values) to answer it.' },
+        { justification: 'Database Explorer sends your question, the current query, its last error and the schema (table / field names, types and comments; MongoDB field paths come from sampled documents and can include map keys; no row or document values) to answer it.' },
         cts.token,
       );
       for await (const text of res.text) {

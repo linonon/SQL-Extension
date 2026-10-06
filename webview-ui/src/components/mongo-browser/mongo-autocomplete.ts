@@ -179,7 +179,9 @@ export function getMongoCompletionItems(
 
   if (ctx.triggerType === 'field') {
     const matched = prefix ? fieldNames.filter((f) => f.toLowerCase().startsWith(prefix)) : fieldNames;
-    return matched.slice(0, MAX_COMPLETION_ITEMS);
+    // 截断前浅层优先 (稳定排序, 同层保持原序): 大文档的深层路径不会把顶层字段挤出候选
+    const depth = (f: string) => f.split('.').length;
+    return [...matched].sort((a, b) => depth(a) - depth(b)).slice(0, MAX_COMPLETION_ITEMS);
   }
 
   if (ctx.triggerType === 'operator') {

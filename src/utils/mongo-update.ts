@@ -109,14 +109,18 @@ function valueAt(doc: unknown, path: string): unknown {
   return cur;
 }
 
-// relaxed EJSON 会把 Long 转成 double, 超出 2^53 的 Long (雪花类 uid) 相差不到一个 double 间隔时比不出来; 这类值换成精确十进制串再比
-function exactUnsafeLongs(v: unknown): unknown {
-  if ((v as { _bsontype?: string } | null)?._bsontype === 'Long') {
+// 超出 2^53 的整数 (雪花类 uid) 换成精确十进制串再比: relaxed EJSON 会把 Long 转成 double, 相差不到一个 double 间隔时比不出来;
+// 编辑器把这类裸整数解析成 Long, 库里存的可能是 Double / JS number, 两侧按同一个整数值比较
+function exactUnsafeIntegers(v: unknown): unknown {
+  const bsonType = (v as { _bsontype?: string } | null)?._bsontype;
+  if (bsonType === 'Long') {
     const long = v as Long;
     return Number.isSafeInteger(long.toNumber()) ? v : { $numberLong: long.toString() };
   }
-  if (Array.isArray(v)) { return v.map(exactUnsafeLongs); }
-  if (isSubDocument(v)) { return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, exactUnsafeLongs(x)])); }
+  const n = typeof v === 'number' ? v : bsonType === 'Double' ? (v as Double).value : undefined;
+  if (n !== undefined && Number.isInteger(n) && !Number.isSafeInteger(n)) { return { $numberLong: BigInt(n).toString() }; }
+  if (Array.isArray(v)) { return v.map(exactUnsafeIntegers); }
+  if (isSubDocument(v)) { return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, exactUnsafeIntegers(x)])); }
   return v;
 }
 
@@ -128,7 +132,7 @@ function exactUnsafeLongs(v: unknown): unknown {
 export function changedSinceLoaded(original: Record<string, unknown>, current: Document, diff: DocumentDiff): string[] {
   const relaxedAt = (doc: unknown, p: string): string | undefined => {
     const v = valueAt(doc, p);
-    return v === undefined ? undefined : BSON.EJSON.stringify(exactUnsafeLongs(v), { relaxed: true });
+    return v === undefined ? undefined : BSON.EJSON.stringify(exactUnsafeIntegers(v), { relaxed: true });
   };
   return [...Object.keys(diff.set), ...diff.unset].filter((p) => relaxedAt(original, p) !== relaxedAt(current, p));
 }

@@ -185,6 +185,7 @@ export async function handleMongoMessage(
 
     case 'mongoImportCollection': {
       const { database, collection } = message;
+      let attempted = false;
       try {
         const fileUris = await vscode.window.showOpenDialog({
           filters: { 'JSON/JSONL Files': ['json', 'jsonl'] },
@@ -201,6 +202,7 @@ export async function handleMongoMessage(
           'Insert'
         );
         if (confirm !== 'Insert') { return true; }
+        attempted = true;
         const inserted = await mongo.importDocuments(database, collection, content);
         vscode.window.showInformationMessage(`Imported ${inserted} document(s) into "${database}.${collection}"`);
         post({ type: 'mongoImportResult', success: true, inserted });
@@ -209,8 +211,8 @@ export async function handleMongoMessage(
         vscode.window.showErrorMessage(`Import failed: ${errMsg}`);
         post({ type: 'mongoImportResult', success: false, error: errMsg });
       }
-      // 成功或中途失败都可能改了文档数: 刷新集合列表的计数
-      await postRefreshedCollections(mongo, post);
+      // 开始写入后成功或中途失败都可能改了文档数: 刷新集合列表的计数. 导入结果已提示过, 刷新本身失败不再报
+      if (attempted) { await postRefreshedCollections(mongo, post).catch(() => {}); }
       return true;
     }
 

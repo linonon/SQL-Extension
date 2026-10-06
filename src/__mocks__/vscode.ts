@@ -82,6 +82,8 @@ export const commands = {
   registerCommand: (_id: string, _handler: Function) => ({ dispose: () => {} }),
 };
 
+export enum ConfigurationTarget { Global = 1, Workspace = 2, WorkspaceFolder = 3 }
+
 export const workspace = {
   getConfiguration: () => ({
     get: () => undefined,

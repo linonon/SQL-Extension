@@ -142,9 +142,7 @@ export class MongoDriver {
     options: { signal?: AbortSignal; onProgress?: (count: number) => void } = {},
   ): Promise<number> {
     this.assertConnected();
-    // 还原 pipeline 内 EJSON 标记为 BSON, 否则 $match 过滤 (ObjectId/$date 等) 当字面子文档恒不命中,
-    // 导致导出空集或错集 (与 findDocumentsForBrowser 对齐).
-    const bsonPipeline = convertEjsonToBson(pipeline) as Document[];
+    const bsonPipeline = toBsonPipeline(pipeline);
     const coll = this.client!.db(database).collection(collection);
     // 已有目标文件不可写时直接报错; 先写同目录的临时文件, 成功后 rename 覆盖目标,
     // 取消或失败只删临时文件, 用户选中要覆盖的旧文件保持原样
@@ -183,15 +181,7 @@ export class MongoDriver {
     pipeline: unknown[]
   ): Promise<{ rows: Record<string, unknown>[]; columns: ColumnInfo[] }> {
     this.assertConnected();
-    // 还原 pipeline 内的 EJSON 标记 ($oid/$date/$numberLong 等) 为 BSON, 否则按 ObjectId/Long
-    // 过滤的 $match 会被当字面子文档匹配而恒不命中 (与 explainFind 对齐).
-    // 并对 $match 跑 autoConvertIds: 裸 24-hex 串 _id 自动转 ObjectId, 使浏览结果与 count/explain 一致 (M2/M3).
-    const bsonPipeline = (convertEjsonToBson(pipeline) as Record<string, unknown>[]).map((stage) => {
-      if (stage !== null && typeof stage === 'object' && '$match' in stage) {
-        return { ...stage, $match: autoConvertIds(stage.$match as Record<string, unknown>) };
-      }
-      return stage;
-    });
+    const bsonPipeline = toBsonPipeline(pipeline);
     // allowDiskUse: 6.0 以下的大 $sort / 深页 $skip 不受 100MB 内存上限限制
     const docs = await this.client!.db(database).collection(collection)
       .aggregate(bsonPipeline, { maxTimeMS: BROWSE_TIMEOUT_MS, allowDiskUse: true }).toArray();
@@ -357,6 +347,15 @@ export function userFilter(filter: unknown): Document {
   return autoConvertIds(convertEjsonToBson(filter ?? {}) as Record<string, unknown>);
 }
 
+// 浏览 / 导出的 pipeline: EJSON 标记 ($oid/$date/$numberLong 等) 还原为 BSON, 否则 $match 当字面子文档恒不命中;
+// $match 与 userFilter 同样把 _id 上的裸 24-hex 串转 ObjectId, 浏览 / 导出 / count / explain 命中同一批文档
+function toBsonPipeline(pipeline: unknown[]): Document[] {
+  return (convertEjsonToBson(pipeline) as Document[]).map((stage) =>
+    stage !== null && typeof stage === 'object' && '$match' in stage
+      ? { ...stage, $match: autoConvertIds(stage.$match as Record<string, unknown>) }
+      : stage);
+}
+
 // 裸字符串 _id 自动转 ObjectId 的便利 (查询/浏览/count/explain 共用单一策略).
 // 递归进 $and/$or/$nor 分支与 _id 的 $in/$nin 数组, 否则这些上下文里的 24-hex 串会静默不命中.
 function autoConvertIds(filter: Record<string, unknown>): Record<string, unknown> {
@@ -478,10 +477,14 @@ function inferSchema(docs: Record<string, unknown>[]): ColumnInfo[] {
   return columns;
 }
 
+// 字段名形如标识符 (含中文等 Unicode 字母), 其余视作 map 的数据 key
+const IDENTIFIER_KEY = /^[\p{L}_$][\p{L}\p{N}_$]*$/u;
+
 /**
  * 采样文档的字段路径 -> BSON 类型, 浅层在前 (同层按首次出现); 只取 key 与类型, 不含任何值.
- * 数组标成 array<元素类型>, 元素子文档的字段沿用数组的路径; 纯数字 key 归并为 <n>, 24-hex key 归并为 <id>:
- * 以 id 作 key 的 map 里 key 本身是数据, 不归并还会让路径数随文档数膨胀
+ * 数组标成 array<元素类型>, 元素子文档的字段沿用数组的路径; 纯数字 key 归并为 <n>, 24-hex key 归并为 <id>,
+ * 其余不是标识符的 key (日期 / 邮箱 / UUID 等) 归并为 <key>: 以数据作 key 的 map 里 key 本身是数据,
+ * 不归并还会让路径数随文档数膨胀. 形如标识符的数据 key (如昵称) 分辨不出, 原样保留
  */
 export function fieldPathTypes(docs: readonly Document[]): [string, string[]][] {
   const types = new Map<string, Set<string>>();
@@ -492,7 +495,7 @@ export function fieldPathTypes(docs: readonly Document[]): [string, string[]][] 
   };
   const walk = (doc: Record<string, unknown>, prefix: string): void => {
     for (const [k, v] of Object.entries(doc)) {
-      const path = prefix + (/^\d+$/.test(k) ? '<n>' : /^[0-9a-f]{24}$/i.test(k) ? '<id>' : k);
+      const path = prefix + (/^\d+$/.test(k) ? '<n>' : /^[0-9a-f]{24}$/i.test(k) ? '<id>' : IDENTIFIER_KEY.test(k) ? k : '<key>');
       types.set(path, (types.get(path) ?? new Set<string>()).add(label(v)));
       for (const child of Array.isArray(v) ? v : [v]) {
         if (bsonTypeName(child) === 'object') { walk(child as Record<string, unknown>, `${path}.`); }
