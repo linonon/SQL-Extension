@@ -15,15 +15,15 @@ import { parseKafkaQuery, READ_ACTIONS } from './parsers/kafka-parser.js';
 import { parseRabbitMQQuery } from './parsers/rabbitmq-parser.js';
 import { makeResult, makeError, type ToolResult } from '../mcp/tools/mcp-result.js';
 
-// 只读命令白名单: MCP db_read 与只读连接的 Redis 命令栏共用
+// 只读命令白名单: MCP db_read 与只读连接的 Redis 命令栏共用. 只按命令名判定, 带子命令的 (OBJECT / MEMORY) 不在内
 export const REDIS_READ_COMMANDS: ReadonlySet<string> = new Set([
-  'GET', 'MGET', 'TTL', 'PTTL', 'TYPE', 'EXISTS', 'DBSIZE', 'INFO',
+  'GET', 'MGET', 'GETRANGE', 'STRLEN', 'TTL', 'PTTL', 'TYPE', 'EXISTS', 'DBSIZE', 'INFO',
   'SCAN', 'HSCAN', 'SSCAN', 'ZSCAN',
-  'HGET', 'HGETALL', 'HMGET', 'HLEN',
-  'LRANGE', 'LLEN',
-  'SCARD', 'SMEMBERS', 'SISMEMBER',
-  'ZCARD', 'ZRANGE', 'ZRANGEBYSCORE', 'ZCOUNT',
-  'STRLEN', 'XRANGE',
+  'HGET', 'HGETALL', 'HMGET', 'HLEN', 'HKEYS', 'HVALS', 'HEXISTS', 'HSTRLEN',
+  'LRANGE', 'LLEN', 'LINDEX', 'LPOS',
+  'SCARD', 'SMEMBERS', 'SISMEMBER', 'SMISMEMBER', 'SRANDMEMBER',
+  'ZCARD', 'ZRANGE', 'ZREVRANGE', 'ZRANGEBYSCORE', 'ZREVRANGEBYSCORE', 'ZCOUNT', 'ZSCORE', 'ZRANK', 'ZREVRANK',
+  'XRANGE', 'XREVRANGE', 'XLEN',
 ]);
 
 const SCAN_COMMANDS = new Set(['SCAN', 'HSCAN', 'SSCAN', 'ZSCAN']);
@@ -198,7 +198,7 @@ async function routeRedis(
 
   if (mode === 'read' && !REDIS_READ_COMMANDS.has(cmd)) {
     return makeError(
-      `Command "${cmd}" not allowed in db_read. Use db_execute for write commands.`,
+      `Command "${cmd}" is not a read command, so db_read refuses it (db_execute asks the user to confirm destructive commands).`,
       ErrorCode.READONLY_VIOLATION,
     );
   }

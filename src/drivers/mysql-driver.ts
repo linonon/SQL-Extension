@@ -12,6 +12,12 @@ const TYPE_NAMES = Types as unknown as Record<number, string | undefined>;
 // 返回结果集的查询按值数组取行 (rowsAsArray), 再由 toQueryResult 按去重后的列名组装: 同名列不互相覆盖
 const asArrays = (sql: string): mysql.QueryOptions => ({ sql, rowsAsArray: true });
 
+// MariaDB (10.2.7+) 的 COLUMN_DEFAULT 把字符串字面量带引号返回 ('it''s'), MySQL 返回原值: 统一成原值,
+// 编辑表时按原值显示, 写回时再按字面量转义. 引号与反斜杠按 MariaDB 的写法双写
+function unquoteDefault(value: string): string {
+  return /^'(?:[^'\\]|''|\\.)*'$/.test(value) ? value.slice(1, -1).replace(/''|\\\\/g, (m) => m[0]) : value;
+}
+
 export class MySQLDriver implements IDatabaseDriver {
   readonly driverType = 'mysql';
   private pool: mysql.Pool | null = null;
@@ -88,12 +94,21 @@ export class MySQLDriver implements IDatabaseDriver {
   }
 
   async listTables(database: string): Promise<TableInfo[]> {
+    return this.baseTables(database);
+  }
+
+  async listAllTables(): Promise<TableInfo[]> {
+    return this.baseTables();
+  }
+
+  // 一个库或全部库 (database 缺省) 的表, 一条 information_schema 查询
+  private async baseTables(database?: string): Promise<TableInfo[]> {
     const rows = await this.query(
       `SELECT TABLE_NAME as name, TABLE_SCHEMA as \`schema\`, TABLE_ROWS as rowCount
        FROM information_schema.TABLES
-       WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE'
+       WHERE ${database === undefined ? '' : 'TABLE_SCHEMA = ? AND '}TABLE_TYPE = 'BASE TABLE'
        ORDER BY TABLE_NAME`,
-      [database]
+      database === undefined ? [] : [database]
     );
     return rows.map((row: Record<string, unknown>) => ({
       name: String(row.name),
@@ -141,7 +156,7 @@ export class MySQLDriver implements IDatabaseDriver {
     const rows = await this.query(
       `SELECT COLUMN_NAME as name, COLUMN_TYPE as dataType, IS_NULLABLE as nullable,
               COLUMN_KEY as columnKey, COLUMN_DEFAULT as defaultValue, EXTRA as extra,
-              COLUMN_COMMENT as comment
+              COLUMN_COMMENT as comment, COLLATION_NAME as collation
        FROM information_schema.COLUMNS
        WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
        ORDER BY ORDINAL_POSITION`,
@@ -152,9 +167,10 @@ export class MySQLDriver implements IDatabaseDriver {
       dataType: String(row.dataType),
       nullable: row.nullable === 'YES',
       isPrimaryKey: row.columnKey === 'PRI',
-      defaultValue: row.defaultValue != null ? String(row.defaultValue) : null,
+      defaultValue: row.defaultValue != null ? unquoteDefault(String(row.defaultValue)) : null,
       extra: String(row.extra ?? ''),
       comment: String(row.comment ?? ''),
+      ...(row.collation != null ? { collation: String(row.collation) } : {}),
     }));
   }
 
@@ -276,7 +292,8 @@ export class MySQLDriver implements IDatabaseDriver {
           await conn.query(`USE \`${database.replace(/`/g, '``')}\``);
         }
         // 会话级只读: DDL 隐式提交后开始的下一个事务仍是只读, 所以 DDL 也被拒 (ER_CANT_EXECUTE_IN_READ_ONLY_TRANSACTION).
-        // 语句里显式 SET ... READ WRITE 能解除它: 这里防误写, 权限边界在 DB 账号
+        // 只防误写, 不是权限边界: 语句里的 SET SESSION TRANSACTION READ WRITE 或 START TRANSACTION READ WRITE 能解除它,
+        // 服务端级的管理语句 (SET GLOBAL, KILL, FLUSH, GET_LOCK 等命名锁) 也不受它限制. 真正的边界是 DB 账号的权限
         if (options?.readOnly) {
           await conn.query('SET SESSION TRANSACTION READ ONLY');
         }
@@ -287,7 +304,7 @@ export class MySQLDriver implements IDatabaseDriver {
           const [result, fields] = await conn.query(asArrays(sql));
           results.push({ sql, ...this.toQueryResult(result, fields, Date.now() - start) });
         }
-        return { results, warning: openTransactionWarning(statements) };
+        return { results, warning: openTransactionWarning(statements), ...(cancelled ? { cancelled: true } : {}) };
       } catch (cause) {
         return {
           results,

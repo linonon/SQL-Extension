@@ -261,8 +261,7 @@ export async function handleSqlMessage(
         return true;
       }
 
-      case 'listDatabasesAndTables':
-      case 'refreshDatabases': {
+      case 'listDatabasesAndTables': {
         try {
           const databases = await listDatabasesWithTables(ctx.getDriver());
           ctx.post({ type: 'databaseTableList', databases });
@@ -388,9 +387,11 @@ async function runQuery(
   db: string,
   ctx: SqlMessageContext
 ): Promise<{ type: 'queryBatchResult'; statements: StatementResult[]; warning?: string }> {
-  // 破坏性操作确认网: DROP/TRUNCATE, ALTER TABLE ... DROP 及无 WHERE 的整表 DELETE/UPDATE
+  // 破坏性操作确认网: DROP/TRUNCATE, ALTER TABLE ... DROP 及无 WHERE 的整表 DELETE/UPDATE.
+  // 只读连接通常不问 (只读会话本就拒绝这些语句); 但语句里出现 READ WRITE 时用户可能在解除只读, 照样问
   const driver = ctx.getDriver();
-  if (isWholeTableWrite(sql, driver.driverType)) {
+  const sessionStaysReadOnly = ctx.readOnly && !/\bREAD\s+WRITE\b/i.test(sql);
+  if (!sessionStaysReadOnly && isWholeTableWrite(sql, driver.driverType)) {
     const confirm = await vscode.window.showWarningMessage(
       'This query contains a destructive operation (DROP/TRUNCATE, ALTER TABLE ... DROP, or DELETE/UPDATE without WHERE). Continue?',
       { modal: true },
@@ -405,21 +406,26 @@ async function runQuery(
   const { promise, cancel } = driver.executeBatch(stmts, db, { readOnly: ctx.readOnly });
   ctx.pendingCancels.set(ctx.panel, cancel);
   try {
-    const { results, error, warning } = await promise;
-    // 网格只展示最后一个结果集 (与 webview 的 lastResultSetFromBatch 同一判定): 只有它带行 (截到 RESULT_ROW_CAP),
+    const { results, error, warning, cancelled } = await promise;
+    // 取消时在跑的是最后一条 (语句之间的取消走 error). 它返回的结果集按已取消报告 (KILL QUERY 打断的 SELECT SLEEP() 照常返回 1);
+    // 写语句照常返回说明已生效, 照实报告
+    const cancelledAt = !error && cancelled && results.at(-1)?.columns.length ? results.length - 1 : -1;
+    // 网格只展示最后一个 ok 的结果集 (与 webview 的 lastResultSetFromBatch 同一判定): 只有它带行 (截到 RESULT_ROW_CAP),
     // 其余结果集只留行数给摘要
     let shown = -1;
-    results.forEach((r, i) => { if (r.columns.length > 0) { shown = i; } });
-    const statements: StatementResult[] = results.map((r, i) => ({
-      index: i + 1,
-      sql: r.sql,
-      status: 'ok',
-      executionTime: r.executionTime,
-      affectedRows: r.affectedRows,
-      columns: [...r.columns],
-      ...(r.columns.length > 0 ? { rowCount: r.rows.length } : {}),
-      ...(i === shown ? { rows: r.rows.slice(0, RESULT_ROW_CAP), truncated: r.rows.length > RESULT_ROW_CAP } : {}),
-    }));
+    results.forEach((r, i) => { if (r.columns.length > 0 && i !== cancelledAt) { shown = i; } });
+    const statements: StatementResult[] = results.map((r, i) => i === cancelledAt
+      ? { index: i + 1, sql: r.sql, status: 'error', error: 'Query cancelled' }
+      : {
+        index: i + 1,
+        sql: r.sql,
+        status: 'ok',
+        executionTime: r.executionTime,
+        affectedRows: r.affectedRows,
+        columns: [...r.columns],
+        ...(r.columns.length > 0 ? { rowCount: r.rows.length } : {}),
+        ...(i === shown ? { rows: r.rows.slice(0, RESULT_ROW_CAP), truncated: r.rows.length > RESULT_ROW_CAP } : {}),
+      });
     if (error) {
       statements.push({ index: statements.length + 1, sql: stmts[error.index], status: 'error', error: sanitizeErrorMessage(error.cause) });
       for (const stmt of stmts.slice(error.index + 1)) {
@@ -435,11 +441,21 @@ async function runQuery(
 // PG 按库建连接, 连不上某个库时的 SQLSTATE: 无 CONNECT 权限 / 库已不存在 / pg_hba 拒绝 (如云托管的管理库)
 const UNREACHABLE_DATABASE_CODES = new Set(['42501', '3D000', '28000']);
 
-// db-browser 左侧列表: 列出所有 database 及其 table.
-// 最多 4 个库并发: PG 每个库要新开一条连接, 库多时不能一次占满服务端 max_connections
+// db-browser 左侧列表: 列出所有 database 及其 table (webview 隐藏的系统库也在内, 切换显示时不用重取).
+// MySQL 两条查询取完; PG 逐库查, 最多 4 个库并发: 每个库要新开一条连接, 库多时不能一次占满服务端 max_connections
 async function listDatabasesWithTables(
   driver: IDatabaseDriver
 ): Promise<{ name: string; tables: { name: string; rowCount: number }[] }[]> {
+  if (driver.listAllTables) {
+    const [names, all] = await Promise.all([driver.listDatabases(), driver.listAllTables()]);
+    const byDb = new Map<string, { name: string; rowCount: number }[]>();
+    for (const t of all) {
+      const list = byDb.get(t.schema) ?? [];
+      list.push({ name: t.name, rowCount: t.rowCount });
+      byDb.set(t.schema, list);
+    }
+    return names.map((name) => ({ name, tables: byDb.get(name) ?? [] }));
+  }
   const dbNames = await driver.listDatabases();
   const out: { name: string; tables: { name: string; rowCount: number }[] }[] = new Array(dbNames.length);
   let next = 0;

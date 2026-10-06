@@ -205,6 +205,22 @@ describe('routeByDriver Mongo', () => {
   });
 });
 
+describe('routeByDriver Redis read', () => {
+  it('常用读命令放行; 写命令拒绝, 报错不引导改用 db_execute 绕过', async () => {
+    const redis = { executeCommandInDb: vi.fn().mockResolvedValue([]) };
+    const src = { getRedisDriver: () => redis } as unknown as DriverSource;
+    for (const q of ['ZREVRANGE z 0 9 WITHSCORES', 'zscore z m', 'HKEYS h', 'LINDEX l 0', 'XREVRANGE s + - COUNT 5', 'GETRANGE k 0 9']) {
+      expect(isErr(await routeByDriver('read', 'redis', 'c', q, '0', src))).toBe(false);
+    }
+    const r = await routeByDriver('read', 'redis', 'c', 'SET k v', '0', src);
+    expect(isErr(r)).toBe(true);
+    const { error } = JSON.parse(r.content[0].text) as { error: string };
+    expect(error).toContain('"SET" is not a read command');
+    expect(error).not.toMatch(/use db_execute/i);
+    expect(redis.executeCommandInDb).toHaveBeenCalledTimes(6);
+  });
+});
+
 describe('isDestructiveRequest (db_execute 执行前确认)', () => {
   it.each([
     ['mysql', 'DROP TABLE t', true],

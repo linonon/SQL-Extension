@@ -66,6 +66,7 @@ export const window = {
   showErrorMessage: async () => undefined,
   showSaveDialog: async () => undefined,
   showOpenDialog: async () => undefined,
+  showInputBox: async () => undefined,
   withProgress: async (_opts: unknown, task: Function) => task({ report: () => {} }, { isCancellationRequested: false }),
 };
 

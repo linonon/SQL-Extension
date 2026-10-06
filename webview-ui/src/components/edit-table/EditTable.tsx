@@ -18,7 +18,7 @@ interface EditableColumn {
   readonly isModified: boolean;
 }
 
-function toEditable(col: DetailedColumnInfo): EditableColumn {
+export function toEditable(col: DetailedColumnInfo): EditableColumn {
   return {
     originalName: col.name,
     name: col.name,
@@ -33,7 +33,8 @@ function toEditable(col: DetailedColumnInfo): EditableColumn {
   };
 }
 
-function buildChanges(
+// 改动的列发完整定义 (原列合并改动, 带原列的 extra), 并标出改了哪些属性: MySQL 据此整列重写, PG 只 ALTER 改动的属性
+export function buildChanges(
   original: readonly DetailedColumnInfo[],
   columns: readonly EditableColumn[]
 ): AlterTableChanges {
@@ -70,19 +71,24 @@ function buildChanges(
     const orig = original.find((o) => o.name === col.originalName);
     if (!orig) { continue; }
 
-    const mods: ModifyColumnDef = {
-      name: col.name !== col.originalName ? col.name : col.originalName,
-      ...(col.dataType !== orig.dataType ? { dataType: col.dataType } : {}),
-      ...(col.nullable !== orig.nullable ? { nullable: col.nullable } : {}),
-      ...(col.defaultValue !== (orig.defaultValue ?? '') ? { defaultValue: col.defaultValue || null } : {}),
-      ...(col.comment !== orig.comment ? { comment: col.comment } : {}),
-    };
+    const changed: ModifyColumnDef['changed'][number][] = [];
+    if (col.dataType !== orig.dataType) { changed.push('dataType'); }
+    if (col.nullable !== orig.nullable) { changed.push('nullable'); }
+    if (col.defaultValue !== (orig.defaultValue ?? '')) { changed.push('defaultValue'); }
+    if (col.comment !== orig.comment) { changed.push('comment'); }
 
-    const hasChanges = mods.dataType !== undefined || mods.nullable !== undefined
-      || mods.defaultValue !== undefined || mods.comment !== undefined;
-
-    if (hasChanges) {
-      modifiedColumns.push(mods);
+    if (changed.length > 0) {
+      modifiedColumns.push({
+        name: col.name,
+        dataType: col.dataType,
+        nullable: col.nullable,
+        // 未改动的默认值用原值: 输入框把 null 和空串都显示成空
+        defaultValue: changed.includes('defaultValue') ? (col.defaultValue || null) : orig.defaultValue,
+        comment: col.comment,
+        extra: orig.extra,
+        collation: orig.collation,
+        changed,
+      });
     }
   }
 

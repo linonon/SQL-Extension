@@ -10,12 +10,11 @@ describe('readOnlyRejection', () => {
     expect(reject({ type: 'batchUpdate' })).toEqual({ type: 'batchUpdateResult', success: false, error: reason });
     expect(reject({ type: 'alterTable' })).toEqual({ type: 'alterTableResult', success: false, error: reason });
     expect(reject({ type: 'mongoDeleteDocument' })).toEqual({ type: 'mongoOperationResult', success: false, error: reason });
-    expect(reject({ type: 'mongoDropCollection' })).toEqual({ type: 'mongoCollectionDropped', success: false, error: reason });
-    expect(reject({ type: 'redisDeleteKeys' })).toEqual({ type: 'redisDeleteKeysResult', success: false, deletedKeys: [], error: reason });
     expect(reject({ type: 'kafkaProduceMessage' })).toEqual({ type: 'kafkaProduceResult', success: false, error: reason });
-    // 宿主弹框的写入口没有专属回执, 回通用 error
-    expect(reject({ type: 'importSql' })).toBeNull();
-    expect(reject({ type: 'redisAddKeyPrompt' })).toBeNull();
+    // 宿主弹框的写入口, 以及 webview 只处理成功回执的写消息: 不回执 (null), 由宿主弹提示
+    for (const type of ['importSql', 'redisAddKeyPrompt', 'redisImport', 'mongoImportCollection', 'redisDeleteKeys']) {
+      expect(reject({ type })).toBeNull();
+    }
   });
 
   it('SQL / Mongo / Redis / Kafka 的每个写消息都被拦', () => {
@@ -25,8 +24,8 @@ describe('readOnlyRejection', () => {
       'mongoImportCollection', 'mongoCreateCollection', 'mongoDropCollection',
       'redisSetString', 'redisHashDelete', 'redisListPush', 'redisListRemove', 'redisListBatchSet',
       'redisSetAdd', 'redisSetRemove', 'redisZSetAdd', 'redisZSetRemove', 'redisSetBatchEdit',
-      'redisHashBatchEdit', 'redisZSetBatchEdit', 'redisDeleteKeys', 'redisSetTTLPrompt', 'redisSetTTL',
-      'redisRemoveTTL', 'redisImport', 'redisAddKeyPrompt', 'kafkaProduceMessage',
+      'redisHashBatchEdit', 'redisZSetBatchEdit', 'redisDeleteKeys', 'redisSetTTLPrompt',
+      'redisImport', 'redisAddKeyPrompt', 'kafkaProduceMessage',
     ];
     expect(writes.filter((type) => reject({ type }) === undefined)).toEqual([]);
   });

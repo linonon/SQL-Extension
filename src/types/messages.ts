@@ -109,7 +109,6 @@ export type ExtensionMessage =
   | { type: 'mongoDocumentCount'; requestId: number; total: number | null }
   | { type: 'mongoAllCollectionList'; collections: readonly { readonly database: string; readonly name: string; readonly count: number }[] }
   | { type: 'mongoOperationResult'; success: boolean; error?: string; affectedRows?: number; message?: string }
-  | { type: 'mongoExportResult'; success: boolean; count?: number; error?: string }
   | { type: 'mongoImportResult'; success: boolean; inserted?: number; error?: string }
   | { type: 'mongoCollectionCreated'; success: boolean; error?: string }
   | { type: 'mongoCollectionDropped'; success: boolean; database?: string; collection?: string; error?: string }
@@ -158,8 +157,6 @@ export type WebviewMessage =
   | { type: 'redisZSetBatchEdit'; key: string; edits: ReadonlyArray<{ oldMember: string; newMember: string; score: number }>; database: number }
   | { type: 'redisDeleteKeys'; keys: readonly string[]; database: number }
   | { type: 'redisSetTTLPrompt'; key: string; database: number }
-  | { type: 'redisSetTTL'; key: string; ttl: number; database: number }
-  | { type: 'redisRemoveTTL'; key: string; database: number }
   | { type: 'redisExecuteCommand'; command: string; database: number }
   | { type: 'redisHashScan'; key: string; database: number; cursor: string; count: number }
   | { type: 'redisListDatabases' }
@@ -188,7 +185,6 @@ export type WebviewMessage =
   | { type: 'mongoCreateCollection'; database: string; collection: string }
   | { type: 'mongoDropCollection'; database: string; collection: string }
   | { type: 'listDatabasesAndTables' }
-  | { type: 'refreshDatabases' }
   | { type: 'showTableDDL'; database: string; table: string }
   | { type: 'dumpTable'; database: string; table: string; includeData: boolean }
   | { type: 'importSql'; database: string }

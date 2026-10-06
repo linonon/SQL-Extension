@@ -288,7 +288,7 @@ export function QueryEditor({ connectionName, database, driverType, initialSql, 
     postMessage({ type: 'cancelQuery' });
   }, [postMessage]);
 
-  const warnings = useMemo(() => diagnoseSql(sqlText), [sqlText]);
+  const warnings = useMemo(() => diagnoseSql(sqlText, driverType === 'postgresql' ? 'postgresql' : 'mysql'), [sqlText, driverType]);
 
   const handleFormat = useCallback(() => {
     setSqlText(formatSql(sqlText, driverType));

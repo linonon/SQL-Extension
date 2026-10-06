@@ -128,11 +128,9 @@ export async function handleMongoMessage(
         const { json, count } = await mongo.exportDocuments(database, collection, buildExportPipeline(filter, sort, projection), jsonl);
         await vscode.workspace.fs.writeFile(uri, Buffer.from(json, 'utf-8'));
         vscode.window.showInformationMessage(`Exported ${count} document(s) to ${uri.fsPath}`);
-        post({ type: 'mongoExportResult', success: true, count });
       } catch (e) {
         const errMsg = e instanceof Error ? e.message : String(e);
         vscode.window.showErrorMessage(`Export failed: ${errMsg}`);
-        post({ type: 'mongoExportResult', success: false, error: errMsg });
       }
       return true;
     }

@@ -322,16 +322,32 @@ describe('handleRedisMessage', () => {
       expect(driver.deleteKey).toHaveBeenCalledTimes(3);
     });
 
-    it('redisSetTTL', async () => {
-      const msg = { type: 'redisSetTTL', key: 'k', ttl: 300, database: 0 } as WebviewMessage;
+    it('redisSetTTLPrompt: 输入秒数设 TTL, -1 移除 TTL, 都回 redisOperationResult', async () => {
+      const input = vi.spyOn(vscode.window, 'showInputBox').mockResolvedValueOnce('300').mockResolvedValueOnce('-1');
+      const msg = { type: 'redisSetTTLPrompt', key: 'k', database: 0 } as WebviewMessage;
       await handleRedisMessage(msg, driver, postMessage);
       expect(driver.setTTL).toHaveBeenCalledWith(0, 'k', 300);
-    });
-
-    it('redisRemoveTTL', async () => {
-      const msg = { type: 'redisRemoveTTL', key: 'k', database: 0 } as WebviewMessage;
       await handleRedisMessage(msg, driver, postMessage);
       expect(driver.removeTTL).toHaveBeenCalledWith(0, 'k');
+      expect(postMessage).toHaveBeenCalledTimes(2);
+      expect(postMessage).toHaveBeenCalledWith({ type: 'redisOperationResult', success: true });
+      input.mockRestore();
+    });
+
+    it('导出中途取消: 普通提示 Export cancelled, 不报错也不写文件', async () => {
+      (driver.scanAllKeys as Mock).mockResolvedValue([Buffer.from('a')]);
+      const save = vi.spyOn(vscode.window, 'showSaveDialog').mockResolvedValue(vscode.Uri.file('/tmp/x.json') as never);
+      const progress = vi.spyOn(vscode.window, 'withProgress').mockImplementation(((_o: unknown, task: Function) =>
+        task({ report: () => {} }, { isCancellationRequested: true })) as never);
+      const info = vi.spyOn(vscode.window, 'showInformationMessage').mockClear();
+      const error = vi.spyOn(vscode.window, 'showErrorMessage').mockClear();
+      const write = vi.spyOn(vscode.workspace.fs, 'writeFile').mockClear();
+      await handleRedisMessage({ type: 'redisExportPattern', database: 0, pattern: '*' }, driver, postMessage);
+      expect(info).toHaveBeenCalledWith('Export cancelled');
+      expect(error).not.toHaveBeenCalled();
+      expect(write).not.toHaveBeenCalled();
+      save.mockRestore();
+      progress.mockRestore();
     });
   });
 

@@ -195,8 +195,14 @@ export function openTransactionWarning(executed: readonly string[]): string | un
   return open ? OPEN_TRANSACTION_WARNING : undefined;
 }
 
-// 脚本中任一条语句命中即需确认. 逐条判断, 避免别条的 WHERE/前缀掩盖某条整表操作
+// 需要确认的语句在 sql 里的位置 [start, end) (去掉首尾空白, 不含 ;): 编辑器划线用, 与执行前的确认同一判定.
+// 逐条判断, 避免别条的 WHERE/前缀掩盖某条整表操作
 // (PG simple query protocol 单字符串可执行多语句, 按方言切分才能和服务端切得一样).
+export function destructiveStatementRanges(sql: string, dialect: SqlDialect): { readonly start: number; readonly end: number }[] {
+  return statementRanges(sql, dialect).filter(({ start, end }) => isDestructiveStatement(codeOnly(sql.slice(start, end), dialect)));
+}
+
+// 脚本中任一条语句命中即需确认
 export function isWholeTableWrite(sql: string, dialect: SqlDialect): boolean {
-  return splitSqlStatements(sql, dialect).some((stmt) => isDestructiveStatement(codeOnly(stmt, dialect)));
+  return destructiveStatementRanges(sql, dialect).length > 0;
 }

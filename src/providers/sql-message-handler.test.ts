@@ -70,13 +70,26 @@ describe('handleSqlMessage executeQuery mysql batch', () => {
     ], 'AGENT_NEW', { readOnly: false }]]);
   });
 
-  it('只读连接: 编辑器执行走只读会话', async () => {
+  it('只读连接: 编辑器执行走只读会话, 破坏性语句不弹确认 (只读会话会拒绝它)', async () => {
+    const warn = vi.mocked(vscode.window.showWarningMessage).mockClear();
     const driver = createMysqlDriver([]);
     await handleSqlMessage(
-      { type: 'executeQuery', requestId: 1, database: 'db', sql: 'UPDATE t SET a = 1 WHERE id = 1' } as WebviewMessage,
+      { type: 'executeQuery', requestId: 1, database: 'db', sql: 'DELETE FROM t' } as WebviewMessage,
       { ...createCtx(driver, []), readOnly: true },
     );
-    expect(batchCalls(driver)).toEqual([[['UPDATE t SET a = 1 WHERE id = 1'], 'AGENT_NEW', { readOnly: true }]]);
+    expect(warn).not.toHaveBeenCalled();
+    expect(batchCalls(driver)).toEqual([[['DELETE FROM t'], 'AGENT_NEW', { readOnly: true }]]);
+  });
+
+  it('只读连接上语句含 READ WRITE (可能在解除只读) 时, 破坏性语句照样确认', async () => {
+    const warn = vi.mocked(vscode.window.showWarningMessage).mockClear().mockResolvedValue(undefined as never);
+    const driver = createMysqlDriver([]);
+    await handleSqlMessage(
+      { type: 'executeQuery', requestId: 1, database: 'db', sql: 'SET SESSION TRANSACTION READ WRITE; DELETE FROM t' } as WebviewMessage,
+      { ...createCtx(driver, []), readOnly: true },
+    );
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(batchCalls(driver)).toEqual([]);
   });
 
   it('两条都成功时回 queryBatchResult', async () => {
@@ -114,6 +127,39 @@ describe('handleSqlMessage executeQuery mysql batch', () => {
     const entries = [{ sql: 'SELECT 1', database: 'AGENT_NEW', ts: 1, ok: true }];
     await handleSqlMessage({ type: 'listQueryHistory' }, { ...createCtx(driver, posts), queryHistory: { ...ctx.queryHistory, list: () => entries } });
     expect(posts).toEqual([{ type: 'queryHistory', entries }]);
+  });
+
+  it('取消后照常返回的结果集报为已取消; 照常返回的写语句照实报 ok', async () => {
+    const run = async (result: { columns: unknown[]; rows: unknown[]; affectedRows: number }) => {
+      const driver = createMysqlDriver([]);
+      (driver.executeBatch as ReturnType<typeof vi.fn>).mockReturnValue({
+        promise: Promise.resolve({ results: [{ ...result, executionTime: 1, sql: 'x' }], cancelled: true }), cancel: vi.fn(),
+      });
+      const posts: unknown[] = [];
+      await handleSqlMessage({ type: 'executeQuery', requestId: 1, database: 'db', sql: 'x' } as WebviewMessage, createCtx(driver, posts));
+      return (posts[0] as { statements: { status: string; error?: string }[] }).statements;
+    };
+    expect(await run({ columns: [{ name: 'SLEEP(10)' }], rows: [{ 'SLEEP(10)': 1 }], affectedRows: 0 }))
+      .toEqual([{ index: 1, sql: 'x', status: 'error', error: 'Query cancelled' }]);
+    expect((await run({ columns: [], rows: [], affectedRows: 3 }))[0].status).toBe('ok');
+
+    // 前面语句的结果集仍带行给网格: 被取消的最后一条不占展示位
+    const driver = createMysqlDriver([]);
+    (driver.executeBatch as ReturnType<typeof vi.fn>).mockReturnValue({
+      promise: Promise.resolve({
+        results: [
+          { columns: [{ name: 'id' }], rows: [{ id: 1 }], affectedRows: 0, executionTime: 1, sql: 'SELECT id FROM users' },
+          { columns: [{ name: 'SLEEP(10)' }], rows: [{ 'SLEEP(10)': 1 }], affectedRows: 0, executionTime: 1, sql: 'SELECT SLEEP(10)' },
+        ],
+        cancelled: true,
+      }),
+      cancel: vi.fn(),
+    });
+    const posts: unknown[] = [];
+    await handleSqlMessage({ type: 'executeQuery', requestId: 1, database: 'db', sql: 'x' } as WebviewMessage, createCtx(driver, posts));
+    const [first, second] = (posts[0] as { statements: { status: string; rows?: unknown[]; error?: string }[] }).statements;
+    expect(first).toMatchObject({ status: 'ok', rows: [{ id: 1 }] });
+    expect(second).toMatchObject({ status: 'error', error: 'Query cancelled' });
   });
 
   it('第二条失败则后续 skipped', async () => {
@@ -379,8 +425,26 @@ describe('handleSqlMessage listDatabasesAndTables', () => {
     (driver.listDatabases as ReturnType<typeof vi.fn>).mockResolvedValue(['a', 'b']);
     (driver.listTables as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Connection terminated'));
     const posts: unknown[] = [];
-    await handleSqlMessage({ type: 'refreshDatabases' } as WebviewMessage, createCtx(driver, posts));
+    await handleSqlMessage({ type: 'listDatabasesAndTables' } as WebviewMessage, createCtx(driver, posts));
     expect(posts).toEqual([{ type: 'databaseTableList', databases: [], error: 'Connection terminated' }]);
+  });
+
+  it('MySQL: 一次取完所有库的表 (不逐库 listTables), 没有表的库列成空库', async () => {
+    const driver = createMysqlDriver([]);
+    (driver.listDatabases as ReturnType<typeof vi.fn>).mockResolvedValue(['app', 'empty', 'mysql']);
+    driver.listAllTables = vi.fn().mockResolvedValue([
+      { name: 'orders', schema: 'app', rowCount: 3 },
+      { name: 'users', schema: 'app', rowCount: 5 },
+      { name: 'user', schema: 'mysql', rowCount: 1 },
+    ]);
+    const posts: unknown[] = [];
+    await handleSqlMessage({ type: 'listDatabasesAndTables' } as WebviewMessage, createCtx(driver, posts));
+    expect(driver.listTables).not.toHaveBeenCalled();
+    expect(posts).toEqual([{ type: 'databaseTableList', databases: [
+      { name: 'app', tables: [{ name: 'orders', rowCount: 3 }, { name: 'users', rowCount: 5 }] },
+      { name: 'empty', tables: [] },
+      { name: 'mysql', tables: [{ name: 'user', rowCount: 1 }] },
+    ] }]);
   });
 });
 

@@ -109,7 +109,13 @@ export async function handleRedisMessage(
       if (input === undefined) { return true; }
       const ttl = Number(input);
       const { key, database } = message;
-      return handleRedisMessage(ttl === -1 ? { type: 'redisRemoveTTL', key, database } : { type: 'redisSetTTL', key, ttl, database }, driver, postMessage);
+      try {
+        await (ttl === -1 ? driver.removeTTL(database, key) : driver.setTTL(database, key, ttl));
+        postMessage({ type: 'redisOperationResult', success: true });
+      } catch (err) {
+        postMessage({ type: 'redisOperationResult', success: false, error: err instanceof Error ? err.message : String(err) });
+      }
+      return true;
     }
   }
 
@@ -339,18 +345,6 @@ export async function handleRedisMessage(
         return true;
       }
 
-      case 'redisSetTTL': {
-        await driver.setTTL(message.database, message.key, message.ttl);
-        postMessage({ type: 'redisOperationResult', success: true });
-        return true;
-      }
-
-      case 'redisRemoveTTL': {
-        await driver.removeTTL(message.database, message.key);
-        postMessage({ type: 'redisOperationResult', success: true });
-        return true;
-      }
-
       case 'redisExecuteCommand': {
         const args = parseCommandArgs(message.command);
         // 命令栏可执行任意命令; 清库命令 (带不带 ASYNC / SYNC 参数) 先确认
@@ -398,13 +392,21 @@ async function exportToFile(
       defaultUri: vscode.Uri.file(`redis-export-db${database}.json`),
     });
     if (!uri) { return; }
+    // 用户取消时 result 为 null: 不写文件, 只给一条普通提示
     const result = await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification, title: `Exporting Redis db ${database}`, cancellable: true },
       (progress, token) => exportRedisKeys(driver, database, target, (done, total) => {
         if (token.isCancellationRequested) { throw new Error('Export cancelled'); }
         if (done % 100 === 0 || done === total) { progress.report({ message: `${done}/${total} keys` }); }
+      }).catch((err: unknown) => {
+        if (token.isCancellationRequested) { return null; }
+        throw err;
       })
     );
+    if (!result) {
+      vscode.window.showInformationMessage('Export cancelled');
+      return;
+    }
     await vscode.workspace.fs.writeFile(uri, Buffer.from(result.json, 'utf-8'));
     const summary = `Exported ${result.keyCount} key(s) from db ${database} to ${uri.fsPath}`;
     if (result.skipped) {

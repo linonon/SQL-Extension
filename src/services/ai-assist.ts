@@ -106,7 +106,7 @@ export async function listAiModels(): Promise<{ models: { id: string; name: stri
 
 /**
  * 提问实际用的模型, 与 listAiModels 的 selected 一致.
- * 设置是可用的 Copilot 模型时 effectiveModelId 必然选它, 不再起 `claude auth status` 子进程
+ * 设置是可用的 Copilot 模型时 effectiveModelId 必然选它, 这时不起 `claude auth status` 子进程
  */
 export async function resolveAiModel() {
   const setting = configuredModelId();

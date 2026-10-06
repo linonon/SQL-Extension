@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { buildAlterTableStatements } from './alter-table-builder';
-import type { AlterTableChanges } from '../types/query.js';
+import type { AlterTableChanges, ModifyColumnDef } from '../types/query.js';
 
 function emptyChanges(overrides?: Partial<AlterTableChanges>): AlterTableChanges {
   return {
@@ -9,6 +9,14 @@ function emptyChanges(overrides?: Partial<AlterTableChanges>): AlterTableChanges
     modifiedColumns: [],
     renamedColumns: [],
     ...overrides,
+  };
+}
+
+// 改动后的完整列: 原列 base (默认 int NULL, 无默认值 / 注释 / extra) 合并 edits, changed 即 edits 的键
+function mod(name: string, edits: Partial<ModifyColumnDef>, base: Partial<ModifyColumnDef> = {}): ModifyColumnDef {
+  return {
+    name, dataType: 'int', nullable: true, defaultValue: null, comment: '', extra: '',
+    ...base, ...edits, changed: Object.keys(edits) as ModifyColumnDef['changed'],
   };
 }
 
@@ -109,85 +117,103 @@ describe('buildAlterTableStatements', () => {
     });
 
     describe('modify column', () => {
-      it('修改 dataType', () => {
+      it('改类型: 未改动的 NOT NULL / DEFAULT / AUTO_INCREMENT / COMMENT 原样写回', () => {
         const changes = emptyChanges({
-          modifiedColumns: [{ name: 'age', dataType: 'bigint' }],
+          modifiedColumns: [mod('id', { dataType: 'bigint' }, { nullable: false, extra: 'auto_increment', comment: '主键' })],
         });
-        const stmts = buildAlterTableStatements(driver, 'users', changes);
-        expect(stmts).toEqual([
-          'ALTER TABLE `users` MODIFY COLUMN `age` bigint;',
+        expect(buildAlterTableStatements(driver, 'users', changes)).toEqual([
+          "ALTER TABLE `users` MODIFY COLUMN `id` bigint NOT NULL auto_increment COMMENT '主键';",
         ]);
       });
 
-      it('修改 nullable', () => {
+      it('只改注释: 仍是完整定义 (不会生成 MODIFY COLUMN c COMMENT ...)', () => {
         const changes = emptyChanges({
-          modifiedColumns: [{ name: 'email', nullable: false }],
+          modifiedColumns: [mod('status', { comment: '状态' }, { dataType: 'varchar(16)', nullable: false, defaultValue: 'active' })],
         });
-        const stmts = buildAlterTableStatements(driver, 'users', changes);
-        expect(stmts[0]).toContain('NOT NULL');
+        expect(buildAlterTableStatements(driver, 'users', changes)).toEqual([
+          "ALTER TABLE `users` MODIFY COLUMN `status` varchar(16) NOT NULL DEFAULT 'active' COMMENT '状态';",
+        ]);
       });
 
-      it('修改 nullable 为 true', () => {
+      it('CURRENT_TIMESTAMP 默认值与 on update 保留, DEFAULT_GENERATED 元信息去掉', () => {
         const changes = emptyChanges({
-          modifiedColumns: [{ name: 'email', nullable: true }],
+          modifiedColumns: [mod('updated_at', { nullable: false }, {
+            dataType: 'datetime(3)', defaultValue: 'CURRENT_TIMESTAMP(3)', extra: 'DEFAULT_GENERATED on update CURRENT_TIMESTAMP(3)',
+          })],
         });
-        const stmts = buildAlterTableStatements(driver, 'users', changes);
-        expect(stmts[0]).toContain('NULL');
-        expect(stmts[0]).not.toContain('NOT NULL');
+        expect(buildAlterTableStatements(driver, 'users', changes)).toEqual([
+          'ALTER TABLE `users` MODIFY COLUMN `updated_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) on update CURRENT_TIMESTAMP(3);',
+        ]);
       });
 
-      it('defaultValue 为 null 时生成 DEFAULT NULL', () => {
-        const changes = emptyChanges({
-          modifiedColumns: [{ name: 'status', defaultValue: null }],
+      it('未改动的表达式默认值 (DEFAULT_GENERATED) 加括号写回; 改过的默认值按输入处理', () => {
+        const kept = emptyChanges({
+          modifiedColumns: [mod('uid', { comment: 'x' }, { dataType: 'varchar(36)', defaultValue: 'uuid()', extra: 'DEFAULT_GENERATED' })],
         });
-        const stmts = buildAlterTableStatements(driver, 'users', changes);
-        expect(stmts[0]).toContain('DEFAULT NULL');
-      });
-
-      it('defaultValue 为数值', () => {
-        const changes = emptyChanges({
-          modifiedColumns: [{ name: 'age', defaultValue: '42' }],
-        });
-        const stmts = buildAlterTableStatements(driver, 'users', changes);
-        expect(stmts[0]).toContain('DEFAULT 42');
-      });
-
-      it('defaultValue 为字符串', () => {
-        const changes = emptyChanges({
-          modifiedColumns: [{ name: 'status', defaultValue: 'active' }],
-        });
-        const stmts = buildAlterTableStatements(driver, 'users', changes);
-        expect(stmts[0]).toContain("DEFAULT 'active'");
-      });
-
-      it('修改 comment', () => {
-        const changes = emptyChanges({
-          modifiedColumns: [{ name: 'email', comment: '新注释' }],
-        });
-        const stmts = buildAlterTableStatements(driver, 'users', changes);
-        expect(stmts[0]).toContain("COMMENT '新注释'");
-      });
-
-      it('多个属性合并到一条 MODIFY 语句', () => {
-        const changes = emptyChanges({
-          modifiedColumns: [{
-            name: 'age',
-            dataType: 'bigint',
-            nullable: false,
-            defaultValue: '0',
-            comment: '年龄',
-          }],
-        });
-        const stmts = buildAlterTableStatements(driver, 'users', changes);
-        expect(stmts).toHaveLength(1);
-        expect(stmts[0]).toBe(
-          "ALTER TABLE `users` MODIFY COLUMN `age` bigint NOT NULL DEFAULT 0 COMMENT '年龄';"
+        expect(buildAlterTableStatements(driver, 't', kept)[0]).toBe(
+          "ALTER TABLE `t` MODIFY COLUMN `uid` varchar(36) NULL DEFAULT (uuid()) COMMENT 'x';"
         );
+        const edited = emptyChanges({
+          modifiedColumns: [mod('uid', { defaultValue: 'none' }, { dataType: 'varchar(36)', extra: 'DEFAULT_GENERATED' })],
+        });
+        expect(buildAlterTableStatements(driver, 't', edited)[0]).toBe(
+          "ALTER TABLE `t` MODIFY COLUMN `uid` varchar(36) NULL DEFAULT 'none';"
+        );
+      });
+
+      it('原列 collation 写回 (不写会回落到表默认); 改成非字符串类型或类型自带 COLLATE 时不写', () => {
+        const base = { dataType: 'varchar(64)', nullable: false, collation: 'utf8mb4_bin' };
+        const stmts = buildAlterTableStatements(driver, 't', emptyChanges({
+          modifiedColumns: [
+            mod('code', { comment: '编码' }, base),
+            mod('code', { dataType: 'varchar(128)' }, base),
+            mod('code', { dataType: 'int' }, base),
+            mod('code', { dataType: 'varchar(64) COLLATE utf8mb4_general_ci' }, base),
+          ],
+        }));
+        expect(stmts).toEqual([
+          "ALTER TABLE `t` MODIFY COLUMN `code` varchar(64) COLLATE utf8mb4_bin NOT NULL COMMENT '编码';",
+          'ALTER TABLE `t` MODIFY COLUMN `code` varchar(128) COLLATE utf8mb4_bin NOT NULL;',
+          'ALTER TABLE `t` MODIFY COLUMN `code` int NOT NULL;',
+          'ALTER TABLE `t` MODIFY COLUMN `code` varchar(64) COLLATE utf8mb4_general_ci NOT NULL;',
+        ]);
+      });
+
+      it('未改动的表达式默认值: information_schema 里转义过的引号还原', () => {
+        const changes = emptyChanges({
+          modifiedColumns: [mod('tags', { comment: 'x' }, { dataType: 'json', defaultValue: "_utf8mb4\\'[]\\'", extra: 'DEFAULT_GENERATED' })],
+        });
+        expect(buildAlterTableStatements(driver, 't', changes)[0]).toBe(
+          "ALTER TABLE `t` MODIFY COLUMN `tags` json NULL DEFAULT (_utf8mb4'[]') COMMENT 'x';"
+        );
+      });
+
+      it('默认值清空 (null) 时不写 DEFAULT: NOT NULL 列不会得到非法的 DEFAULT NULL', () => {
+        const changes = emptyChanges({
+          modifiedColumns: [mod('code', { defaultValue: null }, { dataType: 'varchar(8)', nullable: false, defaultValue: '' })],
+        });
+        expect(buildAlterTableStatements(driver, 't', changes)[0]).toBe('ALTER TABLE `t` MODIFY COLUMN `code` varchar(8) NOT NULL;');
+      });
+
+      it('字符串默认值与注释里的反斜杠和单引号都转义; 带前导零的数字串加引号', () => {
+        const changes = emptyChanges({
+          modifiedColumns: [mod('p', { comment: "C:\\dir 'x'" }, { dataType: 'varchar(8)', defaultValue: "a\\b'c" }),
+            mod('code', { nullable: false }, { dataType: 'varchar(3)', defaultValue: '007' })],
+        });
+        expect(buildAlterTableStatements(driver, 't', changes)).toEqual([
+          "ALTER TABLE `t` MODIFY COLUMN `p` varchar(8) NULL DEFAULT 'a\\\\b''c' COMMENT 'C:\\\\dir ''x''';",
+          "ALTER TABLE `t` MODIFY COLUMN `code` varchar(3) NOT NULL DEFAULT '007';",
+        ]);
+      });
+
+      it('位串默认值 (b\'0\') 不加引号', () => {
+        const changes = emptyChanges({ modifiedColumns: [mod('flag', { comment: 'f' }, { dataType: 'bit(1)', defaultValue: "b'0'" })] });
+        expect(buildAlterTableStatements(driver, 't', changes)[0]).toBe("ALTER TABLE `t` MODIFY COLUMN `flag` bit(1) NULL DEFAULT b'0' COMMENT 'f';");
       });
 
       it('无变更属性时不生成语句', () => {
         const changes = emptyChanges({
-          modifiedColumns: [{ name: 'age' }],
+          modifiedColumns: [mod('age', {})],
         });
         const stmts = buildAlterTableStatements(driver, 'users', changes);
         expect(stmts).toEqual([]);
@@ -258,7 +284,7 @@ describe('buildAlterTableStatements', () => {
     describe('modify column', () => {
       it('修改 dataType 生成 ALTER COLUMN TYPE', () => {
         const changes = emptyChanges({
-          modifiedColumns: [{ name: 'age', dataType: 'bigint' }],
+          modifiedColumns: [mod('age', { dataType: 'bigint' })],
         });
         const stmts = buildAlterTableStatements(driver, 'users', changes);
         expect(stmts).toEqual([
@@ -268,7 +294,7 @@ describe('buildAlterTableStatements', () => {
 
       it('nullable=true 生成 DROP NOT NULL', () => {
         const changes = emptyChanges({
-          modifiedColumns: [{ name: 'email', nullable: true }],
+          modifiedColumns: [mod('email', { nullable: true })],
         });
         const stmts = buildAlterTableStatements(driver, 'users', changes);
         expect(stmts).toEqual([
@@ -278,7 +304,7 @@ describe('buildAlterTableStatements', () => {
 
       it('nullable=false 生成 SET NOT NULL', () => {
         const changes = emptyChanges({
-          modifiedColumns: [{ name: 'email', nullable: false }],
+          modifiedColumns: [mod('email', { nullable: false })],
         });
         const stmts = buildAlterTableStatements(driver, 'users', changes);
         expect(stmts).toEqual([
@@ -288,7 +314,7 @@ describe('buildAlterTableStatements', () => {
 
       it('defaultValue=null 生成 DROP DEFAULT', () => {
         const changes = emptyChanges({
-          modifiedColumns: [{ name: 'status', defaultValue: null }],
+          modifiedColumns: [mod('status', { defaultValue: null })],
         });
         const stmts = buildAlterTableStatements(driver, 'users', changes);
         expect(stmts).toEqual([
@@ -298,7 +324,7 @@ describe('buildAlterTableStatements', () => {
 
       it('defaultValue 非 null 生成 SET DEFAULT', () => {
         const changes = emptyChanges({
-          modifiedColumns: [{ name: 'status', defaultValue: 'active' }],
+          modifiedColumns: [mod('status', { defaultValue: 'active' })],
         });
         const stmts = buildAlterTableStatements(driver, 'users', changes);
         expect(stmts).toEqual([
@@ -308,7 +334,7 @@ describe('buildAlterTableStatements', () => {
 
       it('defaultValue 数值不带引号', () => {
         const changes = emptyChanges({
-          modifiedColumns: [{ name: 'age', defaultValue: '18' }],
+          modifiedColumns: [mod('age', { defaultValue: '18' })],
         });
         const stmts = buildAlterTableStatements(driver, 'users', changes);
         expect(stmts).toEqual([
@@ -318,7 +344,7 @@ describe('buildAlterTableStatements', () => {
 
       it('修改 comment 生成 COMMENT ON', () => {
         const changes = emptyChanges({
-          modifiedColumns: [{ name: 'email', comment: '新注释' }],
+          modifiedColumns: [mod('email', { comment: '新注释' })],
         });
         const stmts = buildAlterTableStatements(driver, 'users', changes);
         expect(stmts).toEqual([
@@ -328,13 +354,12 @@ describe('buildAlterTableStatements', () => {
 
       it('多个属性生成多条独立语句', () => {
         const changes = emptyChanges({
-          modifiedColumns: [{
-            name: 'age',
+          modifiedColumns: [mod('age', {
             dataType: 'bigint',
             nullable: false,
             defaultValue: '0',
             comment: '年龄',
-          }],
+          })],
         });
         const stmts = buildAlterTableStatements(driver, 'users', changes);
         expect(stmts).toHaveLength(4);
@@ -379,14 +404,6 @@ describe('buildAlterTableStatements', () => {
   });
 
   describe('buildDefaultClause (通过 add/modify 间接测试)', () => {
-    it('null -> DEFAULT NULL', () => {
-      const changes = emptyChanges({
-        modifiedColumns: [{ name: 'col', defaultValue: null }],
-      });
-      const stmts = buildAlterTableStatements('mysql', 'tbl', changes);
-      expect(stmts[0]).toContain('DEFAULT NULL');
-    });
-
     it('数值不带引号: 整数', () => {
       const changes = emptyChanges({
         addedColumns: [{ name: 'col', dataType: 'int', nullable: true, defaultValue: '42', comment: '' }],
@@ -439,13 +456,13 @@ describe('buildAlterTableStatements', () => {
 
     it('函数调用默认值不加引号 (now() / gen_random_uuid())', () => {
       const mysqlStmts = buildAlterTableStatements('mysql', 'tbl', emptyChanges({
-        modifiedColumns: [{ name: 'ts', defaultValue: 'now()' }],
+        modifiedColumns: [mod('ts', { defaultValue: 'now()' })],
       }));
       expect(mysqlStmts[0]).toContain('DEFAULT now()');
       expect(mysqlStmts[0]).not.toContain("'now()'");
 
       const pgStmts = buildAlterTableStatements('postgresql', 'tbl', emptyChanges({
-        modifiedColumns: [{ name: 'uid', defaultValue: 'gen_random_uuid()' }],
+        modifiedColumns: [mod('uid', { defaultValue: 'gen_random_uuid()' })],
       }));
       expect(pgStmts[0]).toContain('SET DEFAULT gen_random_uuid()');
       expect(pgStmts[0]).not.toContain("'gen_random_uuid()'");

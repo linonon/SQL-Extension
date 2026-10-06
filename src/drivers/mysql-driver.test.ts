@@ -224,6 +224,41 @@ describe('MySQLDriver', () => {
 
       expect(tables[0].rowCount).toBe(0);
     });
+
+    it('listAllTables: 一条查询取所有库的表, 不按库过滤', async () => {
+      mockPool.query.mockResolvedValue([[{ name: 'users', schema: 'a', rowCount: '1' }, { name: 'logs', schema: 'b', rowCount: '2' }], []]);
+      await driver.connect({
+        id: 'test-id', name: 'test', driverType: 'mysql', host: 'localhost', port: 3306, username: 'root', password: 'secret', database: '',
+      });
+      mockPool.query.mockClear();
+
+      expect(await driver.listAllTables()).toEqual([
+        { name: 'users', schema: 'a', rowCount: 1 },
+        { name: 'logs', schema: 'b', rowCount: 2 },
+      ]);
+      expect(mockPool.query).toHaveBeenCalledTimes(1);
+      const [sql, params] = mockPool.query.mock.calls[0];
+      expect(sql).not.toContain('TABLE_SCHEMA = ?');
+      expect(params).toEqual([]);
+    });
+  });
+
+  describe('getDetailedColumns', () => {
+    it('带 collation; MariaDB 带引号的字符串默认值还原成原值, 表达式与 MySQL 原值不动', async () => {
+      const row = (defaultValue: string | null, collation: string | null) => ({
+        name: 'c', dataType: 'varchar(8)', nullable: 'YES', columnKey: '', defaultValue, extra: '', comment: '', collation,
+      });
+      mockPool.query.mockResolvedValue([[
+        row("'it''s a\\\\b'", 'utf8mb4_bin'), row('current_timestamp()', null), row('abc', 'utf8mb4_bin'), row(null, null),
+      ], []]);
+      await driver.connect({
+        id: 'test-id', name: 'test', driverType: 'mysql', host: 'localhost', port: 3306, username: 'root', password: 'secret', database: '',
+      });
+
+      const cols = await driver.getDetailedColumns('db', 't');
+      expect(cols.map((c) => c.defaultValue)).toEqual(["it's a\\b", 'current_timestamp()', 'abc', null]);
+      expect(cols.map((c) => c.collation)).toEqual(['utf8mb4_bin', undefined, 'utf8mb4_bin', undefined]);
+    });
   });
 
   describe('listColumns', () => {
@@ -565,6 +600,28 @@ describe('MySQLDriver', () => {
       await done.promise;
       done.cancel();
       expect(mysql.default.createConnection).not.toHaveBeenCalled();
+      expect((await done.promise).cancelled).toBeUndefined();
+    });
+
+    it('最后一条被取消却照常返回 (KILL QUERY 打断的 SLEEP() 返回 1): 结果带 cancelled', async () => {
+      const mysql = await import('mysql2/promise');
+      const killConn = (mysql as any).__mockKillConn;
+      killConn.query.mockResolvedValue([{ affectedRows: 0 }, undefined]);
+      killConn.end.mockResolvedValue(undefined);
+      let finish!: () => void;
+      const conn = { threadId: 9, destroy: vi.fn(), query: vi.fn(() => new Promise((r) => { finish = () => r([[[1]], [{ name: 'SLEEP(10)' }]]); })) };
+      mockPool.getConnection.mockResolvedValue({ release: vi.fn() });
+      await driver.connect(cfg);
+      mockPool.getConnection.mockResolvedValue(conn);
+
+      const run = driver.executeBatch(['SELECT SLEEP(10)']);
+      await vi.waitFor(() => expect(conn.query).toHaveBeenCalledTimes(1));
+      run.cancel();
+      finish();
+      const out = await run.promise;
+      expect(out.error).toBeUndefined();
+      expect(out.cancelled).toBe(true);
+      expect(out.results).toHaveLength(1);
     });
   });
 

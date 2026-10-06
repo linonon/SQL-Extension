@@ -343,7 +343,9 @@ export class PgDriver implements IDatabaseDriver {
         client = await pool.connect();
         // pg.PoolClient 的类型定义未暴露 processID, 运行时存在, 供 pg_cancel_backend(pid) 使用
         pid = (client as unknown as { processID: number }).processID;
-        // 会话默认只读: 之后的隐式 / 显式事务都拒绝写与 DDL. 语句里显式 SET ... READ WRITE 能解除它: 这里防误写, 权限边界在 DB 账号
+        // 会话默认只读: 之后的隐式 / 显式事务都拒绝写与 DDL. 只防误写, 不是权限边界:
+        // 语句里的 SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE 或 BEGIN / START TRANSACTION READ WRITE 能解除它,
+        // 服务端级的操作 (pg_terminate_backend, pg_cancel_backend, advisory lock) 也不受它限制. 真正的边界是 DB 账号的权限
         if (options?.readOnly) {
           await client.query('SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY');
         }
@@ -369,7 +371,7 @@ export class PgDriver implements IDatabaseDriver {
             });
           }
         }
-        return { results, warning: open ? OPEN_TRANSACTION_WARNING : undefined };
+        return { results, warning: open ? OPEN_TRANSACTION_WARNING : undefined, ...(cancelled ? { cancelled: true } : {}) };
       } catch (cause) {
         return { results, error: { index, cause }, warning: open ? OPEN_TRANSACTION_WARNING : undefined };
       } finally {

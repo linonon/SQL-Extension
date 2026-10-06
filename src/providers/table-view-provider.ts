@@ -270,9 +270,8 @@ export class TableViewProvider implements vscode.Disposable {
     const blocked = connectionId ? writeBlockedReason(this.connectionConfig(connectionId)) : undefined;
     const rejection = blocked ? readOnlyRejection(message, blocked) : undefined;
     if (rejection !== undefined) {
-      // 命令栏的拒绝写在命令输出里, 其余弹提示
-      if (rejection?.type !== 'redisCommandResult') { void vscode.window.showErrorMessage(blocked!); }
-      if (rejection) { post(rejection); }
+      // 有回执的由 webview 就地显示 (命令输出 / 表单错误), 没有回执的弹提示: 每次拒绝只报一处
+      if (rejection) { post(rejection); } else { void vscode.window.showErrorMessage(blocked!); }
       return;
     }
 

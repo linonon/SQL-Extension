@@ -12,6 +12,8 @@ export interface IDatabaseDriver {
 
   listDatabases(): Promise<string[]>;
   listTables(database: string): Promise<TableInfo[]>;
+  // 所有库的表一次取完 (TableInfo.schema 是库名). 只有 MySQL 有: PG 一个库一个 pool, 只能逐库 listTables
+  listAllTables?(): Promise<TableInfo[]>;
   listColumns(database: string, table: string): Promise<ColumnInfo[]>;
   // 整个库 (PG: public schema) 的列, 一条查询取完, 按表名与表内顺序排
   listSchemaColumns(database: string): Promise<SchemaColumn[]>;

@@ -25,13 +25,9 @@ export class ConnectionTreeItem extends vscode.TreeItem {
       : `connection-${state}`;
 
     if (state === 'connecting') {
+      // 不挂整行 command: 误点一下就会取消慢的 SSH 连接; 取消只走行内 Stop 按钮
       this.description = 'Connecting...';
       this.iconPath = new vscode.ThemeIcon('loading~spin');
-      this.command = {
-        command: 'sqlext.cancelConnect',
-        title: 'Cancel Connection',
-        arguments: [this],
-      };
     } else {
       this.description = `${host}:${port}`;
       const iconState = state === 'connected' ? 'connected' : 'disconnected';

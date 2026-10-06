@@ -151,12 +151,17 @@ describe('TableViewProvider 只读连接', () => {
     expect(fake.posted.find((m) => m.type === 'viewInit')?.context).toMatchObject({ connectionId: 'ro', readOnly: true });
   });
 
-  it('写消息在宿主拒绝: 回失败回执并提示, 不碰 driver', async () => {
+  it('写消息在宿主拒绝, 不碰 driver: 有回执的只回执 (webview 就地显示), 没有回执的弹提示', async () => {
     new TableViewProvider(vscode.Uri.file('/ext'), cm, {} as CredentialStore).openQueryEditor('ro', 'game');
     getDriver.mockClear();
     await fake.send({ type: 'batchUpdate', database: 'game', table: 't', updates: [] });
 
     expect(fake.posted).toContainEqual({ type: 'batchUpdateResult', success: false, error: 'Connection release is read-only' });
+    expect(showError).not.toHaveBeenCalled();
+
+    const before = fake.posted.length;
+    await fake.send({ type: 'importSql', database: 'game' });
+    expect(fake.posted.length).toBe(before);
     expect(showError).toHaveBeenCalledWith('Connection release is read-only');
     expect(getDriver).not.toHaveBeenCalled();
   });

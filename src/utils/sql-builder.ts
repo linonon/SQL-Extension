@@ -13,7 +13,7 @@ function getPlaceholder(driverType: string): PlaceholderFn {
   return driverType === 'postgresql' ? pgPlaceholder : mysqlPlaceholder;
 }
 
-// MySQL 用反引号, PG 用双引号 (alter-table-builder 复用同一实现, 避免转义规则两份漂移)
+// MySQL 用反引号, PG 用双引号 (alter-table-builder 与 webview 复用同一实现, 避免转义规则两份漂移)
 export function escapeIdentifier(driverType: string, name: string): string {
   if (driverType === 'mysql') {
     return `\`${name.replace(/`/g, '``')}\``;
@@ -28,7 +28,7 @@ export function pgSequenceOfDefault(columnDefault: unknown): string | undefined 
 }
 
 // MySQL 用 qualified name (database.table); PG 由 driver 按 database 选该库的 pool 执行, 不需要
-function qualifyTable(driverType: string, table: string, database?: string): string {
+export function qualifyTable(driverType: string, table: string, database?: string): string {
   if (database && driverType === 'mysql') {
     return `${escapeIdentifier(driverType, database)}.${escapeIdentifier(driverType, table)}`;
   }
