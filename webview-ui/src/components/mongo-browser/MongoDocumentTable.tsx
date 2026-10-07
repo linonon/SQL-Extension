@@ -7,14 +7,14 @@ import { MongoDocumentList } from './MongoDocumentList';
 import { MongoTableView } from './MongoTableView';
 import { idToShell } from './mongo-id';
 import { convertTags } from './mongo-field-editor';
-import { useMongoFilterHistory, MongoFilterHistory, type FilterHistoryEntry } from './MongoFilterHistory';
-import { MongoFilterBuilder } from './MongoFilterBuilder';
+import { MongoFilterHistory, type FilterHistoryEntry } from './MongoFilterHistory';
 import { MongoExplainPanel } from './MongoExplainPanel';
-import { capRows } from './mongo-render-cap';
-import type { MongoExplainSummary } from '../../../../src/types/messages';
+import type { MongoExplainSummary, MongoQueryInputs } from '../../../../src/types/messages';
 import { useReadOnly } from '../../hooks/useReadOnly';
+import { AiAskBar } from '../query-editor/AiAskBar';
 
 interface MongoDocumentTableProps {
+  readonly database: string;
   readonly collection: string;
   readonly columns: readonly ColumnInfo[];
   readonly rows: readonly Record<string, unknown>[];
@@ -30,6 +30,8 @@ interface MongoDocumentTableProps {
   readonly projection: string;
   // 已生效的 projection 不是顶层字段 0/1 取舍 (子路径 / 重命名 / 计算字段 / $slice), 写回会丢字段或写错值: 禁用 Edit / Clone / 单元格编辑
   readonly readOnly?: boolean;
+  // 当前集合查询成功过的历史 (新的在前)
+  readonly history: readonly FilterHistoryEntry[];
   readonly customLimit: string;
   readonly customSkip: string;
   readonly onFilterChange: (filter: string) => void;
@@ -58,6 +60,7 @@ interface MongoDocumentTableProps {
 }
 
 export function MongoDocumentTable({
+  database,
   collection,
   columns,
   rows,
@@ -70,6 +73,7 @@ export function MongoDocumentTable({
   sort,
   projection,
   readOnly = false,
+  history,
   customLimit,
   customSkip,
   onFilterChange,
@@ -108,7 +112,6 @@ export function MongoDocumentTable({
   const fieldNames = useMemo(() => extractFieldPaths(rows), [rows]);
 
   const editorActive = editingId !== null || composing !== null;
-  const capped = capRows(rows);
 
   const endRow = offset + rows.length;
   // 总数未知时以 "本页取满" 判断还有下一页
@@ -189,6 +192,11 @@ export function MongoDocumentTable({
     setPendingAction(null);
   }, []);
 
+  // 正在编辑的文档不在新的结果里 (在编辑器里删掉了 / 刷新后不再命中): 关掉编辑器, 否则之后的动作一直被未保存守卫拦下
+  useEffect(() => {
+    if (editingId !== null && !rows.some((r) => idToShell(r._id) === editingId)) { clearEditor(); }
+  }, [rows, editingId, clearEditor]);
+
   useEffect(() => {
     if (!writeResult || !savePending.current) { return; }
     savePending.current = false;
@@ -214,40 +222,42 @@ export function MongoDocumentTable({
     }
   }, [editorActive, switchAfterSave, pendingAction]);
 
-  const { entries: filterHistory, addEntry: addFilterHistory } = useMongoFilterHistory();
   const [showHistory, setShowHistory] = useState(false);
-  const [showBuilder, setShowBuilder] = useState(false);
-  const dropdownGroupRef = useRef<HTMLDivElement>(null);
+  const historyGroupRef = useRef<HTMLDivElement>(null);
+  const [showAsk, setShowAsk] = useState(false);
 
-  // 点击 Builder/History 下拉之外的区域关闭 (镜像 detail copy menu)
+  // Ask AI 的回答填进五个输入框: 不 Apply, 已生效的查询 (翻页 / Explain / Export 用的) 不变
+  const handleFill = useCallback((q: MongoQueryInputs) => {
+    onFilterChange(q.filter);
+    onSortChange(q.sort);
+    onProjectionChange(q.projection);
+    onLimitChange(q.limit);
+    onSkipChange(q.skip);
+  }, [onFilterChange, onSortChange, onProjectionChange, onLimitChange, onSkipChange]);
+
+  // 点击 History 下拉之外的区域关闭 (镜像 detail copy menu)
   useEffect(() => {
-    if (!showHistory && !showBuilder) { return; }
+    if (!showHistory) { return; }
     const onDown = (e: MouseEvent) => {
-      if (dropdownGroupRef.current && !dropdownGroupRef.current.contains(e.target as Node)) {
+      if (historyGroupRef.current && !historyGroupRef.current.contains(e.target as Node)) {
         setShowHistory(false);
-        setShowBuilder(false);
       }
     };
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
-  }, [showHistory, showBuilder]);
+  }, [showHistory]);
 
-  // 可视化构建器生成的 filter 回填到 Filter 框 (用户再点 Apply)
-  const handleBuilderGenerate = useCallback((json: string) => {
-    onFilterChange(json);
-    setShowBuilder(false);
-  }, [onFilterChange]);
+  // 结果区滚动容器跨加载常驻: 写后刷新 (同查询同页) 保留滚动位置, 换页 / 新查询回到顶部
+  const bodyRef = useRef<HTMLDivElement>(null);
 
-  // Apply 时记录查询历史 (在真实 filter/sort/projection 上); 经脏数据守卫
-  const applyAndRecord = useCallback(() => {
-    guardedAction(() => {
-      addFilterHistory(filter, sort, projection);
-      onApply();
-    });
-  }, [guardedAction, addFilterHistory, filter, sort, projection, onApply]);
+  // Apply 经脏数据守卫; 查询进行中不重发: Apply 按钮与各输入框的 Enter 都走这里
+  const applyQuery = useCallback(() => {
+    if (loading) { return; }
+    guardedAction(() => { if (bodyRef.current) { bodyRef.current.scrollTop = 0; } onApply(); });
+  }, [loading, guardedAction, onApply]);
 
   const handlePageChange = useCallback((p: number) => {
-    guardedAction(() => onPageChange(p));
+    guardedAction(() => { if (bodyRef.current) { bodyRef.current.scrollTop = 0; } onPageChange(p); });
   }, [guardedAction, onPageChange]);
 
   // 从历史恢复: 回填三个字段, 用户再点 Apply (避免与受控状态更新竞态)
@@ -308,7 +318,7 @@ export function MongoDocumentTable({
       )}
       <div className="mongo-document-header">
         <div className="mongo-header-row">
-          <h3>{collection}</h3>
+          <h3>{database}.{collection}</h3>
           <ViewToggle value={view} onChange={handleViewChange} />
           {!connectionReadOnly && (
             <button
@@ -326,9 +336,9 @@ export function MongoDocumentTable({
               <MongoFilterInput
                 value={filter}
                 onChange={onFilterChange}
-                onApply={applyAndRecord}
+                onApply={applyQuery}
                 fieldNames={fieldNames}
-                placeholder='{"status": "active"}'
+                placeholder='{uid: 123}'
               />
             </div>
           </div>
@@ -338,9 +348,9 @@ export function MongoDocumentTable({
               <MongoFilterInput
                 value={sort}
                 onChange={onSortChange}
-                onApply={applyAndRecord}
+                onApply={applyQuery}
                 fieldNames={fieldNames}
-                placeholder='{"_id": -1}'
+                placeholder='{_id: -1}'
               />
             </div>
           </div>
@@ -350,9 +360,9 @@ export function MongoDocumentTable({
               <MongoFilterInput
                 value={projection}
                 onChange={onProjectionChange}
-                onApply={applyAndRecord}
+                onApply={applyQuery}
                 fieldNames={fieldNames}
-                placeholder='{"name": 1, "email": 1}'
+                placeholder='{name: 1, lv: 1}'
               />
             </div>
           </div>
@@ -363,8 +373,9 @@ export function MongoDocumentTable({
               className="mongo-numeric-input"
               value={customLimit}
               onChange={(e) => onLimitChange(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); applyAndRecord(); } }}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); applyQuery(); } }}
               placeholder="50"
+              title="每页条数, 最多 200"
             />
             <label className="mongo-filter-label-inline">Skip:</label>
             <input
@@ -372,48 +383,30 @@ export function MongoDocumentTable({
               className="mongo-numeric-input"
               value={customSkip}
               onChange={(e) => onSkipChange(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); applyAndRecord(); } }}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); applyQuery(); } }}
               placeholder="0"
             />
-            <button className="btn-small btn-primary" onClick={applyAndRecord} disabled={loading}>
+            <button className="btn-small btn-primary" onClick={applyQuery} disabled={loading}>
               Apply
             </button>
-            <div className="mongo-query-dropdowns" ref={dropdownGroupRef}>
-            <div className="mongo-history-group">
+            <div className="mongo-history-group" ref={historyGroupRef}>
               <button
                 className="btn-small"
-                onClick={() => { setShowBuilder((v) => !v); setShowHistory(false); }}
-                title="可视化构建查询条件"
-                aria-label="Filter builder"
-              >
-                Builder ▾
-              </button>
-              {showBuilder && (
-                <div className="mongo-filter-builder-dropdown">
-                  <MongoFilterBuilder
-                    fieldNames={fieldNames}
-                    onGenerate={handleBuilderGenerate}
-                    onClose={() => setShowBuilder(false)}
-                  />
-                </div>
-              )}
-            </div>
-            <div className="mongo-history-group">
-              <button
-                className="btn-small"
-                onClick={() => { setShowHistory((v) => !v); setShowBuilder(false); }}
-                title="Recent queries"
+                onClick={() => setShowHistory((v) => !v)}
+                title="Recent queries on this collection"
                 aria-label="Query history"
               >
                 History ▾
               </button>
               {showHistory && (
                 <div className="mongo-filter-history-dropdown">
-                  <MongoFilterHistory entries={filterHistory} onSelect={handleRestoreQuery} />
+                  <MongoFilterHistory entries={history} onSelect={handleRestoreQuery} />
                 </div>
               )}
             </div>
-            </div>
+            <button className="btn-small" onClick={() => setShowAsk(true)} title="Ask AI to write the query for this collection">
+              Ask AI
+            </button>
             <div className="mongo-data-ops">
               {onExplain && (
                 <button className="btn-small" onClick={onExplain} title="Explain: 查看索引使用 / 是否全表扫描">
@@ -437,6 +430,18 @@ export function MongoDocumentTable({
           </div>
         </div>
       </div>
+      {showAsk && (
+        <AiAskBar
+          key={`${database}/${collection}`}
+          target="mongo"
+          database={database}
+          collection={collection}
+          inputs={{ filter, sort, projection, limit: customLimit, skip: customSkip }}
+          lastError={queryError ?? undefined}
+          onFill={handleFill}
+          onClose={() => setShowAsk(false)}
+        />
+      )}
       {explain && (
         <MongoExplainPanel
           summary={explain.summary}
@@ -445,53 +450,51 @@ export function MongoDocumentTable({
           onClose={() => onCloseExplain?.()}
         />
       )}
-      <div className="mongo-document-body">
+      {/* 加载中旧结果留在原处 (Table 的展开列与滚动位置不丢), 加载层盖在结果区上并挡住对旧结果的操作 */}
+      <div className="mongo-document-view">
+        <div className="mongo-document-body" ref={bodyRef}>
+          {!loading && queryError && (
+            <div className="mongo-error">Query failed: {queryError}</div>
+          )}
+          {!loading && !queryError && rows.length === 0 && composing === null && (
+            <div className="mongo-empty">No documents found</div>
+          )}
+          {!queryError && readOnly && rows.length > 0 && (
+            <div className="mongo-notice">
+              Projection 含子路径或表达式, 显示的不是完整的库内原值: Edit / Clone / 单元格编辑已禁用. 只有顶层字段取舍 (key 不含 '.', 值为 0 / 1) 的 Projection 可编辑.
+            </div>
+          )}
+          {!queryError && (rows.length > 0 || composing !== null) && (
+            view === 'table'
+              ? <MongoTableView
+                  columns={columns}
+                  rows={rows}
+                  onOpen={readOnly || connectionReadOnly ? undefined : handleOpen}
+                  onCellEdit={readOnly || connectionReadOnly ? undefined : handleCellEdit}
+                />
+              : <MongoDocumentList
+                  rows={rows}
+                  view={view}
+                  readOnly={readOnly}
+                  fieldNames={fieldNames}
+                  editingId={editingId}
+                  composing={composing}
+                  onEdit={handleEnterEdit}
+                  onClone={handleClone}
+                  onDelete={(id) => onDeleteDocument(id)}
+                  onSave={handleSave}
+                  onCancelEdit={clearEditor}
+                  onDirtyChange={setIsDirty}
+                  onSaveError={handleSaveError}
+                  saveSignal={saveTrigger}
+                />
+          )}
+        </div>
         {loading && (
-          <div className="mongo-spinner-wrap">
+          <div className="mongo-spinner-wrap mongo-loading-overlay">
             <div className="mongo-spinner" />
             <span>Loading...</span>
           </div>
-        )}
-        {!loading && queryError && (
-          <div className="mongo-error">Query failed: {queryError}</div>
-        )}
-        {!loading && !queryError && rows.length === 0 && composing === null && (
-          <div className="mongo-empty">No documents found</div>
-        )}
-        {!loading && !queryError && capped.hidden > 0 && (
-          <div className="mongo-render-cap-notice">
-            性能保护: 仅渲染前 {capped.rows.length} / {rows.length} 条 (本页). 用 Filter 缩小范围或翻页 (每页 50).
-          </div>
-        )}
-        {!loading && !queryError && readOnly && rows.length > 0 && (
-          <div className="mongo-render-cap-notice">
-            Projection 含子路径或表达式, 显示的不是完整的库内原值: Edit / Clone / 单元格编辑已禁用. 只有顶层字段取舍 (key 不含 '.', 值为 0 / 1) 的 Projection 可编辑.
-          </div>
-        )}
-        {!loading && !queryError && (rows.length > 0 || composing !== null) && (
-          view === 'table'
-            ? <MongoTableView
-                columns={columns}
-                rows={capped.rows}
-                onOpen={readOnly || connectionReadOnly ? undefined : handleOpen}
-                onCellEdit={readOnly || connectionReadOnly ? undefined : handleCellEdit}
-              />
-            : <MongoDocumentList
-                rows={capped.rows}
-                view={view}
-                readOnly={readOnly}
-                fieldNames={fieldNames}
-                editingId={editingId}
-                composing={composing}
-                onEdit={handleEnterEdit}
-                onClone={handleClone}
-                onDelete={(id) => onDeleteDocument(id)}
-                onSave={handleSave}
-                onCancelEdit={clearEditor}
-                onDirtyChange={setIsDirty}
-                onSaveError={handleSaveError}
-                saveSignal={saveTrigger}
-              />
         )}
       </div>
       {(rows.length > 0 || page > 0) && (

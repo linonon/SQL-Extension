@@ -11,6 +11,7 @@ interface MongoCollectionListProps {
   readonly collections: readonly GlobalCollectionInfo[];
   readonly selected: SelectedCollection | null;
   readonly loading?: boolean;
+  readonly onRefresh: () => void;
   readonly onSelectCollection: (database: string, name: string) => void;
   readonly onCreateCollection: (database: string) => void;
   readonly onDropCollection: (database: string, collection: string) => void;
@@ -22,7 +23,7 @@ function formatCount(n: number): string {
   return String(n);
 }
 
-export function MongoCollectionList({ collections, selected, loading, onSelectCollection, onCreateCollection, onDropCollection }: MongoCollectionListProps) {
+export function MongoCollectionList({ collections, selected, loading, onRefresh, onSelectCollection, onCreateCollection, onDropCollection }: MongoCollectionListProps) {
   const readOnly = useReadOnly();
   const [filter, setFilter] = useState('');
 
@@ -61,6 +62,9 @@ export function MongoCollectionList({ collections, selected, loading, onSelectCo
           onChange={handleFilterChange}
           placeholder="Filter collections..."
         />
+        <button className="btn-small" onClick={onRefresh} disabled={loading} title="Refresh collection list and counts">
+          Refresh
+        </button>
       </div>
       <div className="mongo-collection-list">
         {loading ? (

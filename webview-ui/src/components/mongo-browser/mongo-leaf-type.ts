@@ -3,7 +3,7 @@ export type LeafType =
   | 'UUID' | 'Binary' | 'Timestamp'
   | 'string' | 'number' | 'boolean' | 'null';
 
-// 判定正则必须与还原正则 (mongo-shell-to-json convertShellToJson/jsonToShell) 对齐:
+// 判定正则必须与还原正则 (mongo-shell-syntax convertShellToJson / mongo-shell-to-json jsonToShell) 对齐:
 // 数字捕获用 -?\d+ (支持负数), 否则会把"可编辑性/类型"判错而还原失败 -> 数据损坏.
 const TAG_PATTERNS: ReadonlyArray<{ re: RegExp; type: LeafType }> = [
   { re: /^ObjectId\("[0-9a-fA-F]{24}"\)$/, type: 'ObjectId' },
@@ -30,4 +30,9 @@ export function detectLeafType(value: unknown): LeafType {
     return 'string';
   }
   return 'string';
+}
+
+// Date 叶子的本地时间 (界面上的 ISODate 是 UTC), 作悬停提示; 其余值为 undefined
+export function localTime(value: unknown): string | undefined {
+  return detectLeafType(value) === 'Date' ? new Date((value as string).slice(9, -2)).toLocaleString() : undefined;
 }

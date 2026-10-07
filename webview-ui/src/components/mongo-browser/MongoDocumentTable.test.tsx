@@ -1,26 +1,29 @@
-import { render, screen, fireEvent, within } from '@testing-library/react';
+import { act, render, screen, fireEvent, within } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { ChangeEvent, KeyboardEvent, RefObject } from 'react';
+import type { ChangeEvent, FC, KeyboardEvent, ReactNode, RefObject } from 'react';
 import { MongoDocumentTable } from './MongoDocumentTable';
-import { convertShellToJson } from '../../utils/mongo-shell-to-json';
+import { parseShellJson } from '../../../../src/utils/mongo-shell-syntax';
+import { mockPostMessage } from '../../__test__/setup';
+import { ReadOnlyContext } from '../../hooks/useReadOnly';
 
-// 卡片编辑器 / filter 输入用 autocomplete hook, mock 掉避免 DOM 测量
+// 卡片编辑器 / filter 输入用 autocomplete hook, mock 掉避免 DOM 测量; 保留 "Enter 触发 onApply"
 vi.mock('../../hooks/useMongoAutocomplete', () => ({
-  useMongoAutocomplete: ({ onChange }: { onChange: (v: string) => void }) => ({
+  useMongoAutocomplete: ({ onChange, onApply }: { onChange: (v: string) => void; onApply?: () => void }) => ({
     textareaRef: { current: null } as RefObject<HTMLTextAreaElement>,
     completionItems: [] as readonly string[],
     selectedIndex: 0,
     popupPos: { top: 0, left: 0 },
     handleChange: (e: ChangeEvent<HTMLTextAreaElement>) => onChange(e.target.value),
-    handleKeyDown: (_e: KeyboardEvent<HTMLTextAreaElement>) => {},
+    handleKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => { if (e.key === 'Enter') { onApply?.(); } },
     applyCompletion: (_item: string) => {},
   }),
 }));
 
 const col = (name: string) => ({ name, dataType: 'string', nullable: true, isPrimaryKey: name === '_id', defaultValue: null, extra: '' });
 
-function renderTable(over: Record<string, unknown> = {}) {
+function renderTable(over: Record<string, unknown> = {}, wrapper?: FC<{ children: ReactNode }>) {
   const props = {
+    database: 'game_s1',
     collection: 'users',
     columns: [col('_id'), col('name')],
     rows: [{ _id: 'ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa")', name: 'Alice' }],
@@ -32,6 +35,7 @@ function renderTable(over: Record<string, unknown> = {}) {
     filter: '',
     sort: '',
     projection: '',
+    history: [],
     customLimit: '',
     customSkip: '',
     onFilterChange: vi.fn(),
@@ -48,23 +52,74 @@ function renderTable(over: Record<string, unknown> = {}) {
     queryError: null,
     ...over,
   };
-  return { props, ...render(<MongoDocumentTable {...(props as any)} />) };
+  return { props, ...render(<MongoDocumentTable {...(props as any)} />, { wrapper }) };
 }
 
 beforeEach(() => vi.clearAllMocks());
 
-describe('MongoDocumentTable - 渲染保护 (H8/P3a)', () => {
-  it('rows 超过 200 时显示性能保护提示, 仅渲染前 200', () => {
-    const rows = Array.from({ length: 250 }, (_, i) => ({ _id: `ObjectId("${String(i).padStart(24, '0')}")`, name: `u${i}` }));
-    renderTable({ rows, total: 250 });
-    expect(screen.getByText(/性能保护/)).toBeInTheDocument();
-    // 卡片数量被截断到 200
-    expect(document.querySelectorAll('.mongo-doc-card').length).toBe(200);
+describe('MongoDocumentTable - 刷新时不卸载结果', () => {
+  it('loading 时旧行留在原处, 加载层盖在上面; 新行到达后 Table 的展开列与滚动容器都还是原来的', () => {
+    const rows = [{ _id: 'ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa")', bag: { gold: 10 } }];
+    const { props, rerender } = renderTable({ columns: [col('_id'), col('bag')], rows });
+    fireEvent.click(screen.getByRole('button', { name: 'Table' }));
+    fireEvent.click(screen.getByRole('button', { name: /expand bag/i }));
+    const body = document.querySelector('.mongo-document-body');
+    const table = document.querySelector('.mongo-table');
+
+    rerender(<MongoDocumentTable {...(props as any)} loading />);
+    expect(document.querySelector('.mongo-loading-overlay')).not.toBeNull();
+    expect(document.querySelector('.mongo-table')).toBe(table);
+    expect(screen.getByText('10')).toBeInTheDocument();
+
+    rerender(<MongoDocumentTable {...(props as any)} rows={[{ ...rows[0], bag: { gold: 20 } }]} loading={false} />);
+    expect(document.querySelector('.mongo-loading-overlay')).toBeNull();
+    expect(document.querySelector('.mongo-document-body')).toBe(body);
+    expect(document.querySelector('.mongo-table')).toBe(table);
+    expect(screen.getByText('bag.gold')).toBeInTheDocument();
+    expect(screen.getByText('20')).toBeInTheDocument();
   });
 
-  it('rows 不超过 200 时无提示', () => {
-    renderTable();
-    expect(screen.queryByText(/性能保护/)).toBeNull();
+  it('刷新保留纵向滚动; 翻页 / Apply 回到顶部, 横向滚动不动', () => {
+    const { props, rerender } = renderTable({ pageSize: 1, total: 5 });
+    const body = document.querySelector('.mongo-document-body') as HTMLElement;
+    body.scrollTop = 300;
+    body.scrollLeft = 40;
+
+    rerender(<MongoDocumentTable {...(props as any)} loading />);
+    rerender(<MongoDocumentTable {...(props as any)} loading={false} />);
+    expect(body.scrollTop).toBe(300);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    expect(props.onPageChange).toHaveBeenCalledWith(1);
+    expect(body.scrollTop).toBe(0);
+    expect(body.scrollLeft).toBe(40);
+
+    body.scrollTop = 300;
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+    expect(props.onApply).toHaveBeenCalled();
+    expect(body.scrollTop).toBe(0);
+  });
+});
+
+describe('MongoDocumentTable - 编辑中的文档从结果里消失', () => {
+  const twoRows = [
+    { _id: 'ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa")', name: 'Alice' },
+    { _id: 'ObjectId("bbbbbbbbbbbbbbbbbbbbbbbb")', name: 'Bob' },
+  ];
+
+  it('刷新后仍在: 草稿保留; 不在了 (编辑器里删掉): 编辑器关闭, 之后 Apply 不再被未保存对话框拦下', () => {
+    const { props, rerender } = renderTable({ rows: twoRows, total: 2 });
+    fireEvent.click(screen.getAllByRole('button', { name: /^edit$/i })[0]);
+    fireEvent.change(document.querySelector('.highlight-editor-textarea') as HTMLTextAreaElement, { target: { value: '{"name":"changed"}' } });
+
+    rerender(<MongoDocumentTable {...(props as any)} rows={twoRows.map((r) => ({ ...r }))} />);
+    expect((document.querySelector('.highlight-editor-textarea') as HTMLTextAreaElement).value).toBe('{"name":"changed"}');
+
+    rerender(<MongoDocumentTable {...(props as any)} rows={[twoRows[1]]} total={1} />);
+    expect(document.querySelector('.highlight-editor-textarea')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /^apply$/i }));
+    expect(document.querySelector('.mongo-nav-dialog')).toBeNull();
+    expect(props.onApply).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -138,23 +193,42 @@ describe('MongoDocumentTable - 分页 (偏移含 Skip, 总数可能未知)', () 
   });
 });
 
-describe('MongoDocumentTable - 输入框 placeholder', () => {
-  it('Filter / Sort / Projection 的 placeholder 是后端能解析的写法', () => {
+describe('MongoDocumentTable - 标题与 Apply', () => {
+  it('标题写 database.collection (多区服同名集合)', () => {
     renderTable();
-    const placeholders = [...document.querySelectorAll('textarea.mongo-filter-input')].map((t) => t.getAttribute('placeholder')!);
-    expect(placeholders).toHaveLength(3);
-    for (const p of placeholders) { expect(() => JSON.parse(convertShellToJson(p))).not.toThrow(); }
+    expect(screen.getByRole('heading', { name: 'game_s1.users' })).toBeInTheDocument();
+  });
+
+  it('查询进行中: Filter 框按 Enter 不重发, 结束后才发', () => {
+    const { props, rerender } = renderTable({ loading: true });
+    const filterBox = document.querySelector('textarea.mongo-filter-input') as HTMLTextAreaElement;
+    fireEvent.keyDown(filterBox, { key: 'Enter' });
+    expect(props.onApply).not.toHaveBeenCalled();
+    rerender(<MongoDocumentTable {...(props as any)} loading={false} />);
+    fireEvent.keyDown(filterBox, { key: 'Enter' });
+    expect(props.onApply).toHaveBeenCalledTimes(1);
   });
 });
 
-describe('MongoDocumentTable - 下拉互斥 (M10)', () => {
-  it('打开 Builder 再打开 History 时 Builder 关闭', () => {
+describe('MongoDocumentTable - 输入框 placeholder', () => {
+  it('Filter / Sort / Projection 的 placeholder 是 mongosh 写法, 且后端能解析', () => {
     renderTable();
-    fireEvent.click(screen.getByRole('button', { name: /Filter builder/i }));
-    expect(document.querySelector('.mongo-filter-builder-dropdown')).not.toBeNull();
+    const placeholders = [...document.querySelectorAll('textarea.mongo-filter-input')].map((t) => t.getAttribute('placeholder')!);
+    expect(placeholders).toEqual(['{uid: 123}', '{_id: -1}', '{name: 1, lv: 1}']);
+    for (const p of placeholders) { expect(() => parseShellJson(p)).not.toThrow(); }
+  });
+});
+
+describe('MongoDocumentTable - History 下拉', () => {
+  it('列出传入的历史, 点一条回填三个输入框, 下拉关闭', () => {
+    const entry = { namespace: 'game_s1.users', filter: '{uid: 1001}', sort: '{lv: -1}', projection: '{name: 1}', timestamp: 1 };
+    const { props } = renderTable({ history: [entry] });
     fireEvent.click(screen.getByRole('button', { name: /Query history/i }));
-    expect(document.querySelector('.mongo-filter-history-dropdown')).not.toBeNull();
-    expect(document.querySelector('.mongo-filter-builder-dropdown')).toBeNull();
+    fireEvent.click(screen.getByText('{uid: 1001}'));
+    expect(props.onFilterChange).toHaveBeenCalledWith('{uid: 1001}');
+    expect(props.onSortChange).toHaveBeenCalledWith('{lv: -1}');
+    expect(props.onProjectionChange).toHaveBeenCalledWith('{name: 1}');
+    expect(document.querySelector('.mongo-filter-history-dropdown')).toBeNull();
   });
 });
 
@@ -340,5 +414,71 @@ describe('MongoDocumentTable - handleSave insert/update/clone 分流', () => {
     fireEvent.change(textarea, { target: { value: '{"name": "new"}' } });
     fireEvent.click(screen.getByText('Save'));
     expect(onInsertDocument).toHaveBeenCalledWith({ name: 'new' });
+  });
+});
+
+describe('MongoDocumentTable - Ask AI', () => {
+  const send = (data: unknown) => act(() => { window.dispatchEvent(new MessageEvent('message', { data })); });
+  const posted = (type: string) => mockPostMessage.mock.calls.map(([m]) => m).filter((m) => m.type === type);
+  const answer = (text: string) => {
+    const { id } = posted('mongoAiAsk').at(-1);
+    send({ type: 'aiChunk', id, text });
+    send({ type: 'aiDone', id, model: 'Sonnet' });
+  };
+  const current = { filter: '{"lv": 1}', sort: '{"_id": -1}', projection: '{"name": 1}', customLimit: '10', customSkip: '5' };
+
+  function openAndAsk(over: Record<string, unknown> = {}, wrapper?: FC<{ children: ReactNode }>) {
+    const r = renderTable({ ...current, ...over }, wrapper);
+    fireEvent.click(screen.getByRole('button', { name: 'Ask AI' }));
+    const input = screen.getByTestId('ai-ask-input');
+    fireEvent.change(input, { target: { value: 'top players' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+    return r;
+  }
+
+  it('只读连接也能问: 提问带库 / 集合, 五个输入框原文与上次 Apply 的报错', () => {
+    openAndAsk({ queryError: 'Filter: Unexpected token' }, ({ children }) => <ReadOnlyContext.Provider value={true}>{children}</ReadOnlyContext.Provider>);
+    expect(screen.queryByRole('button', { name: '+ New Document' })).toBeNull();
+    expect(posted('mongoAiAsk')).toEqual([{
+      type: 'mongoAiAsk', id: expect.any(String), database: 'game_s1', collection: 'users', question: 'top players',
+      filter: '{"lv": 1}', sort: '{"_id": -1}', projection: '{"name": 1}', limit: '10', skip: '5', lastError: 'Filter: Unexpected token',
+    }]);
+  });
+
+  it('Fill 按块填五个输入框 (缺块的清空), 不 Apply 也不发查询; Undo 恢复填入前的五个输入框', () => {
+    const { props } = openAndAsk();
+    answer('```filter\n{"level": {"$gte": 30}}\n```\n```limit\n20\n```');
+    fireEvent.click(screen.getByRole('button', { name: 'Fill query' }));
+    expect(props.onFilterChange).toHaveBeenLastCalledWith('{"level": {"$gte": 30}}');
+    expect(props.onSortChange).toHaveBeenLastCalledWith('');
+    expect(props.onProjectionChange).toHaveBeenLastCalledWith('');
+    expect(props.onLimitChange).toHaveBeenLastCalledWith('20');
+    expect(props.onSkipChange).toHaveBeenLastCalledWith('');
+    expect(props.onApply).not.toHaveBeenCalled();
+    expect(posted('mongoFindDocuments')).toEqual([]);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Undo fill' }));
+    expect(props.onFilterChange).toHaveBeenLastCalledWith('{"lv": 1}');
+    expect(props.onSortChange).toHaveBeenLastCalledWith('{"_id": -1}');
+    expect(props.onProjectionChange).toHaveBeenLastCalledWith('{"name": 1}');
+    expect(props.onLimitChange).toHaveBeenLastCalledWith('10');
+    expect(props.onSkipChange).toHaveBeenLastCalledWith('5');
+    expect(props.onApply).not.toHaveBeenCalled();
+  });
+
+  it('回答里没有命名块 (只有供复制的 pipeline): 不给 Fill, 回答留作文本', () => {
+    openAndAsk();
+    answer('Needs grouping:\n```javascript\ndb.users.aggregate([{"$group": {"_id": "$lv"}}])\n```');
+    expect(screen.queryByRole('button', { name: 'Fill query' })).toBeNull();
+    expect(screen.getByText(/\$group/)).toBeInTheDocument();
+  });
+
+  it('切集合时提问栏按 database/collection 重挂载: 进行中的提问被取消, 旧回答清掉', () => {
+    const { props, rerender } = openAndAsk();
+    send({ type: 'aiChunk', id: posted('mongoAiAsk').at(-1).id, text: 'partial' });
+    rerender(<MongoDocumentTable {...(props as any)} collection="orders" />);
+    expect(posted('aiCancel')).toHaveLength(1);
+    expect(screen.queryByText('partial')).toBeNull();
+    expect(screen.getByTestId('ai-ask-input')).toHaveValue('');
   });
 });

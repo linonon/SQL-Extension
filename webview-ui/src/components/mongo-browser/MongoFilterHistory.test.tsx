@@ -7,8 +7,8 @@ import {
   type FilterHistoryEntry,
 } from './MongoFilterHistory';
 
-function entry(filter: string, ts = 1): FilterHistoryEntry {
-  return { filter, sort: '', projection: '', timestamp: ts };
+function entry(filter: string, ts = 1, namespace = 'db.users'): FilterHistoryEntry {
+  return { namespace, filter, sort: '', projection: '', timestamp: ts };
 }
 
 describe('isRecordableQuery', () => {
@@ -29,6 +29,10 @@ describe('mergeFilterHistory', () => {
     expect(next.map((e) => e.filter)).toEqual(['{a:1}', '{b:2}']);
     expect(next[0].timestamp).toBe(3);
   });
+  it('不同集合的同一查询各留一条', () => {
+    const next = mergeFilterHistory([entry('{a:1}', 1, 'db.users')], entry('{a:1}', 2, 'db.orders'), 30);
+    expect(next.map((e) => e.namespace)).toEqual(['db.orders', 'db.users']);
+  });
   it('截断到 max', () => {
     const prev = Array.from({ length: 30 }, (_, i) => entry(`{n:${i}}`, i));
     const next = mergeFilterHistory(prev, entry('{new:1}', 99), 30);
@@ -44,7 +48,7 @@ describe('MongoFilterHistory 组件', () => {
   });
   it('点击条目回调该条目', () => {
     const onSelect = vi.fn();
-    const e = { filter: '{status:"active"}', sort: '{_id:-1}', projection: '', timestamp: 5 };
+    const e = { namespace: 'db.users', filter: '{status:"active"}', sort: '{_id:-1}', projection: '', timestamp: 5 };
     render(<MongoFilterHistory entries={[e]} onSelect={onSelect} />);
     fireEvent.click(screen.getByText('{status:"active"}'));
     expect(onSelect).toHaveBeenCalledWith(e);

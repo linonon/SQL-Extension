@@ -1,9 +1,28 @@
 import * as vscode from 'vscode';
 import { CLAUDE_CODE_MODELS, CLAUDE_CODE_PREFIX, claudeCodeAvailable, runClaudeCode } from './claude-code.js';
 import type { SchemaColumn } from '../types/query.js';
+import type { ExtensionMessage, MongoQueryInputs } from '../types/messages.js';
 
 // schema 序列化上限: 大库表多时截断, 防 prompt 超出模型上下文
 const SCHEMA_CHAR_LIMIT = 30_000;
+
+// 按顺序给每项装入第一个放得下的写法 (总长不超过 SCHEMA_CHAR_LIMIT); 一个写法都放不下的项跳过并计数, 后面放得下的照装
+function fitBlocks(items: readonly (readonly string[])[], noun: string): string {
+  const out: string[] = [];
+  let size = 0;
+  let dropped = 0;
+  for (const tries of items) {
+    const block = tries.find((b) => size + b.length <= SCHEMA_CHAR_LIMIT);
+    if (block === undefined) {
+      dropped++;
+      continue;
+    }
+    out.push(block);
+    size += block.length + 1;
+  }
+  if (dropped > 0) { out.push(`... (${dropped} more ${noun} truncated)`); }
+  return out.join('\n');
+}
 
 export interface AiAskInput {
   readonly dialect: string;
@@ -31,24 +50,10 @@ function schemaLines(input: AiAskInput): string {
     }),
   ].join('\n');
   // 每张表依次尝试的写法
-  const forms = [
+  return fitBlocks([
     ...entries.filter(([t]) => mentioned(t)).map((e) => [detailed(e), namesOnly(e)]),
     ...entries.filter(([t]) => !mentioned(t)).map((e) => [namesOnly(e)]),
-  ];
-  const out: string[] = [];
-  let size = 0;
-  let dropped = 0;
-  for (const tries of forms) {
-    const block = tries.find((b) => size + b.length <= SCHEMA_CHAR_LIMIT);
-    if (block === undefined) {
-      dropped++;
-      continue;
-    }
-    out.push(block);
-    size += block.length + 1;
-  }
-  if (dropped > 0) { out.push(`... (${dropped} more tables truncated)`); }
-  return out.join('\n');
+  ], 'tables');
 }
 
 export function buildAiPrompt(input: AiAskInput): string {
@@ -67,6 +72,74 @@ export function buildAiPrompt(input: AiAskInput): string {
     input.sql || '(empty)',
     ...(input.selection ? ['', 'Selected SQL:', input.selection] : []),
     ...(input.lastError ? ['', 'Last error (the previous execution in this editor failed with):', input.lastError] : []),
+    '',
+    'Question:',
+    input.question,
+  ].join('\n');
+}
+
+export interface MongoAiAskInput extends MongoQueryInputs {
+  readonly database: string;
+  readonly collection: string;
+  readonly question: string;
+  // 采样文档的字段路径 -> BSON 类型, 浅层在前 (只有 key 与类型, 没有值)
+  readonly fields: readonly (readonly [string, readonly string[]])[];
+  // 上一次 Apply 的查询失败时的报错
+  readonly lastError?: string;
+  readonly now: Date;
+  // 用户所在时区名 (IANA)
+  readonly timeZone: string;
+}
+
+/** Mongo 浏览器 Ask AI 的 prompt: 只生成当前集合的 find 查询 (五个输入框), 不发任何文档值 */
+export function buildMongoAiPrompt(input: MongoAiAskInput): string {
+  const fields = fitBlocks(input.fields.map(([path, types]) => [`${path}: ${types.join(', ')}`]), 'field paths');
+  const ms = input.now.getTime();
+  return [
+    `You are a MongoDB assistant embedded in a document browser. Current collection: ${input.database}.${input.collection}.`,
+    'Answer concisely in the language of the question.',
+    '',
+    'The browser runs the query as $match (Filter) -> $sort (Sort) -> $project (Projection) -> $skip (Skip) -> $limit (Limit).',
+    '- Sort runs before Projection: it can only use stored fields, not fields computed in Projection.',
+    '- Limit is the page size: the Next button keeps paging through the rest of the result. Skip is the starting offset.',
+    '- The browser is read-only for this feature: never produce update / insert / delete commands.',
+    '',
+    'When the answer involves a query, give one fenced block per input box, with the box name as the info string:',
+    '```filter, ```sort, ```projection, ```limit, ```skip. Together the blocks are the complete query: a box without',
+    'a block is cleared (Limit back to 50, Skip back to 0), so repeat any part of the current inputs you want to keep. Example:',
+    '```filter',
+    '{"level": {"$gte": 30}, "lastLogin": {"$gte": ISODate("2026-10-01T00:00:00Z")}}',
+    '```',
+    '```sort',
+    '{"level": -1}',
+    '```',
+    '```limit',
+    '20',
+    '```',
+    'If the question needs grouping or other aggregation stages, say the browser only runs the query above and give the',
+    'pipeline in a ```javascript block for the user to copy; it is never run here.',
+    '',
+    'Syntax for Filter / Sort / Projection (one object each):',
+    '- Prefer double-quoted JSON keys and strings; the parser also accepts mongosh bare keys and single quotes.',
+    '- Numbers unquoted, never as strings; large integers (Long) can be written bare.',
+    '- Dates as ISODate("2026-10-01T00:00:00Z") with an explicit zone (Z or +08:00), never date strings.',
+    '- ObjectId("<24 hex>") for ObjectId fields other than _id (a 24-hex string on _id is converted automatically).',
+    '- No comments, no regex literals (use {"$regex": "..."}), no trailing commas.',
+    '- Use $elemMatch when several conditions must hit the same array element.',
+    'Limit and Skip are plain non-negative integers.',
+    '',
+    'Field paths and BSON types from a random sample of documents (values are not included; other fields may exist).',
+    'Fields of array elements use the array\'s path (items.id is the id of each element of items).',
+    '<n> stands for numeric keys, <id> for 24-hex keys and <key> for other non-identifier keys (dates, emails, UUIDs):',
+    'these are dynamic map keys, and find cannot wildcard them, so a condition on them needs a concrete key from the question.',
+    fields || '(no documents sampled)',
+    '',
+    'Current inputs (raw text):',
+    ...(['filter', 'sort', 'projection', 'limit', 'skip'] as const).map((box) => `${box}: ${input[box] || '(empty)'}`),
+    ...(input.lastError ? ['', 'Last error (from the last applied query, which may differ from the current inputs):', input.lastError] : []),
+    '',
+    `Now: ${input.now.toISOString()} (user time zone ${input.timeZone}; epoch seconds ${Math.floor(ms / 1000)}; epoch milliseconds ${ms}).`,
+    'For epoch-number time fields, pick seconds or milliseconds from the field name and say which you assumed.',
     '',
     'Question:',
     input.question,
@@ -130,21 +203,19 @@ export function cancelAiAsk(key: object): void {
 
 /**
  * 按 effectiveModelId 选模型回答 (Copilot 模型或本机 Claude Code), 流式回调 onChunk; 返回所用模型名.
- * getInput 在登记取消之后才执行: 取 schema 期间的 Stop / Close 也能拦住请求.
+ * getPrompt 与模型解析并行, 都在登记取消之后才执行: 取 schema / 采样期间的 Stop / Close 也能拦住请求.
  */
-export async function runAiAsk(
+async function runAiAsk(
   key: object,
-  getInput: () => Promise<AiAskInput>,
+  getPrompt: () => Promise<string>,
   onChunk: (text: string) => void,
 ): Promise<string> {
   cancelAiAsk(key);
   const cts = new vscode.CancellationTokenSource();
   pending.set(key, cts);
   try {
-    const input = await getInput();
+    const [prompt, { chosen, copilot, claudeBin }] = await Promise.all([getPrompt(), resolveAiModel()]);
     if (cts.token.isCancellationRequested) { throw new vscode.CancellationError(); }
-    const prompt = buildAiPrompt(input);
-    const { chosen, copilot, claudeBin } = await resolveAiModel();
     if (!chosen) {
       throw new Error('No AI model available: log in to Claude Code (run `claude auth login`), or install / sign in to GitHub Copilot.');
     }
@@ -157,7 +228,7 @@ export async function runAiAsk(
       const model = copilot.find(m => m.id === chosen)!;
       const res = await model.sendRequest(
         [vscode.LanguageModelChatMessage.User(prompt)],
-        { justification: 'Database Explorer sends your question, editor SQL, its last error and table/column names, types and comments (no row data) to answer it.' },
+        { justification: 'Database Explorer sends your question, the current query, its last error and the schema (table / field names, types and comments; MongoDB field paths come from sampled documents and can include map keys; no row or document values) to answer it.' },
         cts.token,
       );
       for await (const text of res.text) {
@@ -169,5 +240,24 @@ export async function runAiAsk(
   } finally {
     if (pending.get(key) === cts) { pending.delete(key); }
     cts.dispose();
+  }
+}
+
+/**
+ * 一次提问的完整回执: 回答分段发 aiChunk, 结束发 aiDone (带所用模型或错误), 都带 webview 的提问 id.
+ * key 与 aiCancel / panel 关闭时 cancelAiAsk 用的是同一个 (panel). panel 关闭后 postMessage 会抛, 回执丢掉即可
+ */
+export async function streamAiAnswer(
+  key: object,
+  id: string,
+  post: (msg: ExtensionMessage) => void,
+  getPrompt: () => Promise<string>,
+): Promise<void> {
+  const send = (msg: ExtensionMessage) => { try { post(msg); } catch { /* panel 已关闭 */ } };
+  try {
+    const model = await runAiAsk(key, getPrompt, (text) => send({ type: 'aiChunk', id, text }));
+    send({ type: 'aiDone', id, model });
+  } catch (err) {
+    send({ type: 'aiDone', id, error: err instanceof Error ? err.message : String(err) });
   }
 }

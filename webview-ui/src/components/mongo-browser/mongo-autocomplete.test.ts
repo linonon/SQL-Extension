@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   getMongoAutocompleteContext,
   getMongoCompletionItems,
+  extractFieldPaths,
   type MongoAutocompleteContext,
 } from './mongo-autocomplete';
 
@@ -195,5 +196,37 @@ describe('getMongoCompletionItems', () => {
     const ctx: MongoAutocompleteContext = { triggerType: 'field', prefix: 'Na' };
     const items = getMongoCompletionItems(ctx, fields);
     expect(items).toEqual(['name']);
+  });
+});
+
+describe('extractFieldPaths', () => {
+  it('子文档数组按不带下标的路径往下走; 字符串值 (哪怕以 { 开头) 不是子路径', () => {
+    const rows = [{
+      _id: 'ObjectId("aaaaaaaaaaaaaaaaaaaaaaaa")',
+      note: '{"fake": 1}',
+      tags: ['a', 'b'],
+      bag: { gold: 5, items: [{ id: 1, cnt: 2 }, { id: 2, cnt: 1, bound: true }] },
+    }];
+    expect(extractFieldPaths(rows)).toEqual([
+      '_id', 'bag', 'bag.gold', 'bag.items', 'bag.items.bound', 'bag.items.cnt', 'bag.items.id', 'note', 'tags',
+    ]);
+  });
+
+  it('数组采样跳过 null 槽位, 取到后面的子文档', () => {
+    const rows = [{ equip: [null, null, null, null, null, { id: 1, lv: 3 }] }];
+    expect(extractFieldPaths(rows)).toEqual(['equip', 'equip.id', 'equip.lv']);
+  });
+
+  it('字段候选最多 50 条', () => {
+    const fields = Array.from({ length: 300 }, (_, i) => `f${i}`);
+    expect(getMongoCompletionItems({ triggerType: 'field', prefix: '' }, fields)).toHaveLength(50);
+    expect(getMongoCompletionItems({ triggerType: 'field', prefix: 'f29' }, fields)).toEqual(['f29', 'f290', 'f291', 'f292', 'f293', 'f294', 'f295', 'f296', 'f297', 'f298', 'f299']);
+  });
+
+  it('截断前浅层优先: 深层路径不把顶层字段挤出候选', () => {
+    const deep = Array.from({ length: 80 }, (_, i) => `items.${10000 + i}.desc`);
+    const items = getMongoCompletionItems({ triggerType: 'field', prefix: '' }, ['_id', ...deep, 'version', 'stages']);
+    expect(items.slice(0, 3)).toEqual(['_id', 'version', 'stages']);
+    expect(items).toHaveLength(50);
   });
 });

@@ -1,7 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
-import { convertShellToJson, stripShellTypes, jsonToShell } from './mongo-shell-to-json';
+import { stripShellTypes, jsonToShell, preview } from './mongo-shell-to-json';
+import { convertShellToJson } from '../../../src/utils/mongo-shell-syntax';
 
-describe('convertShellToJson', () => {
+// convertShellToJson 自身的用例在 src/utils/mongo-shell-syntax.test.ts; 这里只测与 jsonToShell 的往返
+describe('jsonToShell -> convertShellToJson 往返', () => {
   it('字符串值里形似 shell 写法的文本原样保留; 字符串外的照常转换 (编辑器 jsonToShell -> convertShellToJson 往返)', () => {
     // 文档的 ObjectId 以 shell 写法字符串到达 webview
     const doc = { _id: 'ObjectId("abc123456789012345678901")', note: 'call Long(5) or ISODate("x") here, NumberInt(3)' };
@@ -11,127 +13,6 @@ describe('convertShellToJson', () => {
       _id: { $oid: 'abc123456789012345678901' },
       note: 'call Long(5) or ISODate("x") here, NumberInt(3)',
     });
-  });
-
-  it('ObjectId -> $oid Extended JSON', () => {
-    expect(convertShellToJson('ObjectId("abc123456789012345678901")'))
-      .toBe('{"$oid":"abc123456789012345678901"}');
-  });
-
-  it('ISODate with value -> $date Extended JSON', () => {
-    expect(convertShellToJson('ISODate("2024-01-15T00:00:00.000Z")'))
-      .toBe('{"$date":"2024-01-15T00:00:00.000Z"}');
-  });
-
-  it('ISODate() without arg -> $date with current timestamp', () => {
-    const fakeNow = '2026-02-18T00:00:00.000Z';
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date(fakeNow));
-    const result = convertShellToJson('ISODate()');
-    expect(result).toBe(`{"$date":"${fakeNow}"}`);
-    vi.useRealTimers();
-  });
-
-  it('NumberLong with quoted arg -> $numberLong', () => {
-    expect(convertShellToJson('NumberLong("123")'))
-      .toBe('{"$numberLong":"123"}');
-  });
-
-  it('NumberLong with unquoted arg -> $numberLong', () => {
-    expect(convertShellToJson('NumberLong(123)'))
-      .toBe('{"$numberLong":"123"}');
-  });
-
-  it('NumberInt -> $numberInt', () => {
-    expect(convertShellToJson('NumberInt(42)'))
-      .toBe('{"$numberInt":"42"}');
-  });
-
-  it('负数 NumberLong / NumberInt 保留负号', () => {
-    expect(convertShellToJson('NumberLong("-5")')).toBe('{"$numberLong":"-5"}');
-    expect(convertShellToJson('NumberLong(-5)')).toBe('{"$numberLong":"-5"}');
-    expect(convertShellToJson('NumberInt(-5)')).toBe('{"$numberInt":"-5"}');
-  });
-
-  it('NumberDecimal -> $numberDecimal', () => {
-    expect(convertShellToJson('NumberDecimal("3.14")'))
-      .toBe('{"$numberDecimal":"3.14"}');
-  });
-
-  it('Long/Int32/Decimal128 别名 (与后端对齐) — M1', () => {
-    expect(convertShellToJson('Long(999)')).toBe('{"$numberLong":"999"}');
-    expect(convertShellToJson('Long("999")')).toBe('{"$numberLong":"999"}');
-    expect(convertShellToJson('Int32(42)')).toBe('{"$numberInt":"42"}');
-    expect(convertShellToJson('Decimal128("3.14")')).toBe('{"$numberDecimal":"3.14"}');
-  });
-
-  it('UUID/BinData/Timestamp -> EJSON (与后端对齐) — H3', () => {
-    expect(convertShellToJson('UUID("b26ddf70-e8e9-4e7d-9fe9-f05eb8ec872a")'))
-      .toBe('{"$uuid":"b26ddf70-e8e9-4e7d-9fe9-f05eb8ec872a"}');
-    expect(convertShellToJson('BinData(0,"AQIDBA==")'))
-      .toBe('{"$binary":{"base64":"AQIDBA==","subType":0}}');
-    expect(convertShellToJson('Timestamp(1700000000,5)'))
-      .toBe('{"$timestamp":{"t":1700000000,"i":5}}');
-  });
-
-  it('MinKey() -> $minKey', () => {
-    expect(convertShellToJson('MinKey()'))
-      .toBe('{"$minKey":1}');
-  });
-
-  it('MaxKey() -> $maxKey', () => {
-    expect(convertShellToJson('MaxKey()'))
-      .toBe('{"$maxKey":1}');
-  });
-
-  it('new Date with value -> $date Extended JSON', () => {
-    expect(convertShellToJson('new Date("2024-01-15T00:00:00.000Z")'))
-      .toBe('{"$date":"2024-01-15T00:00:00.000Z"}');
-  });
-
-  it('new Date() without arg -> $date with current timestamp', () => {
-    const fakeNow = '2026-02-18T00:00:00.000Z';
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date(fakeNow));
-    const result = convertShellToJson('new Date()');
-    expect(result).toBe(`{"$date":"${fakeNow}"}`);
-    vi.useRealTimers();
-  });
-
-  it('空输入 -> 空字符串', () => {
-    expect(convertShellToJson('')).toBe('');
-  });
-
-  it('普通字符串原样返回', () => {
-    expect(convertShellToJson('hello world')).toBe('hello world');
-  });
-
-  it('嵌套多类型混合文档', () => {
-    const input = '{ "_id": ObjectId("aabbccddeeff00112233aabb"), "count": NumberInt(5), "date": ISODate("2024-01-15T00:00:00.000Z"), "big": NumberLong("999") }';
-    const result = convertShellToJson(input);
-    expect(result).toContain('{"$oid":"aabbccddeeff00112233aabb"}');
-    expect(result).toContain('{"$numberInt":"5"}');
-    expect(result).toContain('{"$date":"2024-01-15T00:00:00.000Z"}');
-    expect(result).toContain('{"$numberLong":"999"}');
-  });
-
-  it('字符串外超出 2^53 的裸整数包成 $numberLong, 安全整数 / 小数 / 指数 / 字符串内的不动', () => {
-    const out = convertShellToJson('{"uid": 9007199254740993, "neg": -9223372036854775808, "n": 9007199254740991, "f": 9007199254740993.5, "e": 1e25, "s": "9007199254740993", "t": "a\\"9007199254740993"}');
-    expect(JSON.parse(out)).toEqual({
-      uid: { $numberLong: '9007199254740993' },
-      neg: { $numberLong: '-9223372036854775808' },
-      n: 9007199254740991,
-      f: 9007199254740993.5,
-      e: 1e25,
-      s: '9007199254740993',
-      t: 'a"9007199254740993',
-    });
-  });
-
-  it('超出 int64 的裸整数只能是 double, 原样不包; 负指数里的数字不动', () => {
-    for (const s of ['{"a":100000000000000000000}', '{"a":-9223372036854775809}', '{"a":1e-99999999999999999999}']) {
-      expect(convertShellToJson(s)).toBe(s);
-    }
   });
 });
 
@@ -266,5 +147,31 @@ describe('jsonToShell', () => {
     expect(parsed.created).toEqual({ '$date': '2024-01-15T00:00:00.000Z' });
     expect(parsed.count).toEqual({ '$numberLong': '999' });
     expect(parsed.name).toBe('test');
+  });
+});
+
+describe('preview', () => {
+  it('子文档数组: 去掉 key 引号的 shell 文本截到 max, 后缀元素数; 字符串值里的 "x": 不动', () => {
+    const items = Array.from({ length: 60 }, (_, i) => ({ id: i + 1, cnt: 5, t: 'ISODate("2026-01-01T00:00:00.000Z")', note: 'a,"b":c' }));
+    const p = preview(items);
+    expect(p.startsWith('[{id:1,cnt:5,t:ISODate("2026-01-01T00:00:00.000Z"),note:"a,\\"b\\":c"},{id:2,')).toBe(true);
+    expect(p.endsWith('... (60)')).toBe(true);
+    expect(p.length).toBe(100 + '... (60)'.length);
+  });
+
+  it('短的子文档不截断; 非标识符 key 保留引号; 标量按 String 截断', () => {
+    expect(preview({ uid: 7, 'a-b': 1 })).toBe('{uid:7,"a-b":1}');
+    expect(preview([])).toBe('[] (0)');
+    expect(preview('x'.repeat(5), 3)).toBe('xxx...');
+    expect(preview(null)).toBe('');
+  });
+
+  it('同一对象只 stringify 一次', () => {
+    const v = { a: 1 };
+    const spy = vi.spyOn(JSON, 'stringify');
+    preview(v);
+    preview(v, 2048);
+    expect(spy).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
   });
 });

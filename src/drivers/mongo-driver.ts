@@ -3,6 +3,9 @@ import {
   type AggregateOptions, type CollectionInfo, type CountDocumentsOptions, type CreateIndexesOptions,
   type Document, type EstimatedDocumentCountOptions, type FindOptions, type IndexSpecification, type Sort,
 } from 'mongodb';
+import { access, constants as fsConstants, open, rename, rm } from 'fs/promises';
+import { Readable } from 'stream';
+import { pipeline as pipeStreams } from 'stream/promises';
 import type { ConnectionConfig } from '../types/connection.js';
 import type { ColumnInfo, TableInfo } from '../types/query.js';
 import { convertEjsonToBson, assertValidBson } from '../utils/mongo-shell-to-json.js';
@@ -10,6 +13,9 @@ import { summarizeExplain, type ExplainSummary } from '../utils/mongo-explain.js
 
 // 用 mongodb 自带的 bson 实例: 单独 import 'bson' 可能加载第二份, instanceof 跨实例不成立
 const { EJSON } = BSON;
+
+// 浏览查询的服务端超时. 导出不设: 整表导出可能合法地超过它
+export const BROWSE_TIMEOUT_MS = 60_000;
 
 // MongoDB driver: 不是 SQL driver (不实现 IDatabaseDriver), 集合名 / filter / 文档都作为数据传入.
 export class MongoDriver {
@@ -124,24 +130,49 @@ export class MongoDriver {
     await db.dropCollection(collectionName);
   }
 
-  // 导出为 canonical EJSON: 读时 promoteValues:false 保住 Int32 / Long / Double, 写出时带类型标记.
-  // jsonl 时每行一个文档, 否则整体一个 JSON 数组
+  // 流式导出为 canonical EJSON 写入 filePath, 返回条数: 读时 promoteValues:false 保住 Int32 / Long / Double, 写出时带类型标记.
+  // jsonl 时每行一个文档, 否则整体一个 JSON 数组 (每个文档一行). 每 1000 条回调一次 onProgress.
+  // 目标打不开 (只读 / 目录不存在) 时直接抛出, 不动原文件; 打开后出错或 signal 取消时删掉写了一半的文件再抛出
   async exportDocuments(
     database: string,
     collection: string,
     pipeline: unknown[],
+    filePath: string,
     jsonl: boolean,
-  ): Promise<{ json: string; count: number }> {
+    options: { signal?: AbortSignal; onProgress?: (count: number) => void } = {},
+  ): Promise<number> {
     this.assertConnected();
-    // 还原 pipeline 内 EJSON 标记为 BSON, 否则 $match 过滤 (ObjectId/$date 等) 当字面子文档恒不命中,
-    // 导致导出空集或错集 (与 findDocumentsForBrowser 对齐).
-    const bsonPipeline = convertEjsonToBson(pipeline) as Document[];
-    const docs = await this.client!.db(database).collection(collection)
-      .aggregate(bsonPipeline, { promoteValues: false }).toArray();
-    const json = jsonl
-      ? docs.map((d) => `${EJSON.stringify(d, { relaxed: false })}\n`).join('')
-      : EJSON.stringify(docs, undefined, 2, { relaxed: false });
-    return { json, count: docs.length };
+    const bsonPipeline = toBsonPipeline(pipeline);
+    const coll = this.client!.db(database).collection(collection);
+    // 已有目标文件不可写时直接报错; 先写同目录的临时文件, 成功后 rename 覆盖目标,
+    // 取消或失败只删临时文件, 用户选中要覆盖的旧文件保持原样
+    await access(filePath, fsConstants.W_OK).catch((err: NodeJS.ErrnoException) => {
+      if (err.code !== 'ENOENT') { throw err; }
+    });
+    const tmpPath = `${filePath}.partial`;
+    const out = await open(tmpPath, 'w');
+    let count = 0;
+    async function* chunks(): AsyncGenerator<string> {
+      // signal 也交给游标: 取消时中断进行中的 getMore (大 $sort 可能很久才出第一批), 否则要等它返回才停
+      const cursor = coll.aggregate(bsonPipeline, { promoteValues: false, allowDiskUse: true, signal: options.signal });
+      if (!jsonl) { yield '['; }
+      for await (const doc of cursor) {
+        const text = EJSON.stringify(doc, { relaxed: false });
+        yield jsonl ? `${text}\n` : `${count === 0 ? '\n' : ',\n'}${text}`;
+        if (++count % 1000 === 0) { options.onProgress?.(count); }
+      }
+      if (!jsonl) { yield count === 0 ? ']\n' : '\n]\n'; }
+    }
+    try {
+      // pipeline 按 backpressure 拉游标 (写入跟不上时暂停读取); 出错或取消时销毁两端, 提前退出的 for await 关闭游标
+      await pipeStreams(Readable.from(chunks()), out.createWriteStream(), { signal: options.signal });
+      await rename(tmpPath, filePath);
+    } catch (err) {
+      // 清理失败不掩盖原错误
+      await rm(tmpPath, { force: true }).catch(() => {});
+      throw err;
+    }
+    return count;
   }
 
   async findDocumentsForBrowser(
@@ -150,17 +181,10 @@ export class MongoDriver {
     pipeline: unknown[]
   ): Promise<{ rows: Record<string, unknown>[]; columns: ColumnInfo[] }> {
     this.assertConnected();
-    // 还原 pipeline 内的 EJSON 标记 ($oid/$date/$numberLong 等) 为 BSON, 否则按 ObjectId/Long
-    // 过滤的 $match 会被当字面子文档匹配而恒不命中 (与 explainFind 对齐).
-    // 并对 $match 跑 autoConvertIds: 裸 24-hex 串 _id 自动转 ObjectId, 使浏览结果与 count/explain 一致 (M2/M3).
-    const bsonPipeline = (convertEjsonToBson(pipeline) as Record<string, unknown>[]).map((stage) => {
-      if (stage !== null && typeof stage === 'object' && '$match' in stage) {
-        return { ...stage, $match: autoConvertIds(stage.$match as Record<string, unknown>) };
-      }
-      return stage;
-    });
+    const bsonPipeline = toBsonPipeline(pipeline);
+    // allowDiskUse: 6.0 以下的大 $sort / 深页 $skip 不受 100MB 内存上限限制
     const docs = await this.client!.db(database).collection(collection)
-      .aggregate(bsonPipeline).toArray();
+      .aggregate(bsonPipeline, { maxTimeMS: BROWSE_TIMEOUT_MS, allowDiskUse: true }).toArray();
     return { rows: docs.map(deepFormatDocument), columns: inferSchema(docs) };
   }
 
@@ -189,9 +213,15 @@ export class MongoDriver {
     const BATCH = 500;
     const coll = this.client!.db(database).collection(collection);
     for (let i = 0; i < docs.length; i += BATCH) {
-      const batch = docs.slice(i, i + BATCH);
-      const result = await coll.insertMany(batch);
-      inserted += result.insertedCount;
+      try {
+        inserted += (await coll.insertMany(docs.slice(i, i + BATCH))).insertedCount;
+      } catch (err) {
+        // ordered insertMany 停在出错的那条: 之前各批和本批出错前的文档已落库 (本批条数见 MongoBulkWriteError.insertedCount)
+        const batchInserted = (err as { insertedCount?: unknown } | null)?.insertedCount;
+        inserted += typeof batchInserted === 'number' ? batchInserted : 0;
+        const reason = err instanceof Error ? err.message : String(err);
+        throw new Error(`Imported ${inserted} of ${docs.length} documents before the error: ${reason}`);
+      }
     }
     return inserted;
   }
@@ -317,6 +347,15 @@ export function userFilter(filter: unknown): Document {
   return autoConvertIds(convertEjsonToBson(filter ?? {}) as Record<string, unknown>);
 }
 
+// 浏览 / 导出的 pipeline: EJSON 标记 ($oid/$date/$numberLong 等) 还原为 BSON, 否则 $match 当字面子文档恒不命中;
+// $match 与 userFilter 同样把 _id 上的裸 24-hex 串转 ObjectId, 浏览 / 导出 / count / explain 命中同一批文档
+function toBsonPipeline(pipeline: unknown[]): Document[] {
+  return (convertEjsonToBson(pipeline) as Document[]).map((stage) =>
+    stage !== null && typeof stage === 'object' && '$match' in stage
+      ? { ...stage, $match: autoConvertIds(stage.$match as Record<string, unknown>) }
+      : stage);
+}
+
 // 裸字符串 _id 自动转 ObjectId 的便利 (查询/浏览/count/explain 共用单一策略).
 // 递归进 $and/$or/$nor 分支与 _id 的 $in/$nin 数组, 否则这些上下文里的 24-hex 串会静默不命中.
 function autoConvertIds(filter: Record<string, unknown>): Record<string, unknown> {
@@ -436,6 +475,36 @@ function inferSchema(docs: Record<string, unknown>[]): ColumnInfo[] {
   }
 
   return columns;
+}
+
+// 字段名形如标识符 (含中文等 Unicode 字母), 其余视作 map 的数据 key
+const IDENTIFIER_KEY = /^[\p{L}_$][\p{L}\p{N}_$]*$/u;
+
+/**
+ * 采样文档的字段路径 -> BSON 类型, 浅层在前 (同层按首次出现); 只取 key 与类型, 不含任何值.
+ * 数组标成 array<元素类型>, 元素子文档的字段沿用数组的路径; 纯数字 key 归并为 <n>, 24-hex key 归并为 <id>,
+ * 其余不是标识符的 key (日期 / 邮箱 / UUID 等) 归并为 <key>: 以数据作 key 的 map 里 key 本身是数据,
+ * 不归并还会让路径数随文档数膨胀. 形如标识符的数据 key (如昵称) 分辨不出, 原样保留
+ */
+export function fieldPathTypes(docs: readonly Document[]): [string, string[]][] {
+  const types = new Map<string, Set<string>>();
+  const label = (v: unknown): string => {
+    if (!Array.isArray(v)) { return bsonTypeName(v); }
+    const elements = [...new Set(v.map(label))];
+    return elements.length ? `array<${elements.join('|')}>` : 'array';
+  };
+  const walk = (doc: Record<string, unknown>, prefix: string): void => {
+    for (const [k, v] of Object.entries(doc)) {
+      const path = prefix + (/^\d+$/.test(k) ? '<n>' : /^[0-9a-f]{24}$/i.test(k) ? '<id>' : IDENTIFIER_KEY.test(k) ? k : '<key>');
+      types.set(path, (types.get(path) ?? new Set<string>()).add(label(v)));
+      for (const child of Array.isArray(v) ? v : [v]) {
+        if (bsonTypeName(child) === 'object') { walk(child as Record<string, unknown>, `${path}.`); }
+      }
+    }
+  };
+  for (const doc of docs) { walk(doc, ''); }
+  const depth = (path: string) => path.split('.').length;
+  return [...types].map(([path, t]): [string, string[]] => [path, [...t]]).sort((a, b) => depth(a[0]) - depth(b[0]));
 }
 
 function bsonTypeName(value: unknown): string {

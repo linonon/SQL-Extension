@@ -14,6 +14,11 @@ interface HighlightEditorProps {
   readonly errorLine?: number | null;
 }
 
+// 大文档 (超过 2000 行或 200KB) 的判定: 逐行着色与搜索层在每次渲染都重建全部 DOM, 这种规模下每键数百 ms
+export function isLargeText(text: string): boolean {
+  return text.length > 200_000 || text.split('\n', 2001).length > 2000;
+}
+
 // 渲染单行的着色 token
 function renderLineTokens(line: string): React.ReactNode[] {
   return tokenizeMongoJson(line).map((tok, i) =>
@@ -29,6 +34,7 @@ function renderLineTokens(line: string): React.ReactNode[] {
  * - search 层 (绝对覆盖): 透明文本 + <mark> 命中底色.
  * - textarea (绝对覆盖, 最上): 透明文本 + 可见 caret, 处理编辑.
  * 三层同字体/行高/换行宽度 (textarea/search padding-left = gutter 宽), 故逐行对齐.
+ * 大文档 (isLargeText) 只渲染 textarea, 文字直接由 textarea 显示; textarea 始终在同一子节点位置, 跨阈值不丢焦点.
  */
 export function HighlightEditor({
   value, onChange, onKeyDown, searchQuery, activeMatchIndex, textareaRef: externalRef, errorLine,
@@ -37,8 +43,9 @@ export function HighlightEditor({
   const backdropRef = useRef<HTMLDivElement>(null);
   const ref = externalRef ?? internalRef;
 
-  const matches = useMemo(() => findMatches(value, searchQuery), [value, searchQuery]);
-  const lines = useMemo(() => value.split('\n'), [value]);
+  const plain = isLargeText(value);
+  const matches = useMemo(() => findMatches(value, plain ? '' : searchQuery), [value, searchQuery, plain]);
+  const lines = useMemo(() => (plain ? [] : value.split('\n')), [value, plain]);
   // gutter 宽度按最大行号位数, 同时给 textarea/search padding-left 用 (经 CSS 变量)
   const gutterVar = { ['--hl-gutter' as string]: `calc(${String(lines.length).length}ch + 16px)` } as React.CSSProperties;
 
@@ -76,18 +83,22 @@ export function HighlightEditor({
   }, [value, matches, activeMatchIndex]);
 
   return (
-    <div className="highlight-editor-container" style={gutterVar}>
-      <div className="highlight-editor-syntax" aria-hidden="true">
-        {lines.map((line, idx) => (
-          <div className={`hl-row${errorLine === idx + 1 ? ' hl-row-error' : ''}`} key={idx}>
-            <span className="hl-ln">{idx + 1}</span>
-            <span className="hl-code">{renderLineTokens(line)}</span>
-          </div>
-        ))}
-      </div>
-      <div ref={backdropRef} className="highlight-editor-backdrop" aria-hidden="true">
-        <div className="highlight-editor-backdrop-inner">{segments}</div>
-      </div>
+    <div className={`highlight-editor-container${plain ? ' is-plain' : ''}`} style={gutterVar}>
+      {!plain && (
+        <div className="highlight-editor-syntax" aria-hidden="true">
+          {lines.map((line, idx) => (
+            <div className={`hl-row${errorLine === idx + 1 ? ' hl-row-error' : ''}`} key={idx}>
+              <span className="hl-ln">{idx + 1}</span>
+              <span className="hl-code">{renderLineTokens(line)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {!plain && (
+        <div ref={backdropRef} className="highlight-editor-backdrop" aria-hidden="true">
+          <div className="highlight-editor-backdrop-inner">{segments}</div>
+        </div>
+      )}
       <textarea
         ref={ref as RefObject<HTMLTextAreaElement>}
         className="highlight-editor-textarea"

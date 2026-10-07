@@ -64,6 +64,15 @@ export interface StatementResult {
   readonly truncated?: boolean;
 }
 
+// Mongo 查询栏五个输入框的原文 (limit / skip 未解析, 空串表示未填)
+export interface MongoQueryInputs {
+  readonly filter: string;
+  readonly sort: string;
+  readonly projection: string;
+  readonly limit: string;
+  readonly skip: string;
+}
+
 // Extension -> Webview
 export type ExtensionMessage =
   | { type: 'queryResult'; requestId: number; columns: ColumnInfo[]; rows: Record<string, unknown>[]; affectedRows: number; executionTime: number; error?: string }
@@ -179,6 +188,8 @@ export type WebviewMessage =
   | { type: 'mongoUpdateDocument'; database: string; collection: string; id: unknown; original: Record<string, unknown>; document: Record<string, unknown> }
   | { type: 'mongoCloneDocument'; database: string; collection: string; sourceId: unknown; original: Record<string, unknown>; document: Record<string, unknown> }
   | { type: 'mongoExplainQuery'; database: string; collection: string; filter: string; sort: string }
+  // Ask AI 生成当前集合的查询; 回答走 aiChunk / aiDone. lastError: 上一次 Apply 的查询失败时的报错
+  | ({ type: 'mongoAiAsk'; id: string; database: string; collection: string; question: string; lastError?: string } & MongoQueryInputs)
   | { type: 'mongoDeleteDocument'; database: string; collection: string; id: unknown }
   | { type: 'mongoExportCollection'; database: string; collection: string; filter: string; sort: string; projection?: string }
   | { type: 'mongoImportCollection'; database: string; collection: string }

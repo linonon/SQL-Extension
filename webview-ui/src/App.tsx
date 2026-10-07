@@ -100,6 +100,7 @@ function renderView(view: ViewType, viewContext: Record<string, unknown>) {
       return (
         <MongoBrowser
           connectionId={viewContext.connectionId as string}
+          defaultDatabase={viewContext.defaultDatabase as string | undefined}
         />
       );
     default:

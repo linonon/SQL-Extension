@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { HighlightEditor } from './HighlightEditor';
+import { HighlightEditor, isLargeText } from './HighlightEditor';
 
 describe('HighlightEditor', () => {
   it('renders textarea with provided value', () => {
@@ -96,5 +96,29 @@ describe('HighlightEditor', () => {
     const marks = container.querySelectorAll('mark');
     expect(marks[0]).not.toHaveClass('highlight-active');
     expect(marks[1]).toHaveClass('highlight-active');
+  });
+
+  it('大文档 (超过 2000 行) 只渲染 textarea, 不渲染着色层与搜索层; 跨阈值时 textarea 是同一个节点', () => {
+    const lines = (n: number) => Array.from({ length: n }, (_, i) => `"k${i}": ${i},`).join('\n');
+    const { container, rerender } = render(
+      <HighlightEditor value={lines(2000)} onChange={() => {}} searchQuery="k1" activeMatchIndex={0} />
+    );
+    const textarea = screen.getByRole('textbox');
+    expect(container.querySelector('.highlight-editor-syntax')).not.toBeNull();
+    expect(container.querySelectorAll('mark').length).toBeGreaterThan(0);
+
+    rerender(<HighlightEditor value={lines(2001)} onChange={() => {}} searchQuery="k1" activeMatchIndex={0} />);
+    expect(container.querySelector('.highlight-editor-syntax')).toBeNull();
+    expect(container.querySelector('.highlight-editor-backdrop')).toBeNull();
+    expect(container.querySelector('.highlight-editor-container')).toHaveClass('is-plain');
+    expect(screen.getByRole('textbox')).toBe(textarea);
+    expect(textarea).toHaveValue(lines(2001));
+  });
+
+  it('isLargeText: 超过 2000 行或 200KB', () => {
+    expect(isLargeText('\n'.repeat(1999))).toBe(false);
+    expect(isLargeText('\n'.repeat(2000))).toBe(true);
+    expect(isLargeText('x'.repeat(200_000))).toBe(false);
+    expect(isLargeText('x'.repeat(200_001))).toBe(true);
   });
 });

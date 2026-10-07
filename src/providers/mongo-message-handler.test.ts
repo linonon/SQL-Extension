@@ -1,15 +1,28 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as vscode from 'vscode';
-import { BSON, EJSON, Double, Long } from 'bson';
+import { BSON, EJSON, Double, Int32, Long } from 'bson';
 // instanceof 断言用 mongodb 包里的类: 被测代码经 mongodb 构造 BSON 值 (vitest 下与直接 import 的 bson 是两份模块)
 import { ObjectId } from 'mongodb';
 import { handleMongoMessage } from './mongo-message-handler';
 import type { MongoDriver } from '../drivers/mongo-driver';
 import type { WebviewMessage } from '../types/messages';
+import { runClaudeCode } from '../services/claude-code.js';
+
+// Ask AI 不起真 claude 子进程: 本机 Claude Code 视为已登录, 回答由 runClaudeCode 替身给出
+vi.mock('../services/claude-code.js', async (orig) => ({
+  ...(await orig<typeof import('../services/claude-code.js')>()),
+  claudeCodeAvailable: vi.fn(async () => '/bin/claude'),
+  runClaudeCode: vi.fn(async (_bin: string, _alias: string, _prompt: string, _signal: AbortSignal, onChunk: (t: string) => void) => {
+    onChunk('```filter\n{}\n```');
+    return 'claude-sonnet-test';
+  }),
+}));
 
 const NOT_FOUND = 'document not found (deleted or _id changed)';
 const OID = 'aaaaaaaaaaaaaaaaaaaaaaaa';
 const canonical = (v: unknown): unknown => JSON.parse(EJSON.stringify(v, { relaxed: false }));
+// 经 BSON 序列化后实际落库的类型 (canonical EJSON 会把 int32 外的 JS 整数写成 $numberLong, driver 却存成 Double)
+const written = (v: unknown): unknown => canonical(BSON.deserialize(BSON.serialize(v as Record<string, unknown>), { promoteValues: false }));
 
 function mockMongo() {
   return {
@@ -25,6 +38,9 @@ function mockMongo() {
     deleteOne: vi.fn().mockResolvedValue(1),
     createCollection: vi.fn(),
     dropCollection: vi.fn(),
+    importDocuments: vi.fn(),
+    exportDocuments: vi.fn(),
+    aggregate: vi.fn().mockResolvedValue([]),
   };
 }
 
@@ -33,7 +49,7 @@ describe('handleMongoMessage', () => {
   afterEach(() => { vi.restoreAllMocks(); });
   let mongo: ReturnType<typeof mockMongo>;
   let post: ReturnType<typeof vi.fn<(msg: unknown) => void>>;
-  const send = (msg: Record<string, unknown>) => handleMongoMessage(msg as unknown as WebviewMessage, mongo as unknown as MongoDriver, post);
+  const send = (msg: Record<string, unknown>) => handleMongoMessage(msg as unknown as WebviewMessage, mongo as unknown as MongoDriver, post, {});
 
   beforeEach(() => {
     mongo = mockMongo();
@@ -106,6 +122,26 @@ describe('handleMongoMessage', () => {
       expect(post).toHaveBeenLastCalledWith({ type: 'mongoDocumentCount', requestId: 3, total: null });
     });
 
+    it('服务端超时 (code 50 MaxTimeMSExpired) 换成可操作的提示', async () => {
+      mongo.findDocumentsForBrowser.mockRejectedValue(Object.assign(new Error('operation exceeded time limit'), { code: 50 }));
+      await send({ ...find, collection: 'users', filter: '{"a": 1}', count: false });
+      expect(post).toHaveBeenCalledWith({
+        type: 'mongoDocumentList', requestId: 3, columns: [], rows: [], error: 'Query exceeded 60s; filter on an indexed field',
+      });
+    });
+
+    it('从 mongosh 粘来的写法 (裸 key / 单引号 / Long uid) 照常查; 语法错标明输入框并按用户原文报行列', async () => {
+      await send({ ...find, collection: 'players', filter: "{uid: 7000000000000012345, 'nick': 'a:b'}", sort: '{lv: -1}' });
+      const [, , filter] = mongo.count.mock.calls[0];
+      expect(String(filter.uid)).toBe('7000000000000012345');
+      expect(filter.nick).toBe('a:b');
+      expect(mongo.findDocumentsForBrowser.mock.calls[0][2]).toContainEqual({ $sort: { lv: -1 } });
+
+      post.mockClear();
+      await send({ ...find, collection: 'players', filter: '{uid: 1001', count: false });
+      expect(post).toHaveBeenCalledWith(expect.objectContaining({ type: 'mongoDocumentList', error: expect.stringMatching(/^Filter: .* at line 1 column 11$/) }));
+    });
+
     it('driver 抛错时回带 requestId 与 error, 不发总数', async () => {
       mongo.findDocumentsForBrowser.mockRejectedValue(new Error('aggregation failed'));
       await send({ ...find, collection: 'users', filter: '{"a": 1}' });
@@ -149,6 +185,15 @@ describe('handleMongoMessage', () => {
 
       await send({ ...base, original: projected, document: { name: 'a', bag: { gold: 6, items: [1, 2] } } });
       expect(canonical(mongo.updateOne.mock.calls[1][3])).toEqual({ $set: { 'bag.gold': { $numberInt: '6' } } });
+
+      // 新加的字段恰是被 projection 隐藏的已有字段: 拒绝, 提示可能是 projection 所致
+      await send({ ...base, original: projected, document: { ...projected, gold: 7 } });
+      expect(mongo.updateOne).toHaveBeenCalledTimes(2);
+      expect(post).toHaveBeenLastCalledWith({
+        type: 'mongoOperationResult', success: false,
+        error: 'Field(s) gold changed since the document was loaded; reload and edit again'
+          + ' (fields hidden by the projection count as changed; clear the projection first)',
+      });
     });
 
     it('复合 _id 内的 ObjectId / Date 按真实类型进 filter; 24-hex 字符串 _id 不被转成 ObjectId', async () => {
@@ -170,6 +215,25 @@ describe('handleMongoMessage', () => {
       await send({ ...base, original: shown, document: { ...shown, name: 'b' } });
       expect(post).toHaveBeenNthCalledWith(1, { type: 'mongoOperationResult', success: false, error: NOT_FOUND });
       expect(post).toHaveBeenNthCalledWith(2, { type: 'mongoOperationResult', success: false, error: NOT_FOUND });
+    });
+
+    it('字段级乐观锁: 要写的数组期间被游戏服 push 过 -> 拒绝并点名 path; 只改别的字段照常写', async () => {
+      // 打开时 bag.items 是 [a, b]; 期间游戏服 push 了 c
+      const loaded = { name: 'a', bag: { items: [{ id: 1, n: 1 }, { id: 2, n: 1 }] } };
+      mongo.findOneTyped.mockResolvedValue(BSON.deserialize(BSON.serialize({
+        _id: new ObjectId(OID), name: 'a',
+        bag: { items: [1, 2, 3].map((id) => ({ id: Long.fromNumber(id), n: new Int32(1) })) },
+      }), { promoteValues: false }));
+
+      await send({ ...base, original: loaded, document: { ...loaded, bag: { items: [{ id: 1, n: 1 }, { id: 2, n: 5 }] } } });
+      expect(mongo.updateOne).not.toHaveBeenCalled();
+      expect(post).toHaveBeenLastCalledWith({
+        type: 'mongoOperationResult', success: false,
+        error: 'Field(s) bag.items changed since the document was loaded; reload and edit again',
+      });
+
+      await send({ ...base, original: loaded, document: { ...loaded, name: 'b' } });
+      expect(canonical(mongo.updateOne.mock.calls[0][3])).toEqual({ $set: { name: 'b' } });
     });
 
     it('改到不能按 path 写的字段名 -> 报错, 不写库', async () => {
@@ -207,10 +271,115 @@ describe('handleMongoMessage', () => {
     });
   });
 
-  it('mongoInsertDocument: EJSON 还原成 BSON 后插入', async () => {
-    await send({ type: 'mongoInsertDocument', database: 'db', collection: 'users', document: { n: { $numberLong: '5' } } });
-    expect(canonical(mongo.insertOne.mock.calls[0][2])).toEqual({ n: { $numberLong: '5' } });
+  it('mongoInsertDocument: EJSON 还原成 BSON 后插入; 裸数字 int32 外的整数存 Long', async () => {
+    await send({ type: 'mongoInsertDocument', database: 'db', collection: 'users', document: { n: { $numberLong: '5' }, lvl: 5, uid: 10000000002, items: [{ id: 3000000000 }] } });
+    expect(written(mongo.insertOne.mock.calls[0][2])).toEqual({
+      n: { $numberLong: '5' }, lvl: { $numberInt: '5' }, uid: { $numberLong: '10000000002' }, items: [{ id: { $numberLong: '3000000000' } }],
+    });
     expect(post).toHaveBeenCalledWith({ type: 'mongoOperationResult', success: true, affectedRows: 1 });
+  });
+
+  it('删集合 / 导入的确认框点名 database.collection (多区服同名集合); 取消不执行', async () => {
+    const warn = vi.spyOn(vscode.window, 'showWarningMessage').mockResolvedValue(undefined as never);
+    await send({ type: 'mongoDropCollection', database: 'game_s1', collection: 'players' });
+    expect(warn.mock.calls[0][0]).toContain('"game_s1.players"');
+    expect(mongo.dropCollection).not.toHaveBeenCalled();
+
+    vi.spyOn(vscode.window, 'showOpenDialog').mockResolvedValue([vscode.Uri.file('/tmp/p.json')] as never);
+    vi.spyOn(vscode.workspace.fs, 'readFile').mockResolvedValue(Buffer.from('[{"a": 1}]') as never);
+    await send({ type: 'mongoImportCollection', database: 'game_s1', collection: 'players' });
+    expect(warn.mock.calls[1][0]).toContain('1 document(s) into "game_s1.players"');
+    expect(mongo.importDocuments).not.toHaveBeenCalled();
+  });
+
+  describe('mongoExportCollection', () => {
+    const exportMsg = { type: 'mongoExportCollection', database: 'game_s1', collection: 'players', filter: '{"lvl": 5}', sort: '', projection: '' };
+    // 进度条: 回报的进度记进 reports; cancel 为 true 时模拟用户在导出进行中点了取消
+    function stubProgress(cancel: boolean) {
+      const reports: unknown[] = [];
+      vi.spyOn(vscode.window, 'withProgress').mockImplementation(((_o: unknown, task: Function) => {
+        let onCancel = () => {};
+        const run = task({ report: (r: unknown) => reports.push(r) }, {
+          isCancellationRequested: false,
+          onCancellationRequested: (fn: () => void) => { onCancel = fn; return { dispose() {} }; },
+        });
+        if (cancel) { onCancel(); }
+        return run;
+      }) as never);
+      return reports;
+    }
+
+    beforeEach(() => {
+      vi.spyOn(vscode.window, 'showSaveDialog').mockResolvedValue({ path: '/out/p.jsonl', fsPath: '/out/p.jsonl' } as never);
+    });
+
+    it('流式写到所选文件, 带进度; 完成后报条数', async () => {
+      const reports = stubProgress(false);
+      const info = vi.spyOn(vscode.window, 'showInformationMessage');
+      mongo.exportDocuments.mockImplementation(async (_d, _c, _p, _f, _j, opts: { onProgress: (n: number) => void }) => {
+        opts.onProgress(1000);
+        return 1234;
+      });
+      await send(exportMsg);
+      const [db, coll, pipeline, filePath, jsonl] = mongo.exportDocuments.mock.calls[0];
+      expect([db, coll, pipeline, filePath, jsonl]).toEqual(['game_s1', 'players', [{ $match: { lvl: 5 } }], '/out/p.jsonl', true]);
+      expect(reports).toEqual([{ message: '1000 document(s)' }]);
+      expect(info).toHaveBeenCalledWith('Exported 1234 document(s) to /out/p.jsonl');
+    });
+
+    it('取消: signal 被触发, 只提示 Export cancelled, 不报错', async () => {
+      stubProgress(true);
+      const info = vi.spyOn(vscode.window, 'showInformationMessage');
+      const error = vi.spyOn(vscode.window, 'showErrorMessage');
+      // driver 在 signal 触发时才结束: 取消没传到 signal 的话这里会一直挂着
+      mongo.exportDocuments.mockImplementation((_d, _c, _p, _f, _j, opts: { signal: AbortSignal }) => new Promise((_, reject) => {
+        opts.signal.addEventListener('abort', () => reject(Object.assign(new Error('The operation was aborted'), { name: 'AbortError' })));
+      }));
+      await send(exportMsg);
+      expect(info).toHaveBeenCalledWith('Export cancelled');
+      expect(error).not.toHaveBeenCalled();
+    });
+
+    it('出错: 报 Export failed 与原因', async () => {
+      stubProgress(false);
+      const error = vi.spyOn(vscode.window, 'showErrorMessage');
+      mongo.exportDocuments.mockRejectedValue(new Error('ENOSPC: no space left on device'));
+      await send(exportMsg);
+      expect(error).toHaveBeenCalledWith('Export failed: ENOSPC: no space left on device');
+    });
+  });
+
+  it('导入中途失败: 报出 driver 给的已导入条数, 照样刷新集合列表的计数', async () => {
+    vi.spyOn(vscode.window, 'showOpenDialog').mockResolvedValue([vscode.Uri.file('/tmp/p.jsonl')] as never);
+    vi.spyOn(vscode.workspace.fs, 'readFile').mockResolvedValue(Buffer.from('{"a": 1}\n{"a": 2}') as never);
+    vi.spyOn(vscode.window, 'showWarningMessage').mockResolvedValue('Insert' as never);
+    const error = vi.spyOn(vscode.window, 'showErrorMessage');
+    const reason = 'Imported 1 of 2 documents before the error: E11000 duplicate key error';
+    mongo.importDocuments.mockRejectedValue(new Error(reason));
+    mongo.listDatabases.mockResolvedValue(['game_s1']);
+    mongo.listTables.mockResolvedValue([{ name: 'players', schema: 'game_s1', rowCount: 1 }]);
+    await send({ type: 'mongoImportCollection', database: 'game_s1', collection: 'players' });
+    expect(error).toHaveBeenCalledWith(`Import failed: ${reason}`);
+    expect(post.mock.calls).toEqual([
+      [{ type: 'mongoImportResult', success: false, error: reason }],
+      [{ type: 'mongoAllCollectionList', collections: [{ database: 'game_s1', name: 'players', count: 1 }] }],
+    ]);
+  });
+
+  it('导入: 写入前就失败不刷新集合列表; 刷新本身失败不再报错', async () => {
+    vi.spyOn(vscode.window, 'showOpenDialog').mockResolvedValue([vscode.Uri.file('/tmp/p.json')] as never);
+    vi.spyOn(vscode.workspace.fs, 'readFile').mockResolvedValue(Buffer.from('[{"a": 1}') as never);
+    vi.spyOn(vscode.window, 'showWarningMessage').mockResolvedValue('Insert' as never);
+    await send({ type: 'mongoImportCollection', database: 'game_s1', collection: 'players' });
+    expect(post.mock.calls).toEqual([[expect.objectContaining({ type: 'mongoImportResult', success: false })]]);
+    expect(mongo.listDatabases).not.toHaveBeenCalled();
+
+    post.mockClear();
+    vi.spyOn(vscode.workspace.fs, 'readFile').mockResolvedValue(Buffer.from('[{"a": 1}]') as never);
+    mongo.importDocuments.mockRejectedValue(new Error('connection closed'));
+    mongo.listDatabases.mockRejectedValue(new Error('connection closed'));
+    await expect(send({ type: 'mongoImportCollection', database: 'game_s1', collection: 'players' })).resolves.toBe(true);
+    expect(post.mock.calls).toEqual([[{ type: 'mongoImportResult', success: false, error: 'connection closed' }]]);
   });
 
   it('mongoDeleteDocument: 先在宿主确认, 取消不删; 按 EJSON _id 删除, 没删到报 not found', async () => {
@@ -225,6 +394,51 @@ describe('handleMongoMessage', () => {
     mongo.deleteOne.mockResolvedValue(0);
     await send({ type: 'mongoDeleteDocument', database: 'db', collection: 'users', id: 'x' });
     expect(post).toHaveBeenLastCalledWith({ type: 'mongoOperationResult', success: false, error: NOT_FOUND });
+  });
+
+  describe('mongoAiAsk', () => {
+    const ask = { type: 'mongoAiAsk', id: 'a1', database: 'game', collection: 'player', question: 'who is rich', filter: '', sort: '', projection: '', limit: '', skip: '' };
+    const lastPrompt = () => vi.mocked(runClaudeCode).mock.lastCall![2];
+
+    it('prompt 只有采样文档的字段路径与类型, 不含任何值 (含像字段名的值与 id / 数字 key); 回答带 id 回给 webview', async () => {
+      const hexKey = '5f1d7a2b3c4d5e6f70819203';
+      mongo.aggregate.mockResolvedValue([{
+        _id: new ObjectId(OID),
+        nick: 'SENTINEL_NICK',
+        tier: 'vip_gold_member',
+        uid: Long.fromString('9007199254740993'),
+        bag: [{ itemId: 'SENTINEL_ITEM', n: new Int32(31337) }],
+        heroes: { [hexKey]: { star: new Int32(5) }, '10086': { star: new Int32(4) } },
+        at: new Date('2026-01-02T03:04:05Z'),
+      }]);
+      // 固定时钟: Now 行的 epoch 数字不会碰巧含有下面的数字哨兵
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date('2030-01-01T00:00:00Z'));
+      try { await send(ask); } finally { vi.useRealTimers(); }
+
+      expect(mongo.aggregate).toHaveBeenCalledWith('game', 'player', [{ $sample: { size: 20 } }], { promoteValues: false, maxTimeMS: 5000 });
+      const prompt = lastPrompt();
+      for (const value of ['SENTINEL_NICK', 'vip_gold_member', '9007199254740993', 'SENTINEL_ITEM', '31337', OID, hexKey, '10086', '2026-01-02']) {
+        expect(prompt).not.toContain(value);
+      }
+      for (const line of ['_id: ObjectId', 'uid: Long', 'bag: array<object>', 'bag.n: Int32', 'heroes.<id>.star: Int32', 'heroes.<n>.star: Int32', 'at: date']) {
+        expect(prompt).toContain(line);
+      }
+      expect(post.mock.calls.map(([m]) => m)).toEqual([
+        { type: 'aiChunk', id: 'a1', text: '```filter\n{}\n```' },
+        { type: 'aiDone', id: 'a1', model: 'claude-sonnet-test' },
+      ]);
+    });
+
+    it.each([
+      ['异步失败 (超时 / 无权限)', () => mongo.aggregate.mockRejectedValue(new Error('MaxTimeMSExpired'))],
+      ['同步抛错 (连接已断)', () => mongo.aggregate.mockImplementation(() => { throw new Error('MongoDB driver is not connected'); })],
+    ])('采样%s 照常提问, 字段一节写 (no documents sampled)', async (_label, fail) => {
+      fail();
+      await send(ask);
+      expect(lastPrompt()).toContain('(no documents sampled)');
+      expect(post).toHaveBeenLastCalledWith({ type: 'aiDone', id: 'a1', model: 'claude-sonnet-test' });
+    });
   });
 
   describe('mongoExplainQuery', () => {

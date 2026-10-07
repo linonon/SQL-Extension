@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import { useMongoAutocomplete } from '../../hooks/useMongoAutocomplete';
-import { convertShellToJson, stripShellTypes, jsonToShell } from '../../utils/mongo-shell-to-json';
+import { stripShellTypes, jsonToShell } from '../../utils/mongo-shell-to-json';
+import { convertShellToJson, parseShellJson } from '../../../../src/utils/mongo-shell-syntax';
 import { jsonErrorLine, validateEjsonValues, lineOfIndex } from './mongo-editor-syntax';
 import { findMatches } from '../../utils/text-search';
 import { AutocompletePopup } from '../sql-editor/AutocompletePopup';
-import { HighlightEditor } from './HighlightEditor';
+import { HighlightEditor, isLargeText } from './HighlightEditor';
 import { idToShell } from './mongo-id';
 import { convertTags } from './mongo-field-editor';
 
@@ -29,8 +30,33 @@ function stripId(doc: Record<string, unknown>): Record<string, unknown> {
   return rest;
 }
 
+interface Validation {
+  readonly ok: boolean;
+  readonly error: string;
+  // 出错的行号 (1-based), 定位不到时为 null
+  readonly line: number | null;
+}
+
+const VALID: Validation = { ok: true, error: '', line: null };
+
+// JSON 语法 + EJSON 值合法性 (如 ISODate 里的日期是否真有效). 防止非法值静默写库 (非法日期会变 epoch 0)
+function validate(text: string): Validation {
+  let parsed: unknown;
+  try {
+    parsed = parseShellJson(text);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : 'Invalid JSON';
+    return { ok: false, error: msg, line: jsonErrorLine(text, msg) };
+  }
+  const problem = validateEjsonValues(parsed);
+  if (problem) {
+    const idx = text.indexOf(problem.value);
+    return { ok: false, error: problem.message, line: idx >= 0 ? lineOfIndex(text, idx) : null };
+  }
+  return VALID;
+}
+
 export function MongoDocumentDetail({ document, mode, fieldNames, onClose, onSave, onDelete, onDirtyChange, onSaveError, saveSignal }: MongoDocumentDetailProps) {
-  const displayId = document ? String(document._id ?? '') : '';
   const docId = document ? idToShell(document._id) : '';
   // edit: _id 单列只读, body 去掉 _id; insert(含 clone seed): 保留 _id 让其可编辑.
   // 取打开编辑器那一刻的文档 (空白新建为 null): 编辑内容与保存时的对比基准都以它为准, 期间列表刷新不改基准
@@ -45,23 +71,12 @@ export function MongoDocumentDetail({ document, mode, fieldNames, onClose, onSav
   const copyMenuRef = useRef<HTMLDivElement>(null);
   const dirty = text !== initialText;
 
-  // 实时校验: JSON 语法 + EJSON 值合法性 (如 ISODate 里的日期是否真有效).
-  // 驱动 Save 可用性 + 错误条 + gutter 标红行. 防止非法值静默写库 (非法日期会变 epoch 0).
-  const validation = useMemo(() => {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(convertShellToJson(text));
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : 'Invalid JSON';
-      return { ok: false, error: msg, line: jsonErrorLine(text, msg) };
-    }
-    const problem = validateEjsonValues(parsed);
-    if (problem) {
-      const idx = text.indexOf(problem.value);
-      return { ok: false, error: problem.message, line: idx >= 0 ? lineOfIndex(text, idx) : null as number | null };
-    }
-    return { ok: true, error: '', line: null as number | null };
-  }, [text]);
+  // 校验结果驱动 Save 可用性 + 错误条 + gutter 标红行. 小文档每键实时校验;
+  // 大文档 (HighlightEditor 走 plain textarea) 整篇解析每键数百 ms, 只在 Save 时校验, 结果保留到下次改动
+  const large = isLargeText(text);
+  const liveValidation = useMemo(() => (large ? VALID : validate(text)), [text, large]);
+  const [saveValidation, setSaveValidation] = useState<Validation | null>(null);
+  const validation = saveValidation ?? liveValidation;
 
   // search state
   const [showSearch, setShowSearch] = useState(false);
@@ -88,6 +103,7 @@ export function MongoDocumentDetail({ document, mode, fieldNames, onClose, onSav
   // onChange: 透传原始 event 给 autocomplete hook, 同时更新 local state
   const handleEditorChange = useCallback((e: ChangeEvent<HTMLTextAreaElement>) => {
     setText(e.target.value);
+    setSaveValidation(null);
     autocompleteHandleChange(e);
   }, [autocompleteHandleChange]);
 
@@ -120,37 +136,41 @@ export function MongoDocumentDetail({ document, mode, fieldNames, onClose, onSav
     }
   }, [closeSearch, goNextMatch, goPrevMatch]);
 
-  // intercept Ctrl+F on the detail container
+  // Ctrl+F 打开自制搜索条; 大文档没有搜索高亮层, 不拦截, 交给 VS Code 的页内查找.
+  // stopPropagation: VS Code 在 webview 的 window 上监听 keydown 并无视 preventDefault 转发给宿主, 不拦会同时弹出它的查找框
   const handleContainerKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+    if (!large && (e.ctrlKey || e.metaKey) && e.key === 'f') {
       e.preventDefault();
+      e.stopPropagation();
       openSearch();
     }
-  }, [openSearch]);
+  }, [large, openSearch]);
 
   // wrap autocomplete handleKeyDown: add Ctrl+F to open search
   const handleEditorKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+    if (!large && (e.ctrlKey || e.metaKey) && e.key === 'f') {
       e.preventDefault();
+      e.stopPropagation();
       openSearch();
       return;
     }
     autocompleteHandleKeyDown(e);
-  }, [openSearch, autocompleteHandleKeyDown]);
+  }, [large, openSearch, autocompleteHandleKeyDown]);
 
   const handleSave = useCallback(() => {
     // saveSignal 触发的保存绕过了禁用的 Save 按钮, 须在此复用同一校验闸 (JSON 语法 + EJSON 值合法性),
-    // 否则非法值 (如越界整数 / 非法日期) 可经外部保存信号静默写库.
-    if (!validation.ok) { onSaveError?.(); return; }
+    // 否则非法值 (如越界整数 / 非法日期) 可经外部保存信号静默写库. 大文档的校验只在这里做.
+    const checked = large ? validate(text) : validation;
+    if (!checked.ok) { setSaveValidation(checked); onSaveError?.(); return; }
     try {
-      const parsed = JSON.parse(convertShellToJson(text)) as Record<string, unknown>;
+      const parsed = parseShellJson(text) as Record<string, unknown>;
       // 打开时的文本与编辑结果走同一解析, 没动过的字段两边逐字相同, 宿主按 path 对比后只写改动
-      const original = openedText !== null ? JSON.parse(convertShellToJson(openedText)) as Record<string, unknown> : null;
+      const original = openedText !== null ? parseShellJson(openedText) as Record<string, unknown> : null;
       onSave(original, parsed);
     } catch {
       onSaveError?.();
     }
-  }, [text, openedText, onSave, onSaveError, validation.ok]);
+  }, [text, openedText, onSave, onSaveError, validation, large]);
 
   useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
 
@@ -217,7 +237,7 @@ export function MongoDocumentDetail({ document, mode, fieldNames, onClose, onSav
                 <span className="detail-copy-toast" onAnimationEnd={() => setToast('')}>{toast}</span>
               )}
             </div>
-            <button className="btn-small" onClick={openSearch} title="Search (Ctrl+F)">Find</button>
+            {!large && <button className="btn-small" onClick={openSearch} title="Search (Ctrl+F)">Find</button>}
           </div>
           <span className="detail-action-spacer" style={{ flex: 1 }} />
           {dirty && <span className="detail-dirty-dot" title="未保存的修改">● Unsaved</span>}
@@ -235,10 +255,10 @@ export function MongoDocumentDetail({ document, mode, fieldNames, onClose, onSav
           </div>
         </div>
       </div>
-      {mode === 'edit' && displayId && (
+      {mode === 'edit' && docId && (
         <div className="detail-id-bar">
           <span className="detail-id-label">_id:</span>
-          <span className="detail-id-value">{displayId}</span>
+          <span className="detail-id-value">{docId}</span>
           <span className="detail-id-readonly" title="_id 不可改; 如需更名请用 Clone">read-only</span>
           <button
             className="btn-small detail-id-copy"
@@ -254,7 +274,7 @@ export function MongoDocumentDetail({ document, mode, fieldNames, onClose, onSav
           ✕ Invalid JSON{validation.line != null ? ` — line ${validation.line}` : ''}: {validation.error}
         </div>
       )}
-      {showSearch && (
+      {showSearch && !large && (
         <div className="detail-search-bar">
           <input
             ref={searchInputRef}

@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 import { TableViewProvider } from './table-view-provider';
 import type { ConnectionManager } from '../services/connection-manager';
 import type { CredentialStore } from '../services/credential-store';
+import { runClaudeCode } from '../services/claude-code.js';
 
 const { connectSpy, createTunnel } = vi.hoisted(() => ({
   connectSpy: vi.fn(async () => undefined),
@@ -12,6 +13,12 @@ vi.mock('../drivers/mysql-driver', () => ({
   MySQLDriver: class { connect = connectSpy; disconnect = vi.fn(async () => undefined); },
 }));
 vi.mock('../services/ssh-tunnel', () => ({ createTunnel, KNOWN_HOSTS_PATH: '/tmp/known_hosts' }));
+// Ask AI 不起真 claude 子进程: 本机 Claude Code 视为已登录
+vi.mock('../services/claude-code.js', async (orig) => ({
+  ...(await orig<typeof import('../services/claude-code.js')>()),
+  claudeCodeAvailable: vi.fn(async () => '/bin/claude'),
+  runClaudeCode: vi.fn(async () => 'claude-sonnet-test'),
+}));
 
 describe('TableViewProvider panel 标题', () => {
   it('Query / DDL / Edit 标题带连接名, 不同环境的同名库能分开', async () => {
@@ -302,5 +309,32 @@ describe('TableViewProvider 连接掉线后按需重连', () => {
       type: 'error', message: 'Failed to connect: SSH tunnel ops@jump:22 failed: Timed out while waiting for handshake',
     });
     expect(executeBatch).not.toHaveBeenCalled();
+  });
+});
+
+describe('TableViewProvider Mongo Ask AI', () => {
+  it('只读连接可用; aiCancel 与 mongoAiAsk 用同一个 key (panel): 采样期间 Stop 拦住请求, 不调模型', async () => {
+    const fake = fakePanel();
+    vi.spyOn(vscode.window, 'createWebviewPanel').mockReturnValue(fake.panel as never);
+    let finishSample!: (docs: unknown[]) => void;
+    const aggregate = vi.fn(() => new Promise<unknown[]>((resolve) => { finishSample = resolve; }));
+    const cm = {
+      getConnections: () => [{ id: 'm1', name: 'release', readOnly: true }],
+      getState: () => 'connected',
+      getMongoDriver: () => ({ aggregate }),
+    } as unknown as ConnectionManager;
+    new TableViewProvider(vscode.Uri.file('/ext'), cm, {} as CredentialStore).openMongoBrowser('m1', 'release', 'mongodb');
+    vi.mocked(runClaudeCode).mockClear();
+
+    const asking = fake.send({
+      type: 'mongoAiAsk', id: 'a1', database: 'game', collection: 'player', question: 'q', filter: '', sort: '', projection: '', limit: '', skip: '',
+    });
+    await vi.waitFor(() => expect(aggregate).toHaveBeenCalled());
+    await fake.send({ type: 'aiCancel' });
+    finishSample([]);
+    await asking;
+
+    expect(fake.posted).toContainEqual({ type: 'aiDone', id: 'a1', error: 'Canceled' });
+    expect(runClaudeCode).not.toHaveBeenCalled();
   });
 });

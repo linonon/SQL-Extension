@@ -1,17 +1,21 @@
 import * as vscode from 'vscode';
 import type { Document } from 'mongodb';
 import type { ExtensionMessage, WebviewMessage } from '../types/messages.js';
-import { userFilter, type MongoDriver } from '../drivers/mongo-driver.js';
-import { convertEjsonToBson, convertShellToJson } from '../utils/mongo-shell-to-json.js';
-import { buildClone, buildUpdate, diffDocuments, isEmptyDiff, type DocumentDiff } from '../utils/mongo-update.js';
+import { BROWSE_TIMEOUT_MS, fieldPathTypes, userFilter, type MongoDriver } from '../drivers/mongo-driver.js';
+import { buildMongoAiPrompt, streamAiAnswer } from '../services/ai-assist.js';
+import { convertEjsonToBson } from '../utils/mongo-shell-to-json.js';
+import { parseShellJson } from '../utils/mongo-shell-syntax.js';
+import { buildClone, buildUpdate, castLike, changedSinceLoaded, diffDocuments, isEmptyDiff, type DocumentDiff } from '../utils/mongo-update.js';
 
 const NOT_FOUND = 'document not found (deleted or _id changed)';
 
-// 返回 true 表示已处理, false 表示不是 mongo 消息. 删除 / 删集合 / 导入的确认在执行它的 case 里
+// 返回 true 表示已处理, false 表示不是 mongo 消息. 删除 / 删集合 / 导入的确认在执行它的 case 里.
+// aiKey: 进行中提问的取消 key, 须与 aiCancel / panel 关闭时 cancelAiAsk 用的同一个 (panel)
 export async function handleMongoMessage(
   message: WebviewMessage,
   mongo: MongoDriver,
-  post: (msg: ExtensionMessage) => void
+  post: (msg: ExtensionMessage) => void,
+  aiKey: object
 ): Promise<boolean> {
   switch (message.type) {
     case 'mongoListAllCollections': {
@@ -25,12 +29,15 @@ export async function handleMongoMessage(
       const { requestId, database, collection, filter, sort, projection, skip, limit, count } = message;
       try {
         const pipeline = buildAggregatePipeline(filter, sort, projection, skip, limit);
-        const counting = count ? browserCount(mongo, database, collection, userFilter(parseShell(filter))) : null;
+        const counting = count ? browserCount(mongo, database, collection, userFilter(parseShell('Filter', filter))) : null;
         const docsResult = await mongo.findDocumentsForBrowser(database, collection, pipeline);
         post({ type: 'mongoDocumentList', requestId, columns: docsResult.columns, rows: docsResult.rows });
         if (counting) { post({ type: 'mongoDocumentCount', requestId, total: await counting }); }
       } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : String(err);
+        // 50 = MaxTimeMSExpired: 浏览查询撞到服务端超时
+        const errorMsg = (err as { code?: unknown } | null)?.code === 50
+          ? `Query exceeded ${BROWSE_TIMEOUT_MS / 1000}s; filter on an indexed field`
+          : err instanceof Error ? err.message : String(err);
         post({ type: 'mongoDocumentList', requestId, columns: [], rows: [], error: errorMsg });
       }
       return true;
@@ -63,13 +70,39 @@ export async function handleMongoMessage(
     case 'mongoExplainQuery': {
       const { database, collection, filter, sort } = message;
       try {
-        const sortObj = sort.trim() ? parseShell(sort) as Record<string, unknown> : undefined;
-        const summary = await mongo.explainFind(database, collection, parseShell(filter) as Record<string, unknown>, sortObj);
+        const sortObj = sort.trim() ? parseShell('Sort', sort) as Record<string, unknown> : undefined;
+        const summary = await mongo.explainFind(database, collection, parseShell('Filter', filter) as Record<string, unknown>, sortObj);
         post({ type: 'mongoExplainResult', summary });
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         post({ type: 'mongoExplainResult', error: errorMsg });
       }
+      return true;
+    }
+
+    case 'mongoAiAsk': {
+      // 字段类型取自随机采样的文档 (promoteValues:false 保住 Int32 / Long / Double), 只进 key 与类型, 不进值
+      const { database, collection } = message;
+      await streamAiAnswer(aiKey, message.id, post, async () => {
+        // 采样失败 (含连接已断时 aggregate 同步抛错) 只是少了字段清单, 不让提问失败
+        const samples = await Promise.resolve()
+          .then(() => mongo.aggregate(database, collection, [{ $sample: { size: 20 } }], { promoteValues: false, maxTimeMS: 5000 }))
+          .catch(() => []);
+        return buildMongoAiPrompt({
+          database,
+          collection,
+          question: message.question,
+          filter: message.filter,
+          sort: message.sort,
+          projection: message.projection,
+          limit: message.limit,
+          skip: message.skip,
+          lastError: message.lastError,
+          fields: fieldPathTypes(samples),
+          now: new Date(),
+          timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        });
+      });
       return true;
     }
 
@@ -100,7 +133,7 @@ export async function handleMongoMessage(
     case 'mongoDropCollection': {
       const { database, collection } = message;
       const confirm = await vscode.window.showWarningMessage(
-        `Drop collection "${collection}"? This cannot be undone.`,
+        `Drop collection "${database}.${collection}"? This cannot be undone.`,
         { modal: true },
         'Drop'
       );
@@ -118,6 +151,7 @@ export async function handleMongoMessage(
 
     case 'mongoExportCollection': {
       const { database, collection, filter, sort, projection } = message;
+      const aborter = new AbortController();
       try {
         const uri = await vscode.window.showSaveDialog({
           filters: { 'JSON Files': ['json'], 'JSONL Files': ['jsonl'] },
@@ -125,10 +159,24 @@ export async function handleMongoMessage(
         });
         if (!uri) { return true; }
         const jsonl = uri.path.toLowerCase().endsWith('.jsonl');
-        const { json, count } = await mongo.exportDocuments(database, collection, buildExportPipeline(filter, sort, projection), jsonl);
-        await vscode.workspace.fs.writeFile(uri, Buffer.from(json, 'utf-8'));
+        const pipeline = buildExportPipeline(filter, sort, projection);
+        // 边读游标边写文件 (save dialog 给的是 file scheme); 取消或出错时 driver 已删掉写了一半的文件
+        const count = await vscode.window.withProgress(
+          { location: vscode.ProgressLocation.Notification, title: `Exporting ${database}.${collection}`, cancellable: true },
+          (progress, token) => {
+            token.onCancellationRequested(() => aborter.abort());
+            return mongo.exportDocuments(database, collection, pipeline, uri.fsPath, jsonl, {
+              signal: aborter.signal,
+              onProgress: (n) => progress.report({ message: `${n} document(s)` }),
+            });
+          },
+        );
         vscode.window.showInformationMessage(`Exported ${count} document(s) to ${uri.fsPath}`);
       } catch (e) {
+        if (aborter.signal.aborted) {
+          vscode.window.showInformationMessage('Export cancelled');
+          return true;
+        }
         const errMsg = e instanceof Error ? e.message : String(e);
         vscode.window.showErrorMessage(`Export failed: ${errMsg}`);
       }
@@ -137,6 +185,7 @@ export async function handleMongoMessage(
 
     case 'mongoImportCollection': {
       const { database, collection } = message;
+      let attempted = false;
       try {
         const fileUris = await vscode.window.showOpenDialog({
           filters: { 'JSON/JSONL Files': ['json', 'jsonl'] },
@@ -148,19 +197,22 @@ export async function handleMongoMessage(
           ? (JSON.parse(content.trim()) as unknown[]).length
           : content.trim().split('\n').filter((l) => l.trim()).length;
         const confirm = await vscode.window.showWarningMessage(
-          `Import will insert ${lineCount} document(s) into "${collection}". Continue?`,
+          `Import will insert ${lineCount} document(s) into "${database}.${collection}". Continue?`,
           { modal: true },
           'Insert'
         );
         if (confirm !== 'Insert') { return true; }
+        attempted = true;
         const inserted = await mongo.importDocuments(database, collection, content);
-        vscode.window.showInformationMessage(`Imported ${inserted} document(s) into "${collection}"`);
+        vscode.window.showInformationMessage(`Imported ${inserted} document(s) into "${database}.${collection}"`);
         post({ type: 'mongoImportResult', success: true, inserted });
       } catch (e) {
         const errMsg = e instanceof Error ? e.message : String(e);
         vscode.window.showErrorMessage(`Import failed: ${errMsg}`);
         post({ type: 'mongoImportResult', success: false, error: errMsg });
       }
+      // 开始写入后成功或中途失败都可能改了文档数: 刷新集合列表的计数. 导入结果已提示过, 刷新本身失败不再报
+      if (attempted) { await postRefreshedCollections(mongo, post).catch(() => {}); }
       return true;
     }
 
@@ -198,17 +250,31 @@ async function writeDocument(message: WriteMessage, mongo: MongoDriver): Promise
   const { database, collection } = message;
   switch (message.type) {
     case 'mongoInsertDocument':
-      await mongo.insertOne(database, collection, convertEjsonToBson(message.document) as Document);
+      // 没有原文档作类型模板: 裸数字按 castLike 的无模板规则落库
+      await mongo.insertOne(database, collection, castLike(undefined, convertEjsonToBson(message.document)) as Document);
       return { success: true, affectedRows: 1 };
 
     case 'mongoUpdateDocument': {
-      // 只写用户改过的 path, 没动的字段 (及期间别人写的值) 不被旧快照覆盖
-      const diff = editDiff(message.original, message.document);
+      // 只写用户改过的 path, 没动的字段不被旧快照覆盖
+      const original = convertEjsonToBson(message.original) as Record<string, unknown>;
+      const diff = diffDocuments(original, convertEjsonToBson(message.document) as Record<string, unknown>);
       if (isEmptyDiff(diff)) { return { success: true, affectedRows: 0, message: 'No changes' }; }
       const filter = { _id: convertEjsonToBson(message.id) };
-      // 重读库内文档只为取原值的 BSON 数值类型
+      // 重读库内文档: 要写的 path 期间被别人 (如游戏服) 改过就拒绝, 否则沿用原值的 BSON 数值类型写入.
+      // 重读到 updateOne 之间仍有毫秒级窗口
       const current = await mongo.findOneTyped(database, collection, filter);
-      const matched = current ? await mongo.updateOne(database, collection, filter, buildUpdate(current, diff)) : 0;
+      if (!current) { return { success: false, error: NOT_FOUND }; }
+      const changed = changedSinceLoaded(original, current, diff);
+      if (changed.length > 0) {
+        // projection 只裁顶层字段: 原文档缺而库里有的顶层字段, 也可能只是被 projection 隐藏了
+        const maybeHidden = changed.some((p) => !Object.hasOwn(original, p.split('.')[0]));
+        return {
+          success: false,
+          error: `Field(s) ${changed.join(', ')} changed since the document was loaded; reload and edit again`
+            + (maybeHidden ? ' (fields hidden by the projection count as changed; clear the projection first)' : ''),
+        };
+      }
+      const matched = await mongo.updateOne(database, collection, filter, buildUpdate(current, diff));
       return matched ? { success: true, affectedRows: matched } : { success: false, error: NOT_FOUND };
     }
 
@@ -246,9 +312,14 @@ function browserCount(mongo: MongoDriver, database: string, collection: string, 
   return counting.catch(() => null);
 }
 
-function parseShell(text: string): unknown {
-  const trimmed = text.trim();
-  return trimmed ? JSON.parse(convertShellToJson(trimmed)) : {};
+// 空串当 {}; 出错时标明是哪个输入框, 位置是用户原文的行列
+function parseShell(label: string, text: string): unknown {
+  if (!text.trim()) { return {}; }
+  try {
+    return parseShellJson(text);
+  } catch (e) {
+    throw new Error(`${label}: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 // $match / $sort / $project, 空串与 {} 不生成 stage.
@@ -262,20 +333,17 @@ function buildExportPipeline(
 
   const trimmedFilter = filter.trim();
   if (trimmedFilter && trimmedFilter !== '{}') {
-    const parsed = JSON.parse(convertShellToJson(trimmedFilter));
-    pipeline.push({ $match: parsed });
+    pipeline.push({ $match: parseShell('Filter', filter) });
   }
 
   const trimmedSort = sort.trim();
   if (trimmedSort && trimmedSort !== '{}') {
-    const parsed = JSON.parse(convertShellToJson(trimmedSort));
-    pipeline.push({ $sort: parsed });
+    pipeline.push({ $sort: parseShell('Sort', sort) });
   }
 
   const trimmedProjection = projection?.trim() ?? '';
   if (trimmedProjection && trimmedProjection !== '{}') {
-    const parsed = JSON.parse(convertShellToJson(trimmedProjection));
-    pipeline.push({ $project: parsed });
+    pipeline.push({ $project: parseShell('Projection', projection ?? '') });
   }
 
   return pipeline;

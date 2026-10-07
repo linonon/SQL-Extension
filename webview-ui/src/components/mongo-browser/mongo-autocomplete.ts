@@ -93,29 +93,28 @@ function extractFieldPrefix(before: string): string {
   return bareMatch ? bareMatch[1] : '';
 }
 
-// 从文档数组递归提取所有字段路径
-// [{ name: "a", address: { city: "x" } }] -> ["address", "address.city", "name"]
+// 数组只取前几个子文档采样: 子文档数组各元素字段基本一致; 跳过 null / 标量, 定长槽位数组常以 null 占位
+const ARRAY_SAMPLE = 5;
+// 候选上限: 大文档 (如配置集合) 的字段路径可达上万条
+const MAX_COMPLETION_ITEMS = 50;
+
+// 从文档数组递归提取所有字段路径; 子文档数组按同一路径 (不带下标) 往下走, 与 Mongo 的点路径查询一致
+// [{ name: "a", bag: { items: [{ cnt: 1 }] } }] -> ["bag", "bag.items", "bag.items.cnt", "name"]
 export function extractFieldPaths(
   rows: readonly Record<string, unknown>[],
 ): readonly string[] {
   const paths = new Set<string>();
-  function walk(obj: Record<string, unknown>, prefix: string): void {
-    for (const key of Object.keys(obj)) {
+  function walk(val: unknown, prefix: string): void {
+    if (Array.isArray(val)) {
+      const objects = val.filter((el) => el !== null && typeof el === 'object');
+      for (const el of objects.slice(0, ARRAY_SAMPLE)) { walk(el, prefix); }
+      return;
+    }
+    if (val === null || typeof val !== 'object') { return; }
+    for (const [key, child] of Object.entries(val)) {
       const path = prefix ? `${prefix}.${key}` : key;
       paths.add(path);
-      const val = obj[key];
-      if (val !== null && typeof val === 'object' && !Array.isArray(val)) {
-        walk(val as Record<string, unknown>, path);
-      } else if (typeof val === 'string' && val.startsWith('{')) {
-        // driver flattenDocument 会把嵌套 object JSON.stringify 成字符串,
-        // 这里尝试 parse 回来以提取嵌套字段路径
-        try {
-          const parsed = JSON.parse(val);
-          if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
-            walk(parsed as Record<string, unknown>, path);
-          }
-        } catch { /* 不是 JSON, 忽略 */ }
-      }
+      walk(child, path);
     }
   }
   for (const row of rows) { walk(row, ''); }
@@ -179,9 +178,10 @@ export function getMongoCompletionItems(
   const prefix = ctx.prefix.toLowerCase();
 
   if (ctx.triggerType === 'field') {
-    return prefix
-      ? fieldNames.filter((f) => f.toLowerCase().startsWith(prefix))
-      : [...fieldNames];
+    const matched = prefix ? fieldNames.filter((f) => f.toLowerCase().startsWith(prefix)) : fieldNames;
+    // 截断前浅层优先 (稳定排序, 同层保持原序): 大文档的深层路径不会把顶层字段挤出候选
+    const depth = (f: string) => f.split('.').length;
+    return [...matched].sort((a, b) => depth(a) - depth(b)).slice(0, MAX_COMPLETION_ITEMS);
   }
 
   if (ctx.triggerType === 'operator') {

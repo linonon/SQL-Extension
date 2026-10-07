@@ -16,15 +16,23 @@ const userDoubleClick = (el: Element) => {
 };
 
 describe('MongoTableView', () => {
-  it('嵌套对象单元格显示 JSON 预览而非 [object Object]', () => {
+  it('嵌套对象单元格显示 shell 写法预览而非 [object Object]', () => {
     render(<MongoTableView columns={columns} rows={rows} />);
-    expect(screen.getByText(/"aid":"w-1"/)).toBeInTheDocument();
+    expect(screen.getByText(/\{aid:"w-1"\}/)).toBeInTheDocument();
+  });
+
+  it('容器单元格的 title 截到 2KB; Date 单元格的 title 附本地时间', () => {
+    const cols = [columns[0], { ...columns[1], name: 'cfg' }, { ...columns[1], name: 't' }];
+    const t = 'ISODate("2026-01-01T00:00:00.000Z")';
+    render(<MongoTableView columns={cols} rows={[{ _id: 'ObjectId("a")', cfg: { blob: 'x'.repeat(10_000) }, t }]} />);
+    expect(screen.getByText(/^\{blob:"x+/).getAttribute('title')).toHaveLength(2048 + '...'.length);
+    expect(screen.getByText(t)).toHaveAttribute('title', `${t}\n${new Date('2026-01-01T00:00:00.000Z').toLocaleString()}`);
   });
 
   it('点 _id 单元格打开该行; 点其他单元格不打开', () => {
     const onOpen = vi.fn();
     render(<MongoTableView columns={columns} rows={rows} onOpen={onOpen} />);
-    fireEvent.click(screen.getByText(/"aid":"w-1"/));
+    fireEvent.click(screen.getByText(/\{aid:"w-1"\}/));
     expect(onOpen).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'ObjectId("a")' }));
     expect(onOpen).toHaveBeenCalledWith(rows[0]);
@@ -58,7 +66,7 @@ describe('MongoTableView', () => {
     expect(screen.getByText('bind.aid')).toBeInTheDocument();
     expect(screen.getByText('w-1')).toBeInTheDocument();
     // 展开后不再显示整体 JSON 预览
-    expect(screen.queryByText(/"aid":"w-1"/)).toBeNull();
+    expect(screen.queryByText(/\{aid:"w-1"\}/)).toBeNull();
   });
 
   it('折叠展开的内嵌字段 -> 回到 object 列', () => {
@@ -66,7 +74,7 @@ describe('MongoTableView', () => {
     fireEvent.click(screen.getByRole('button', { name: /expand bind/i }));
     fireEvent.click(screen.getByRole('button', { name: /collapse bind/i }));
     expect(screen.queryByText('bind.aid')).toBeNull();
-    expect(screen.getByText(/"aid":"w-1"/)).toBeInTheDocument();
+    expect(screen.getByText(/\{aid:"w-1"\}/)).toBeInTheDocument();
   });
 
   describe('单元格原地编辑', () => {

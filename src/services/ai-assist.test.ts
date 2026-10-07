@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
-import { buildAiPrompt, effectiveModelId, resolveAiModel } from './ai-assist.js';
+import { buildAiPrompt, buildMongoAiPrompt, effectiveModelId, resolveAiModel } from './ai-assist.js';
 import { claudeCodeAvailable } from './claude-code.js';
+import { fieldPathTypes } from '../drivers/mongo-driver.js';
 import type { SchemaColumn } from '../types/query.js';
 
 vi.mock('./claude-code.js', async (orig) => ({
@@ -57,6 +58,33 @@ describe('buildAiPrompt', () => {
     const p = buildAiPrompt({ ...base, schema });
     expect(p).toMatch(/more tables truncated/);
     expect(p.length).toBeLessThan(32_000);
+  });
+});
+
+describe('buildMongoAiPrompt', () => {
+  const base = {
+    database: 'game', collection: 'player', question: 'q', filter: '{"lv": 1}', sort: '', projection: '', limit: '', skip: '',
+    fields: [], now: new Date(Date.UTC(2026, 9, 7, 1, 2, 3, 456)), timeZone: 'Asia/Taipei',
+  };
+
+  it('Now 行: ISO UTC + 时区名 + epoch 秒 / 毫秒; 五个输入原文; 没采到文档; 上次 Apply 的报错', () => {
+    const p = buildMongoAiPrompt({ ...base, lastError: 'Filter: Unexpected token' });
+    expect(p).toContain('Now: 2026-10-07T01:02:03.456Z (user time zone Asia/Taipei; epoch seconds 1791334923; epoch milliseconds 1791334923456).');
+    expect(p).toContain('filter: {"lv": 1}\nsort: (empty)\nprojection: (empty)\nlimit: (empty)\nskip: (empty)');
+    expect(p).toContain('(no documents sampled)');
+    expect(p).toContain('Last error (from the last applied query, which may differ from the current inputs):\nFilter: Unexpected token');
+    expect(buildMongoAiPrompt(base)).not.toContain('Last error');
+  });
+
+  it('字段超出上限时先砍深层路径: 先出现的深层 map 不挤掉顶层字段', () => {
+    const deep = Object.fromEntries(Array.from({ length: 1500 }, (_, i) => [`stage_${i}`, { reward: { item_count: 1 } }]));
+    const top = Object.fromEntries(Array.from({ length: 500 }, (_, i) => [`top_${i}`, 'x']));
+    const p = buildMongoAiPrompt({ ...base, fields: fieldPathTypes([{ chapters: deep, ...top }]) });
+    expect(p).toContain('top_499: string');
+    expect(p).toContain('chapters.stage_0: object');
+    expect(p).not.toContain('chapters.stage_1499.reward.item_count');
+    expect(p).toMatch(/\.\.\. \(\d+ more field paths truncated\)/);
+    expect(p.length).toBeLessThan(36_000);
   });
 });
 

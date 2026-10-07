@@ -3,13 +3,16 @@ import { useVSCodeMessage } from '../../hooks/useVSCodeMessage';
 import { usePostMessage } from '../../hooks/usePostMessage';
 import type { ExtensionMessage, MongoExplainSummary } from '../../../../src/types/messages';
 import type { ColumnInfo } from '../../../../src/types/query';
-import { convertShellToJson } from '../../utils/mongo-shell-to-json';
+import { parseShellJson } from '../../../../src/utils/mongo-shell-syntax';
 import { MongoCollectionList } from './MongoCollectionList';
 import { MongoDocumentTable } from './MongoDocumentTable';
+import { useMongoFilterHistory, type FilterHistoryEntry } from './MongoFilterHistory';
 import '../../styles/mongo-browser.css';
 
 interface MongoBrowserProps {
   readonly connectionId: string;
+  // 连接表单里填的 Database: 打开时选中它的第一个集合; 没填则不自动选中
+  readonly defaultDatabase?: string;
 }
 
 export interface GlobalCollectionInfo {
@@ -24,6 +27,8 @@ interface SelectedCollection {
 }
 
 const PAGE_SIZE = 50;
+// Limit 上限: 一页的文档全部渲染, 更多的用 Next 翻; 导出不走 Limit
+const MAX_LIMIT = 200;
 
 // mongoFindDocuments 的请求序号: 回执 requestId 不是最近一次的 (切集合 / 翻页后旧查询晚到) 即丢弃,
 // 否则旧集合的行会顶替当前集合, 随后的 Edit / Delete 按当前集合写进去
@@ -43,7 +48,7 @@ const EMPTY_QUERY: AppliedQuery = { filter: '', sort: '', projection: '', skip: 
 function resolveLimit(input: string, fallback: number): number {
   if (!input.trim()) { return fallback; }
   const n = parseInt(input, 10);
-  return (Number.isFinite(n) && n > 0) ? n : fallback;
+  return (Number.isFinite(n) && n > 0) ? Math.min(n, MAX_LIMIT) : fallback;
 }
 
 function resolveSkip(input: string): number {
@@ -61,13 +66,13 @@ export function isPathProjection(text: string): boolean {
   const trimmed = text.trim();
   if (!trimmed) { return true; }
   let parsed: unknown;
-  try { parsed = JSON.parse(convertShellToJson(trimmed)); } catch { return false; }
+  try { parsed = parseShellJson(trimmed); } catch { return false; }
   return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
     && Object.entries(parsed).every(([k, v]) =>
       !k.startsWith('$') && !k.includes('.') && (typeof v === 'number' || typeof v === 'boolean'));
 }
 
-export function MongoBrowser({ connectionId }: MongoBrowserProps) {
+export function MongoBrowser({ connectionId, defaultDatabase }: MongoBrowserProps) {
   const [allCollections, setAllCollections] = useState<readonly GlobalCollectionInfo[]>([]);
   const [selected, setSelected] = useState<SelectedCollection | null>(null);
   const [columns, setColumns] = useState<readonly ColumnInfo[]>([]);
@@ -95,6 +100,9 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
   // 带 count 的那次查询的 requestId: 其后翻页不重算总数, 总数回执按它认领
   const countIdRef = useRef(0);
   const pendingSwitchTarget = useRef<{ database: string; name: string } | null>(null);
+  // Apply 发出的查询: 它的回执无 error 才记进历史
+  const pendingHistory = useRef<{ requestId: number; entry: Omit<FilterHistoryEntry, 'timestamp'> } | null>(null);
+  const { entries: history, addEntry: addHistory } = useMongoFilterHistory();
 
   const postMessage = usePostMessage();
   const resizing = useRef(false);
@@ -135,12 +143,15 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
       case 'mongoAllCollectionList':
         setCollectionsLoading(false);
         setAllCollections(msg.collections);
-        if (msg.collections.length > 0) {
-          setSelected((prev) => prev ?? { database: msg.collections[0].database, name: msg.collections[0].name });
-        }
+        setSelected((prev) => {
+          if (prev) { return prev; }
+          const first = msg.collections.find((c) => c.database === defaultDatabase);
+          return first ? { database: first.database, name: first.name } : null;
+        });
         break;
       case 'mongoDocumentList':
         if (msg.requestId !== findIdRef.current) { break; }
+        if (!msg.error && pendingHistory.current?.requestId === msg.requestId) { addHistory(pendingHistory.current.entry); }
         setColumns(msg.columns);
         setRows(msg.rows);
         setQueryError(msg.error ?? null);
@@ -164,9 +175,9 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
           handleRefetch();
         }
         break;
-      // 导出 / 导入的失败由宿主弹提示 (宿主侧流程: 文件对话框 / 进度)
+      // 导出 / 导入的失败由宿主弹提示 (宿主侧流程: 文件对话框 / 进度); 导入失败时前面的批次可能已落库, 照样刷新
       case 'mongoImportResult':
-        if (msg.success) { handleRefetch(); }
+        handleRefetch();
         break;
       case 'mongoExplainResult':
         // 只接收进行中的 explain: 切 collection 时面板已清空, 旧 collection 迟到的结果丢弃
@@ -191,27 +202,25 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
         }
         break;
     }
-  }, [handleRefetch]);
+  }, [handleRefetch, defaultDatabase, addHistory]);
 
   useVSCodeMessage(handleMessage);
 
-  // 初始加载所有 collections
-  useEffect(() => {
+  const refreshCollections = useCallback(() => {
     setCollectionsLoading(true);
     postMessage({ type: 'mongoListAllCollections' });
   }, [postMessage]);
 
-  // 选中 / 切换 collection: 查询复位, 关掉上一个集合的 explain, 从首页取并计数
+  // 初始加载所有 collections
+  useEffect(() => { refreshCollections(); }, [refreshCollections]);
+
+  // 选中 / 切换 collection: 查询复位, 关掉上一个集合的 explain, 清掉上一个集合的行 (加载中不显示在新集合名下), 从首页取并计数
   useEffect(() => {
     setApplied(EMPTY_QUERY);
     setExplain(null);
+    setRows([]);
     fetchDocs(EMPTY_QUERY, 0, true);
   }, [selected, fetchDocs]);
-
-  const handleSelectCollection = useCallback((database: string, name: string) => {
-    pendingSwitchTarget.current = { database, name };
-    setPendingSwitchSignal(s => s + 1);
-  }, []);
 
   const onSwitchConfirmed = useCallback(() => {
     const target = pendingSwitchTarget.current;
@@ -225,15 +234,29 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
     setCustomSkip('');
   }, []);
 
+  // 有选中集合时由 MongoDocumentTable 守护未保存的编辑再切; 没有选中时表格未挂载, 直接切
+  const handleSelectCollection = useCallback((database: string, name: string) => {
+    pendingSwitchTarget.current = { database, name };
+    if (!selected) { onSwitchConfirmed(); return; }
+    setPendingSwitchSignal(s => s + 1);
+  }, [selected, onSwitchConfirmed]);
+
   const onSwitchCancelled = useCallback(() => {
     pendingSwitchTarget.current = null;
   }, []);
 
   const handleApply = useCallback(() => {
     const q = { filter, sort, projection, skip: resolveSkip(customSkip), limit: resolveLimit(customLimit, PAGE_SIZE) };
+    // 超过上限的 Limit 被钳住, 输入框回显实际生效的值
+    if (customLimit.trim() && String(q.limit) !== customLimit.trim()) { setCustomLimit(String(q.limit)); }
     setApplied(q);
+    // 旧的执行计划属于上一条查询
+    setExplain(null);
     fetchDocs(q, 0, true);
-  }, [filter, sort, projection, customSkip, customLimit, fetchDocs]);
+    if (selected) {
+      pendingHistory.current = { requestId: findIdRef.current, entry: { namespace: `${selected.database}.${selected.name}`, filter, sort, projection } };
+    }
+  }, [selected, filter, sort, projection, customSkip, customLimit, fetchDocs]);
 
   const handlePageChange = useCallback((p: number) => fetchDocs(applied, p, false), [fetchDocs, applied]);
 
@@ -357,6 +380,7 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
             collections={allCollections}
             selected={selected}
             loading={collectionsLoading}
+            onRefresh={refreshCollections}
             onSelectCollection={handleSelectCollection}
             onCreateCollection={handleCreateCollection}
             onDropCollection={handleDropCollection}
@@ -366,6 +390,7 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
         <div className="mongo-right-panel">
           {selected ? (
             <MongoDocumentTable
+              database={selected.database}
               collection={selected.name}
               columns={columns}
               rows={rows}
@@ -378,6 +403,7 @@ export function MongoBrowser({ connectionId }: MongoBrowserProps) {
               sort={sort}
               projection={projection}
               readOnly={!isPathProjection(applied.projection)}
+              history={history.filter((e) => e.namespace === `${selected.database}.${selected.name}`)}
               customLimit={customLimit}
               customSkip={customSkip}
               onFilterChange={setFilter}

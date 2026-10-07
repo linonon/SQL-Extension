@@ -34,7 +34,7 @@ describe('readOnlyRejection', () => {
     const reads = [
       'executeQuery', 'listColumns', 'fetchTableDetails', 'previewAlterTable', 'dumpTable', 'exportCsv',
       'listDatabasesAndTables', 'showTableDDL', 'editTable', 'newQuery',
-      'mongoFindDocuments', 'mongoListAllCollections', 'mongoExplainQuery', 'mongoExportCollection',
+      'mongoFindDocuments', 'mongoListAllCollections', 'mongoExplainQuery', 'mongoExportCollection', 'mongoAiAsk',
       'redisScan', 'redisGetValue', 'redisHashScan', 'redisListDatabases', 'redisExportPattern', 'redisExportKey',
       'kafkaListTopics', 'kafkaGetPartitions', 'kafkaFetchMessages', 'kafkaFetchLatest', 'kafkaFetchByTimestamp',
     ];

@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { detectLeafType, type LeafType } from './mongo-leaf-type';
+import { detectLeafType, localTime, type LeafType } from './mongo-leaf-type';
+import { preview } from '../../utils/mongo-shell-to-json';
 
 interface TreeNodeProps {
   readonly name: string;
@@ -28,7 +29,7 @@ function Leaf({ value }: { readonly value: unknown }) {
   const long = display.length > MAX_STR;
   const shown = long && !expanded ? display.slice(0, MAX_STR) + '...' : display;
   return (
-    <span className={`mongo-tree-leaf ${LEAF_CLASS[type]}`}>
+    <span className={`mongo-tree-leaf ${LEAF_CLASS[type]}`} title={localTime(value)}>
       {shown}
       {long && (
         <button className="mongo-tree-more" onClick={() => setExpanded((e) => !e)}>
@@ -57,7 +58,6 @@ function TreeNode({ name, value, depth }: TreeNodeProps) {
   const entries: ReadonlyArray<[string, unknown]> = Array.isArray(value)
     ? value.map((v, i) => [String(i), v])
     : Object.entries(value);
-  const summary = Array.isArray(value) ? `[ ${entries.length} items ]` : `{ ${entries.length} fields }`;
 
   return (
     <div>
@@ -72,7 +72,7 @@ function TreeNode({ name, value, depth }: TreeNodeProps) {
       >
         <span className="mongo-tree-chevron" aria-hidden="true">{expanded ? '▾' : '▸'}</span>
         <span className="mongo-tree-key">{name}</span>
-        {!expanded && <span className="mongo-tree-summary"> {summary}</span>}
+        {!expanded && <span className="mongo-tree-summary"> {preview(value)}</span>}
       </div>
       {expanded && entries.map(([k, v]) => (
         <TreeNode key={k} name={k} value={v} depth={depth + 1} />

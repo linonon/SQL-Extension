@@ -1,63 +1,4 @@
-// MongoDB shell 语法 <-> JSON 转换 (webview 端, 纯正则, 不依赖 mongodb 包)
-
-const SHELL_PATTERNS: ReadonlyArray<{
-  readonly pattern: RegExp;
-  readonly replace: string | ((...args: string[]) => string);
-}> = [
-  { pattern: /ObjectId\(\s*"([0-9a-fA-F]{24})"\s*\)/g, replace: '{"$$oid":"$1"}' },
-  { pattern: /ISODate\(\s*"([^"]+)"\s*\)/g, replace: '{"$$date":"$1"}' },
-  { pattern: /ISODate\(\s*\)/g, replace: () => `{"$date":"${new Date().toISOString()}"}` },
-  { pattern: /new\s+Date\(\s*"([^"]+)"\s*\)/g, replace: '{"$$date":"$1"}' },
-  { pattern: /new\s+Date\(\s*\)/g, replace: () => `{"$date":"${new Date().toISOString()}"}` },
-  { pattern: /NumberLong\(\s*"(-?\d+)"\s*\)/g, replace: '{"$$numberLong":"$1"}' },
-  { pattern: /NumberLong\(\s*(-?\d+)\s*\)/g, replace: '{"$$numberLong":"$1"}' },
-  { pattern: /NumberInt\(\s*(-?\d+)\s*\)/g, replace: '{"$$numberInt":"$1"}' },
-  { pattern: /NumberDecimal\(\s*"([^"]+)"\s*\)/g, replace: '{"$$numberDecimal":"$1"}' },
-  // 后端别名 (Long/Int32/Decimal128), 与 src/utils/mongo-shell-to-json.ts 对齐, 否则编辑器拒绝后端能认的写法.
-  { pattern: /Long\(\s*"(-?\d+)"\s*\)/g, replace: '{"$$numberLong":"$1"}' },
-  { pattern: /Long\(\s*(-?\d+)\s*\)/g, replace: '{"$$numberLong":"$1"}' },
-  { pattern: /Int32\(\s*(-?\d+)\s*\)/g, replace: '{"$$numberInt":"$1"}' },
-  { pattern: /Decimal128\(\s*"([^"]+)"\s*\)/g, replace: '{"$$numberDecimal":"$1"}' },
-  { pattern: /UUID\(\s*"([0-9a-fA-F-]+)"\s*\)/g, replace: '{"$$uuid":"$1"}' },
-  { pattern: /BinData\(\s*(\d+)\s*,\s*"([A-Za-z0-9+/=]*)"\s*\)/g, replace: (_m, sub, b64) => `{"$binary":{"base64":"${b64}","subType":${sub}}}` },
-  { pattern: /Timestamp\(\s*(\d+)\s*,\s*(\d+)\s*\)/g, replace: (_m, t, i) => `{"$timestamp":{"t":${t},"i":${i}}}` },
-  { pattern: /MinKey\(\s*\)/g, replace: '{"$minKey":1}' },
-  { pattern: /MaxKey\(\s*\)/g, replace: '{"$maxKey":1}' },
-];
-
-// 每个 shell 写法前并上 JSON 字符串字面量分支: 字符串整段原样放回, 只改写字符串之外的 shell 写法
-const STRING_LITERAL = /"(?:[^"\\]|\\.)*"/.source;
-const SHELL_OUTSIDE_STRINGS = SHELL_PATTERNS.map(({ pattern, replace }) => ({
-  pattern: new RegExp(`${STRING_LITERAL}|${pattern.source}`, 'g'),
-  replace: (m: string) => (m.startsWith('"') ? m : m.replace(pattern, replace as string)),
-}));
-
-// 字符串字面量整体匹配 (跳过其中的数字), 或前后不接标识符 / 小数点 / 指数的裸整数
-const STRING_OR_INTEGER = /"(?:[^"\\]|\\.)*"|(?<![\w$.+-])-?\d+(?![\w$.])/g;
-
-const INT64_LIMIT = 2n ** 63n;
-
-// 字符串外超出 2^53 的裸整数包成 {"$numberLong":"..."}: JSON.parse 会把它静默舍入成邻近的 double.
-// 超出 int64 的不可能是 Long, 保持原样按 double 解析
-function wrapUnsafeIntegers(json: string): string {
-  return json.replace(STRING_OR_INTEGER, (m) => {
-    if (m.startsWith('"') || Number.isSafeInteger(Number(m))) { return m; }
-    const n = BigInt(m);
-    return n < -INT64_LIMIT || n >= INT64_LIMIT ? m : `{"$numberLong":"${m}"}`;
-  });
-}
-
-/**
- * shell 语法转 Extended JSON.
- * ObjectId("abc") -> {"$oid":"abc"}
- */
-export function convertShellToJson(input: string): string {
-  let result = input;
-  for (const { pattern, replace } of SHELL_OUTSIDE_STRINGS) {
-    result = result.replace(pattern, replace);
-  }
-  return wrapUnsafeIntegers(result);
-}
+// webview 端的 shell 写法展示 / 复制辅助. mongosh 写法转 EJSON 在 src/utils/mongo-shell-syntax (宿主共用)
 
 /**
  * 去掉 shell 类型包装, 保留纯值. 用于 "Copy as JSON".
@@ -98,4 +39,26 @@ export function jsonToShell(json: string): string {
     .replace(/"Timestamp\((\d+),(\d+)\)"/g, 'Timestamp($1,$2)')
     .replace(/"MinKey\(\)"/g, 'MinKey()')
     .replace(/"MaxKey\(\)"/g, 'MaxKey()');
+}
+
+// 容器值的单行 shell 文本按对象缓存: 重渲染不重复 stringify, 新查询回来的行是新对象, 缓存随旧行释放
+const shellCache = new WeakMap<object, string>();
+
+/**
+ * 单行预览 (树的折叠摘要 / Table 单元格与 title): 子文档与数组是去掉 key 引号的 shell 文本, 截到 max 字符,
+ * 数组后缀元素数, 如 [{id:1,cnt:5},...] (60). 标量是 String(v).
+ */
+export function preview(value: unknown, max = 100): string {
+  if (value === null || typeof value !== 'object') {
+    const s = String(value ?? '');
+    return s.length > max ? s.slice(0, max) + '...' : s;
+  }
+  let s = shellCache.get(value);
+  if (s === undefined) {
+    // JSON.stringify 输出里未转义的 " 都是字符串边界, 紧跟 { 或 , 且后接 ": 的只能是 key
+    s = jsonToShell(JSON.stringify(value)).replace(/([{,])"([A-Za-z_$][\w$]*)":/g, '$1$2:');
+    shellCache.set(value, s);
+  }
+  const text = s.length > max ? s.slice(0, max) + '...' : s;
+  return Array.isArray(value) ? `${text} (${value.length})` : text;
 }

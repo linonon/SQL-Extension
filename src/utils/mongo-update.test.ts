@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { BSON, EJSON, Decimal128, Double, Int32, Long, ObjectId } from 'bson';
-import { buildClone, buildUpdate, diffDocuments } from './mongo-update';
+import { buildClone, buildUpdate, changedSinceLoaded, diffDocuments } from './mongo-update';
 import { convertEjsonToBson } from './mongo-shell-to-json';
 
 // 真实 bson 类: 断言写进库的 BSON 类型 (canonical EJSON 区分 Int32 / Long / Double / Decimal128)
@@ -12,6 +12,9 @@ const diff = (before: unknown, after: unknown) =>
 
 // 库里的文档按 promoteValues:false 读回的样子 (findOneTyped)
 const typed = (doc: Record<string, unknown>) => BSON.deserialize(BSON.serialize(doc), { promoteValues: false });
+
+// 经 BSON 序列化后实际落库的类型: canonical EJSON 把 int32 外的 JS 整数写成 $numberLong, driver 却存成 Double
+const written = (doc: Record<string, unknown>): unknown => canonical(typed(doc));
 
 describe('diffDocuments', () => {
   it('没改 -> 空 diff', () => {
@@ -97,6 +100,78 @@ describe('buildUpdate: 只写改过的字段, 数值沿用原 BSON 类型', () =
     const doc = { bag: { gold: Long.fromNumber(10), gem: new Int32(1) }, old: 'x' };
     const update = buildUpdate(typed(doc), diff({ bag: { gold: 10, gem: 1 }, old: 'x' }, { bag: { gold: 11, gem: 1 } }));
     expect(canonical(update)).toEqual({ $set: { 'bag.gold': { $numberLong: '11' } }, $unset: { old: '' } });
+  });
+});
+
+describe('castLike: 没有同位原值时的数值类型', () => {
+  it('追加的数组元素以兄弟元素作模板: 复制一件道具改 id, 新 id 仍是 Long, 小值也跟兄弟类型', () => {
+    const doc = { items: [{ id: Long.fromNumber(10000000001), w: new Double(1.5) }] };
+    const before = { items: [{ id: 10000000001, w: 1.5 }] };
+    const after = { items: [{ id: 10000000001, w: 1.5 }, { id: 10000000002, w: 2.5 }, { id: 8, w: 3 }] };
+    expect(written(buildUpdate(typed(doc), diff(before, after)))).toEqual({
+      $set: {
+        items: [
+          { id: { $numberLong: '10000000001' }, w: { $numberDouble: '1.5' } },
+          { id: { $numberLong: '10000000002' }, w: { $numberDouble: '2.5' } },
+          { id: { $numberLong: '8' }, w: { $numberDouble: '3.0' } },
+        ],
+      },
+    });
+  });
+
+  it('没有模板 (新字段 / 嵌套新值) 或原类型装不下: int32 外的整数存 Long, int32 内存 Int32, 小数存 Double', () => {
+    const doc = { name: 'a', lvl: new Int32(5) };
+    const before = { name: 'a', lvl: 5 };
+    const after = { name: 'a', lvl: 3000000000, n: 5, uid: 10000000002, rate: 1.5, bag: { uids: [3000000000] } };
+    expect(written(buildUpdate(typed(doc), diff(before, after)))).toEqual({
+      $set: {
+        lvl: { $numberLong: '3000000000' },
+        n: { $numberInt: '5' },
+        uid: { $numberLong: '10000000002' },
+        rate: { $numberDouble: '1.5' },
+        bag: { uids: [{ $numberLong: '3000000000' }] },
+      },
+    });
+  });
+});
+
+describe('changedSinceLoaded: 要写的 path 自打开以来是否被别人改过', () => {
+  const loaded = { gold: 1000, at: { $date: '2024-01-15T00:00:00.000Z' }, bag: { items: [{ id: 1 }, { id: 2 }] } };
+  const check = (stored: Record<string, unknown>, after: Record<string, unknown>) =>
+    changedSinceLoaded(convertEjsonToBson(loaded) as Record<string, unknown>, typed(stored), diff(loaded, after));
+
+  it('库内值与打开时同值 (只差 Int32 / Long / Double 类型, Date) -> 不算改过', () => {
+    const stored = { gold: Long.fromNumber(1000), at: new Date('2024-01-15T00:00:00.000Z'), bag: { items: [{ id: new Int32(1) }, { id: new Double(2) }] } };
+    expect(check(stored, { gold: 1, at: { $date: '2025-01-01T00:00:00.000Z' }, bag: { items: [{ id: 1 }] } })).toEqual([]);
+  });
+
+  it('点名被改 / 被删 / 打开时没有但现在有 (含 null) 的 path; 没写到的 path 变了不管', () => {
+    const stored = { gold: Long.fromNumber(999), bag: { items: [{ id: 1 }, { id: 2 }, { id: 3 }], extra: 1 }, note: null };
+    expect(check(stored, { gold: 1, bag: { items: [{ id: 1 }, { id: 2 }], extra: 2 }, note: 'x' }))
+      .toEqual(['gold', 'bag.extra', 'note', 'at']);
+  });
+
+  it('超出 2^53 的 Long 按精确值比较 (相差不到一个 double 间隔也算改过)', () => {
+    const big = { uid: { $numberLong: '1800000000000000001' } };
+    const lock = (stored: string) => changedSinceLoaded(
+      convertEjsonToBson(big) as Record<string, unknown>,
+      typed({ uid: Long.fromString(stored) }),
+      diff(big, { uid: { $numberLong: '1800000000000000009' } }),
+    );
+    expect(lock('1800000000000000001')).toEqual([]);
+    expect(lock('1800000000000000002')).toEqual(['uid']);
+  });
+
+  it('库里按 Double 存的超出 2^53 的整数: 编辑器把它解析成 Long, 同值不算改过 (含数组整组)', () => {
+    // 浏览显示裸数字, 编辑器解析时包成 $numberLong
+    const shown = { score: { $numberLong: '9007199254740992' }, ids: [{ $numberLong: '18014398509481984' }, 1] };
+    const lock = (score: number) => changedSinceLoaded(
+      convertEjsonToBson(shown) as Record<string, unknown>,
+      typed({ score: new Double(score), ids: [new Double(2 ** 54), new Int32(1)] }),
+      diff(shown, { score: 1, ids: [2] }),
+    );
+    expect(lock(2 ** 53)).toEqual([]);
+    expect(lock(2 ** 53 + 2)).toEqual(['score']);
   });
 });
 
